@@ -39,25 +39,25 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 ## Phase 2: Data Models & Core Logic
 
 ### 2.1 Data Models
-- [ ] Design Compound data model (ID, metadata columns, chromatographic data)
-- [ ] Design ChromatographicDataPoint model (time, count values)
-- [ ] Design SpreadsheetConfig model (delimiters, column mappings, parsing rules)
-- [ ] Design AppSettings model (default configs, last loaded file, user preferences)
-- [ ] Implement data validation logic for all models
+- [x] Design Compound data model (ID, metadata columns, chromatographic data)
+- [x] Design ChromatographicDataPoint model (time, count values)
+- [x] Design SpreadsheetConfig model (delimiters, column mappings, parsing rules)
+- [x] Design AppSettings model (default configs, last loaded file, user preferences)
+- [x] Implement data validation logic for all models
 
 ### 2.2 Configuration Management
-- [ ] Design configuration file format (JSON or YAML)
-- [ ] Implement configuration loader/saver
-- [ ] Create default configuration template
-- [ ] Implement configuration validation
-- [ ] Add error handling for corrupted/invalid configs
+- [x] Design configuration file format (JSON)
+- [x] Implement configuration loader/saver
+- [x] Create default configuration template
+- [x] Implement configuration validation
+- [x] Add error handling for corrupted/invalid configs
 
 ### 2.3 Data Parsing Logic
-- [ ] Implement delimiter parsing engine (handles multiple delimiters in sequence)
-- [ ] Create parser for chromatographic data strings
-- [ ] Implement parsing preview/test functionality
-- [ ] Add error handling for malformed data
-- [ ] Create unit tests for parsing logic
+- [x] Implement delimiter parsing engine (handles multiple delimiters in sequence)
+- [x] Create parser for chromatographic data strings
+- [x] Implement parsing preview/test functionality
+- [x] Add error handling for malformed data
+- [x] Create unit tests for parsing logic
 
 ---
 
@@ -432,6 +432,6 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 1 - Project Foundation & Setup (Complete)  
+**Phase**: Phase 2 - Data Models & Core Logic (Complete)  
 **Last Updated**: 2026-02-01  
-**Next Steps**: Begin Phase 2 - Data Models & Core Logic
+**Next Steps**: Begin Phase 3 - Main Screen UI
