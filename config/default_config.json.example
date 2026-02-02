@@ -1,0 +1,17 @@
+{
+  "app_settings": {
+    "last_loaded_file": "",
+    "window_width": 1200,
+    "window_height": 800,
+    "log_level": "INFO",
+    "log_file": "logs/lc_seq.log"
+  },
+  "default_spreadsheet_config": {
+    "compound_id_column": "",
+    "chromatographic_data_column": "",
+    "delimiters": [],
+    "time_column_index": null,
+    "count_columns": [],
+    "count_names": []
+  }
+}
