@@ -13,26 +13,26 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 ## Phase 1: Project Foundation & Setup
 
 ### 1.1 Project Structure
-- [ ] Create project directory structure following best practices
-- [ ] Set up Python virtual environment
-- [ ] Create requirements.txt with initial dependencies
-- [ ] Set up .gitignore for Python projects
-- [ ] Create README.md with project description and setup instructions
-- [ ] Initialize basic project documentation structure
+- [x] Create project directory structure following best practices
+- [ ] Set up Python virtual environment (requires Python installation)
+- [x] Create requirements.txt with initial dependencies
+- [x] Set up .gitignore for Python projects
+- [x] Create README.md with project description and setup instructions
+- [x] Initialize basic project documentation structure
 
 ### 1.2 Development Environment
-- [ ] Configure development tools (linter, formatter)
-- [ ] Set up testing framework (pytest)
-- [ ] Create basic test directory structure
-- [ ] Set up logging configuration
-- [ ] Create configuration file structure for app settings
+- [x] Configure development tools (linter, formatter)
+- [x] Set up testing framework (pytest)
+- [x] Create basic test directory structure
+- [x] Set up logging configuration
+- [x] Create configuration file structure for app settings
 
 ### 1.3 Core Dependencies
-- [ ] Research and select GUI framework (tkinter, PyQt, or customtkinter)
-- [ ] Select spreadsheet reading library (pandas, openpyxl)
-- [ ] Select plotting library (matplotlib, plotly)
-- [ ] Document dependency choices and rationale
-- [ ] Install and verify all dependencies
+- [x] Research and select GUI framework (customtkinter)
+- [x] Select spreadsheet reading library (pandas, openpyxl, xlrd)
+- [x] Select plotting library (matplotlib)
+- [x] Document dependency choices and rationale
+- [ ] Install and verify all dependencies (requires Python installation)
 
 ---
 
@@ -432,6 +432,6 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Not Started  
-**Last Updated**: [Date will be updated as development progresses]  
-**Next Steps**: Begin Phase 1 - Project Foundation & Setup
+**Phase**: Phase 1 - Project Foundation & Setup (In Progress)  
+**Last Updated**: 2026-02-01  
+**Next Steps**: Complete Python virtual environment setup and dependency installation (requires Python to be installed/configured)
