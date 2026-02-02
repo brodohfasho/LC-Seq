@@ -89,24 +89,24 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 ## Phase 4: Spreadsheet Loading
 
 ### 4.1 File Selection
-- [ ] Implement file dialog for spreadsheet selection
-- [ ] Support Excel (.xlsx, .xls) and CSV file formats
-- [ ] Add file format validation
-- [ ] Display selected file path to user
-- [ ] Store last loaded file path in settings
+- [x] Implement file dialog for spreadsheet selection
+- [x] Support Excel (.xlsx, .xls) and CSV file formats
+- [x] Add file format validation
+- [x] Display selected file path to user
+- [x] Store last loaded file path in settings
 
 ### 4.2 Data Loading
-- [ ] Implement spreadsheet reading (pandas)
-- [ ] Handle different Excel sheet selection (if multiple sheets)
-- [ ] Load data into memory with error handling
-- [ ] Validate basic file structure (has rows, has columns)
-- [ ] Display loading progress/status
+- [x] Implement spreadsheet reading (pandas)
+- [x] Handle different Excel sheet selection (if multiple sheets)
+- [x] Load data into memory with error handling
+- [x] Validate basic file structure (has rows, has columns)
+- [x] Display loading progress/status
 
 ### 4.3 Data Validation
-- [ ] Check for required columns (Compound ID, Chromatographic Data)
-- [ ] Validate data types where possible
-- [ ] Display validation errors to user
-- [ ] Allow user to retry or select different file
+- [x] Check for required columns (Compound ID, Chromatographic Data)
+- [x] Validate data types where possible
+- [x] Display validation errors to user
+- [x] Allow user to retry or select different file
 
 ---
 
@@ -432,6 +432,6 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 3 - Main Screen UI (Complete)  
+**Phase**: Phase 4 - Spreadsheet Loading (Complete)  
 **Last Updated**: 2026-02-01  
-**Next Steps**: Begin Phase 4 - Spreadsheet Loading
+**Next Steps**: Begin Phase 5 - Spreadsheet Configuration - Part 1 (Column Selection)
