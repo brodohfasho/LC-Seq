@@ -13,7 +13,12 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+import customtkinter as ctk
+
 from src.core.logging_config import setup_logging, get_logger
+from src.core.app_state import AppState
+from src.core.config_manager import ConfigManager
+from src.ui.main_screen import MainScreen
 
 # Set up logging
 setup_logging()
@@ -24,13 +29,34 @@ def main():
     """
     Main application entry point.
     
-    This function will be implemented in Phase 3 when the UI is built.
+    Initializes the application and starts the main UI.
     """
     logger.info("LC-Seq application starting...")
-    logger.info("Application not yet implemented - Phase 1 setup complete")
-    print("LC-Seq: Chromatographic Data Analysis Application")
-    print("Phase 1 setup complete. UI implementation coming in Phase 3.")
-    return 0
+    
+    try:
+        # Set customtkinter appearance mode and color theme
+        ctk.set_appearance_mode("system")  # Use system theme
+        ctk.set_default_color_theme("blue")  # Use blue color theme
+        
+        # Initialize core components
+        app_state = AppState()
+        config_manager = ConfigManager()
+        
+        # Load saved settings
+        settings = config_manager.load_settings()
+        if settings.log_level:
+            setup_logging(log_level=settings.log_level, log_file=settings.log_file)
+        
+        # Create and run main screen
+        app = MainScreen(app_state, config_manager)
+        app.run()
+        
+        logger.info("LC-Seq application exiting")
+        return 0
+    
+    except Exception as e:
+        logger.critical(f"Fatal error in main: {e}", exc_info=True)
+        return 1
 
 
 if __name__ == "__main__":
