@@ -14,7 +14,7 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 ### 1.1 Project Structure
 - [x] Create project directory structure following best practices
-- [ ] Set up Python virtual environment (requires Python installation)
+- [x] Set up Python virtual environment
 - [x] Create requirements.txt with initial dependencies
 - [x] Set up .gitignore for Python projects
 - [x] Create README.md with project description and setup instructions
@@ -32,7 +32,7 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 - [x] Select spreadsheet reading library (pandas, openpyxl, xlrd)
 - [x] Select plotting library (matplotlib)
 - [x] Document dependency choices and rationale
-- [ ] Install and verify all dependencies (requires Python installation)
+- [x] Install and verify all dependencies
 
 ---
 
@@ -432,6 +432,6 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 1 - Project Foundation & Setup (In Progress)  
+**Phase**: Phase 1 - Project Foundation & Setup (Complete)  
 **Last Updated**: 2026-02-01  
-**Next Steps**: Complete Python virtual environment setup and dependency installation (requires Python to be installed/configured)
+**Next Steps**: Begin Phase 2 - Data Models & Core Logic
