@@ -211,14 +211,15 @@ class MainScreen(ctk.CTk):
             
             logger.info(f"Spreadsheet loaded successfully: {file_path}")
         
-        # Open load dialog
-        dialog = LoadSpreadsheetDialog(
+        # Open load dialog - store reference to prevent garbage collection
+        self.load_dialog = LoadSpreadsheetDialog(
             parent=self,
             loader=self.spreadsheet_loader,
             on_success=on_load_success
         )
         
-        # Dialog will handle its own lifecycle
+        # Wait for dialog to close (modal behavior)
+        self.wait_window(self.load_dialog)
     
     def _on_configure_spreadsheet(self) -> None:
         """Handle Configure Spreadsheet button click."""

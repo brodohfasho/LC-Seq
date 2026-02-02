@@ -34,6 +34,11 @@ class BaseWindow(ctk.CTkToplevel):
         # Set window properties
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
+        # Make window modal (grab focus)
+        if parent:
+            self.transient(parent)
+            self.grab_set()
+        
         logger.debug(f"Created base window: {title}")
     
     def on_close(self) -> None:
@@ -43,6 +48,11 @@ class BaseWindow(ctk.CTkToplevel):
         Override this method in subclasses to add custom cleanup.
         """
         logger.debug(f"Closing window: {self.title()}")
+        # Release grab before destroying
+        try:
+            self.grab_release()
+        except:
+            pass
         self.destroy()
     
     def center_window(self, width: Optional[int] = None, height: Optional[int] = None) -> None:
