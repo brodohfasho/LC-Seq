@@ -1,0 +1,40 @@
+{
+    // Python interpreter path
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
+    
+    // Terminal activation for PowerShell
+    "terminal.integrated.profiles.windows": {
+        "PowerShell (venv)": {
+            "path": "powershell.exe",
+            "args": [
+                "-NoExit",
+                "-Command",
+                "& {. ${env:USERPROFILE}\\Documents\\LC-Seq\\venv\\Scripts\\Activate.ps1}"
+            ]
+        }
+    },
+    "terminal.integrated.defaultProfile.windows": "PowerShell (venv)",
+    
+    // Python settings
+    "python.terminal.activateEnvironment": true,
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    
+    // Auto-activate on terminal creation
+    "python.terminal.executeInFileDir": false,
+    
+    // Python path
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/src"
+    ],
+    
+    // Formatting
+    "python.formatting.provider": "black",
+    "python.linting.enabled": true,
+    "python.linting.flake8Enabled": true,
+    
+    // Test settings
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests"
+    ]
+}
