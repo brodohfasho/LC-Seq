@@ -9,6 +9,8 @@ from typing import Optional
 
 from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
+from src.core.spreadsheet_loader import SpreadsheetLoader
+from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,7 @@ class MainScreen(ctk.CTk):
         
         self.app_state = app_state
         self.config_manager = config_manager
+        self.spreadsheet_loader = SpreadsheetLoader()
         
         # Register for state changes
         self.app_state.register_state_change_callback(self._on_state_change)
@@ -195,14 +198,27 @@ class MainScreen(ctk.CTk):
     def _on_load_spreadsheet(self) -> None:
         """Handle Load Spreadsheet button click."""
         logger.info("Load spreadsheet button clicked")
-        # TODO: Implement spreadsheet loading (Phase 4)
-        # For now, show a placeholder message
-        from tkinter import messagebox
-        messagebox.showinfo(
-            "Load Spreadsheet",
-            "Spreadsheet loading will be implemented in Phase 4.\n\n"
-            "This will allow you to select and load Excel or CSV files."
+        
+        def on_load_success(file_path: str, dataframe) -> None:
+            """Handle successful spreadsheet load."""
+            # Update application state
+            self.app_state.set_spreadsheet_loaded(file_path)
+            
+            # Save file path to settings
+            settings = self.config_manager.load_settings()
+            settings.set_last_loaded_file(file_path)
+            self.config_manager.save_settings(settings)
+            
+            logger.info(f"Spreadsheet loaded successfully: {file_path}")
+        
+        # Open load dialog
+        dialog = LoadSpreadsheetDialog(
+            parent=self,
+            loader=self.spreadsheet_loader,
+            on_success=on_load_success
         )
+        
+        # Dialog will handle its own lifecycle
     
     def _on_configure_spreadsheet(self) -> None:
         """Handle Configure Spreadsheet button click."""
