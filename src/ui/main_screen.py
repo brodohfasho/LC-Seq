@@ -42,15 +42,22 @@ class MainScreen(ctk.CTk):
         
         # Set window properties
         self.title("LC-Seq: Chromatographic Data Analysis")
-        self.geometry("800x600")
         
-        # Load saved window size from settings
+        # Set minimum window size
+        self.minsize(600, 500)
+        
+        # Load saved window size from settings, or use defaults
         settings = self.config_manager.load_settings()
-        if settings.window_width and settings.window_height:
-            self.geometry(f"{settings.window_width}x{settings.window_height}")
+        if settings.window_width and settings.window_height and settings.window_width >= 600 and settings.window_height >= 500:
+            width = settings.window_width
+            height = settings.window_height
+        else:
+            # Default size
+            width = 800
+            height = 600
         
-        # Center window
-        self.center_window()
+        # Set initial geometry
+        self.geometry(f"{width}x{height}")
         
         # Configure grid weights for responsive layout
         self.grid_columnconfigure(0, weight=1)
@@ -62,6 +69,9 @@ class MainScreen(ctk.CTk):
         # Create UI components
         self._create_widgets()
         
+        # Center window after widgets are created
+        self.center_window()
+        
         # Initial state update
         self._update_ui_state()
         
@@ -72,6 +82,13 @@ class MainScreen(ctk.CTk):
         self.update_idletasks()
         width = self.winfo_width()
         height = self.winfo_height()
+        
+        # Ensure minimum size
+        if width < 600:
+            width = 600
+        if height < 500:
+            height = 500
+        
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         x = (screen_width - width) // 2
