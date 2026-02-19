@@ -11,6 +11,7 @@ from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
 from src.core.spreadsheet_loader import SpreadsheetLoader
 from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
+from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,22 @@ class MainScreen(ctk.CTk):
             settings.set_last_loaded_file(file_path)
             self.config_manager.save_settings(settings)
             
+            # Phase 8: Try to load default configuration if available
+            default_config = self.config_manager.load_default_config()
+            if default_config:
+                # Validate config against loaded spreadsheet
+                available_columns = self.spreadsheet_loader.get_column_names()
+                is_valid, error_msg = self.config_manager.validate_config_against_spreadsheet(
+                    default_config, available_columns
+                )
+                if is_valid:
+                    # Config is valid - mark as configured
+                    self.app_state.set_spreadsheet_configured(True)
+                    self.app_state.set_config_valid(default_config.is_complete())
+                    logger.info("Loaded and validated default configuration for spreadsheet")
+                else:
+                    logger.info(f"Default configuration not valid for this spreadsheet: {error_msg}")
+            
             logger.info(f"Spreadsheet loaded successfully: {file_path}")
         
         # Open load dialog - store reference to prevent garbage collection
@@ -228,14 +245,28 @@ class MainScreen(ctk.CTk):
             return
         
         logger.info("Configure spreadsheet button clicked")
-        # TODO: Implement spreadsheet configuration (Phase 5-7)
-        # For now, show a placeholder message
-        from tkinter import messagebox
-        messagebox.showinfo(
-            "Configure Spreadsheet",
-            "Spreadsheet configuration will be implemented in Phase 5-7.\n\n"
-            "This will allow you to configure delimiters and column mappings."
+        
+        def on_config_success(config) -> None:
+            """Handle successful configuration."""
+            # Save configuration as default
+            self.config_manager.save_default_config(config)
+            
+            # Update application state - configuration is now complete
+            self.app_state.set_spreadsheet_configured(True)
+            self.app_state.set_config_valid(config.is_complete())
+            
+            logger.info(f"Configuration saved and validated. Complete: {config.is_complete()}")
+        
+        # Open configuration dialog - store reference to prevent garbage collection
+        self.config_dialog = ConfigureSpreadsheetDialog(
+            parent=self,
+            loader=self.spreadsheet_loader,
+            config_manager=self.config_manager,
+            on_success=on_config_success
         )
+        
+        # Wait for dialog to close (modal behavior)
+        self.wait_window(self.config_dialog)
     
     def on_close(self) -> None:
         """Handle window close event."""
