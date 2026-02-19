@@ -6,7 +6,14 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 **Application Type**: Desktop application (Python-based, cross-platform capable, starting with Windows focus)  
 **Core Functionality**: Load, configure, and visualize chromatographic data from spreadsheets  
-**Target Users**: Scientists and researchers analyzing chromatographic time-series data
+**Target Users**: Scientists and researchers analyzing chromatographic time-series data (including DNA encoded library data)
+
+**Workflow**:
+1. Load spreadsheet (.csv containing possibly millions-billions of rows)
+2. Configure spreadsheet (select columns, delimiters, time/count fields, metadata columns)
+3. Build searchable database (chunked processing, SQLite storage)
+4. Query database (visual query builder with complex conditions)
+5. Visualize data (plot selected compounds' chromatographic data)
 
 ---
 
@@ -113,120 +120,148 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 ## Phase 5: Spreadsheet Configuration - Part 1 (Column Selection)
 
 ### 5.1 Configuration Screen Layout
-- [ ] Create configuration window/dialog
-- [ ] Display loaded spreadsheet column headers
-- [ ] Create UI for selecting Compound ID column
-- [ ] Create UI for selecting Chromatographic Data column
-- [ ] Add validation for column selections
+- [x] Create configuration window/dialog
+- [x] Display loaded spreadsheet column headers
+- [x] Create UI for selecting Compound ID column
+- [x] Create UI for selecting Chromatographic Data column
+- [x] Add validation for column selections
 
 ### 5.2 Column Selection Logic
-- [ ] Implement column selection handlers
-- [ ] Validate that selected columns exist
-- [ ] Store column selections in configuration
-- [ ] Display selected columns to user
-- [ ] Allow user to change selections
+- [x] Implement column selection handlers
+- [x] Validate that selected columns exist
+- [x] Store column selections in configuration
+- [x] Display selected columns to user
+- [x] Allow user to change selections
 
 ---
 
 ## Phase 6: Spreadsheet Configuration - Part 2 (Delimiter Configuration)
 
 ### 6.1 Delimiter Selection UI
-- [ ] Create delimiter configuration interface
-- [ ] Allow user to specify delimiter sequence (order matters)
-- [ ] Support common delimiters (comma, semicolon, colon, tab, etc.)
-- [ ] Allow custom delimiter input
-- [ ] Display delimiter sequence visually
+- [x] Create delimiter configuration interface
+- [x] Allow user to specify delimiter sequence (order matters)
+- [x] Support common delimiters (comma, semicolon, colon, tab, etc.)
+- [x] Allow custom delimiter input
+- [x] Display delimiter sequence visually
 
 ### 6.2 Parsing Preview
-- [ ] Implement test data input field (sample from spreadsheet)
-- [ ] Create "Test Parse" button
-- [ ] Display parsed results in preview table/grid
-- [ ] Show parsing errors if any
-- [ ] Allow user to adjust delimiters and re-test
-- [ ] Highlight successful parsing
+- [x] Implement test data input field (sample from spreadsheet)
+- [x] Create "Test Parse" button
+- [x] Display parsed results in preview table/grid
+- [x] Show parsing errors if any
+- [x] Allow user to adjust delimiters and re-test
+- [x] Highlight successful parsing
 
 ---
 
 ## Phase 7: Spreadsheet Configuration - Part 3 (Time & Count Selection)
 
 ### 7.1 Parsed Data Display
-- [ ] Display parsed chromatographic data structure
-- [ ] Show all available data points from parsed result
-- [ ] Create UI for selecting Time column/field
-- [ ] Create UI for selecting Count column(s)/field(s)
-- [ ] Support multiple count selections
+- [x] Display parsed chromatographic data structure
+- [x] Show all available data points from parsed result
+- [x] Create UI for selecting Time column/field
+- [x] Create UI for selecting Count column(s)/field(s)
+- [x] Support multiple count selections
 
 ### 7.2 Count Naming
-- [ ] Allow user to name each selected count
-- [ ] Create name input fields for each count
-- [ ] Validate count names (unique, non-empty)
-- [ ] Store count names in configuration
-- [ ] Display named counts in selection UI
+- [x] Allow user to name each selected count
+- [x] Create name input fields for each count
+- [x] Validate count names (unique, non-empty)
+- [x] Store count names in configuration
+- [x] Display named counts in selection UI
 
-### 7.3 Configuration Validation
-- [ ] Validate that Time selection is valid
-- [ ] Validate that at least one Count is selected
-- [ ] Validate that all selections are from parsed data
-- [ ] Check data type compatibility (Time should be numeric)
-- [ ] Display validation errors clearly
+### 7.3 Metadata Column Selection
+- [x] Display all available metadata columns from spreadsheet
+- [x] Create UI for selecting which metadata columns to include in database
+- [x] Allow multiple column selection (checkboxes)
+- [x] Explain benefits of column selection (efficiency, faster search)
+- [x] Store selected metadata columns in configuration
+- [x] Validate at least one metadata column selected (optional, can be empty)
 
-### 7.4 Configuration Acceptance
-- [ ] Create "Accept Configuration" button
-- [ ] Perform final validation before acceptance
-- [ ] Save configuration to file
-- [ ] Update application state (configuration complete)
-- [ ] Enable "Enter Visualizer" button on main screen
-- [ ] Display success message
+### 7.4 Configuration Validation
+- [x] Validate that Time selection is valid
+- [x] Validate that at least one Count is selected
+- [x] Validate that all selections are from parsed data
+- [x] Check data type compatibility (Time should be numeric)
+- [x] Display validation errors clearly
+
+### 7.5 Configuration Acceptance
+- [x] Create "Accept Configuration" button
+- [x] Perform final validation before acceptance
+- [x] Save configuration to file
+- [x] Update application state (configuration complete)
+- [x] Enable "Enter Visualizer" button on main screen
+- [x] Display success message
 
 ---
 
 ## Phase 8: Configuration Persistence
 
 ### 8.1 Configuration Saving
-- [ ] Implement save configuration to file
-- [ ] Create configuration file format/structure
-- [ ] Save delimiter settings
-- [ ] Save column mappings
-- [ ] Save count names and selections
-- [ ] Save as default configuration option
+- [x] Implement save configuration to file
+- [x] Create configuration file format/structure
+- [x] Save delimiter settings
+- [x] Save column mappings
+- [x] Save count names and selections
+- [x] Save as default configuration option
 
 ### 8.2 Configuration Loading
-- [ ] Implement load saved configuration
-- [ ] Load default configuration on startup
-- [ ] Allow user to select saved configuration
-- [ ] Validate loaded configuration against current spreadsheet
-- [ ] Handle configuration versioning/migration
+- [x] Implement load saved configuration
+- [x] Load default configuration on startup
+- [x] Allow user to select saved configuration
+- [x] Validate loaded configuration against current spreadsheet
+- [x] Handle configuration versioning/migration
 
 ### 8.3 Settings Persistence
-- [ ] Save last loaded spreadsheet path
-- [ ] Save window size/position preferences
-- [ ] Save default configuration reference
-- [ ] Implement settings file management
-- [ ] Load settings on application startup
+- [x] Save last loaded spreadsheet path
+- [x] Save window size/position preferences
+- [x] Save default configuration reference
+- [x] Implement settings file management
+- [x] Load settings on application startup
 
 ---
 
 ## Phase 9: Data Processing & Storage
 
-### 9.1 Data Parsing & Extraction
-- [ ] Parse all rows using configured delimiters
+### 9.1 Chunked CSV Processing
+- [ ] Implement chunked CSV reading (process in batches)
+- [ ] Detect dataset size and choose processing strategy
+- [ ] Use pandas chunksize for memory-efficient processing
+- [ ] Implement progress reporting during processing
+- [ ] Handle large files (millions to billions of rows)
+- [ ] Support background processing with UI updates
+
+### 9.2 Data Parsing & Extraction
+- [ ] Parse rows using configured delimiters (chunked)
+- [ ] Extract Compound ID from configured column
+- [ ] Extract only selected metadata columns (from Phase 7.3)
 - [ ] Extract Time and Count data for each compound
 - [ ] Handle parsing errors gracefully (skip invalid rows with warning)
-- [ ] Store parsed data in memory efficiently
-- [ ] Create data structure for quick access
+- [ ] Track processing statistics (successful, skipped, errors)
 
-### 9.2 Data Validation & Cleaning
+### 9.3 Database Storage (SQLite)
+- [ ] Create SQLite database schema for compounds
+- [ ] Store compound metadata in indexed columns (only selected columns)
+- [ ] Store chromatographic data points in separate table
+- [ ] Create indexes on searchable metadata columns
+- [ ] Implement batch inserts for efficiency
+- [ ] Support both in-memory (small datasets) and database (large datasets) modes
+
+### 9.4 Data Validation & Cleaning
 - [ ] Validate Time values (numeric, reasonable range)
 - [ ] Validate Count values (numeric, non-negative)
 - [ ] Handle missing or invalid data points
+- [ ] Skip invalid rows with detailed error logging
 - [ ] Report data quality issues to user
-- [ ] Store validation results
+- [ ] Store validation results and statistics
 
-### 9.3 Compound Indexing
-- [ ] Create searchable index of compounds
-- [ ] Index all column fields for search
-- [ ] Store compound metadata efficiently
-- [ ] Implement fast lookup structures
+### 9.5 Database Building & Indexing
+- [ ] Build database from processed chunks
+- [ ] Create indexes on all selected metadata columns
+- [ ] Create compound ID index for fast lookup
+- [ ] Optimize database for query performance
+- [ ] Provide database build progress and completion status
+- [ ] Handle database file management (location, cleanup)
 
 ---
 
@@ -257,27 +292,36 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 ## Phase 11: Chromatogram Visualizer - Part 2 (Search Functionality)
 
-### 11.1 Search Interface
-- [ ] Create search input field
-- [ ] Create "Search" button
-- [ ] Create column selection UI (which columns to search)
-- [ ] Allow multiple column selection for search
-- [ ] Display search interface in visualizer
+### 11.1 Query Builder Interface
+- [ ] Create visual query builder UI
+- [ ] Support field selection dropdown (all selected metadata columns)
+- [ ] Support operators: =, !=, >, <, >=, <=, contains, starts with, ends with
+- [ ] Support value input (text, numeric, date based on field type)
+- [ ] Support AND/OR logic between conditions
+- [ ] Allow adding/removing conditions dynamically
+- [ ] Display query structure visually
+- [ ] Create "Search" and "Clear" buttons
 
-### 11.2 Search Logic
-- [ ] Implement partial match search algorithm
-- [ ] Search across selected columns
-- [ ] Handle case sensitivity (configurable)
-- [ ] Return matching compounds
-- [ ] Handle empty search results
+### 11.2 Search Logic & Database Queries
+- [ ] Convert query builder conditions to SQL queries
+- [ ] Execute queries against SQLite database with indexes
+- [ ] Handle different data types (text, numeric, date)
+- [ ] Support case-sensitive and case-insensitive text searches
+- [ ] Return matching compound IDs efficiently
+- [ ] Handle empty search results with user feedback
+- [ ] Optimize queries for performance (use indexes)
 
-### 11.3 Search Results Display
-- [ ] Create results list/table
-- [ ] Display matching compounds with key information
-- [ ] Show compound ID and relevant metadata
-- [ ] Implement result selection (single or multiple)
-- [ ] Add scrollable results if many matches
+### 11.3 Search Results Display (Virtual Scrolling)
+- [ ] Implement virtual scrolling list widget
+- [ ] Display matching compounds with selected metadata columns
+- [ ] Show compound ID and relevant metadata in results
+- [ ] Render only visible items (20-50 at a time)
+- [ ] Load more items as user scrolls
+- [ ] Implement result selection (checkboxes for multiple selection)
+- [ ] Add "Select All" / "Select None" functionality
 - [ ] Highlight selected compounds
+- [ ] Display result count and status
+- [ ] Support secondary filtering of results (optional)
 
 ---
 
@@ -432,6 +476,20 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 4 - Spreadsheet Loading (Complete)  
+**Phase**: Phase 8 - Configuration Persistence (Complete)  
 **Last Updated**: 2026-02-01  
-**Next Steps**: Begin Phase 5 - Spreadsheet Configuration - Part 1 (Column Selection)
+**Next Steps**: Begin Phase 9 - Data Processing & Storage
+
+**Key Design Decisions**:
+- **Scalability**: Chunked processing for large datasets (millions-billions of rows)
+- **Storage**: SQLite database backend for efficient search and memory management
+- **Metadata Selection**: Users select which metadata columns to include during configuration (Phase 7.3)
+- **Search**: Full-featured query builder with AND/OR logic, multiple operators (Phase 11)
+- **Results Display**: Virtual scrolling for efficient rendering of large result sets (Phase 11.3)
+
+**Key Design Decisions**:
+- **Scalability**: Chunked processing for large datasets (millions-billions of rows)
+- **Storage**: SQLite database backend for efficient search and memory management
+- **Metadata Selection**: Users select which metadata columns to include during configuration (Phase 7.3)
+- **Search**: Full-featured query builder with AND/OR logic, multiple operators (Phase 11)
+- **Results Display**: Virtual scrolling for efficient rendering of large result sets (Phase 11.3)

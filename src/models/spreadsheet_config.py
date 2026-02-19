@@ -19,6 +19,8 @@ class SpreadsheetConfig:
         time_column_index: Index of the time column in parsed data (0-based)
         count_column_indices: List of indices for count columns in parsed data
         count_names: List of names for each count column (must match count_column_indices)
+        selected_metadata_columns: List of metadata column names to include in database
+                                  (excludes compound_id_column and chromatographic_data_column)
     """
     
     compound_id_column: str
@@ -27,6 +29,7 @@ class SpreadsheetConfig:
     time_column_index: Optional[int] = None
     count_column_indices: List[int] = field(default_factory=list)
     count_names: List[str] = field(default_factory=list)
+    selected_metadata_columns: List[str] = field(default_factory=list)
     
     def __post_init__(self) -> None:
         """
@@ -94,7 +97,8 @@ class SpreadsheetConfig:
             "delimiters": self.delimiters.copy(),
             "time_column_index": self.time_column_index,
             "count_column_indices": self.count_column_indices.copy(),
-            "count_names": self.count_names.copy()
+            "count_names": self.count_names.copy(),
+            "selected_metadata_columns": self.selected_metadata_columns.copy()
         }
     
     @classmethod
@@ -122,5 +126,6 @@ class SpreadsheetConfig:
             delimiters=data.get("delimiters", []),
             time_column_index=data.get("time_column_index"),
             count_column_indices=data.get("count_column_indices", []),
-            count_names=data.get("count_names", [])
+            count_names=data.get("count_names", []),
+            selected_metadata_columns=data.get("selected_metadata_columns", [])
         )

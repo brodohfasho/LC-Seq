@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "name": "Atta",
+  "config": {
+    "compound_id_column": "Common_Name (N-->C)",
+    "chromatographic_data_column": "all_datapoints",
+    "delimiters": [
+      ";",
+      ":",
+      ","
+    ],
+    "time_column_index": 0,
+    "count_column_indices": [
+      1,
+      2
+    ],
+    "count_names": [
+      "Count",
+      "Deduplicated Count"
+    ]
+  }
+}
