@@ -17,6 +17,7 @@ from src.core.spreadsheet_loader import SpreadsheetLoader
 from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
 from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
 from src.ui.process_data_dialog import ProcessDataDialog
+from src.ui.database_manage_dialog import DatabaseManageDialog
 from src.ui.chromatogram_visualizer_window import ChromatogramVisualizerWindow
 from src.core.data_processing_result import DataProcessingResult
 
@@ -30,7 +31,8 @@ class MainScreen(ctk.CTk):
     Provides:
     - Load Spreadsheet button
     - Configure Spreadsheet button
-    - Enter Chromatogram Visualizer button (disabled until ready)
+    - Enter Chromatogram Visualizer (after valid configuration)
+    - Create / Load database (optional bulk SQLite)
     - Status message display
     """
     
@@ -48,6 +50,7 @@ class MainScreen(ctk.CTk):
         self.config_manager = config_manager
         self.spreadsheet_loader = SpreadsheetLoader()
         self._chromatogram_window: Optional[ChromatogramVisualizerWindow] = None
+        self.database_manage_dialog: Optional[DatabaseManageDialog] = None
         
         # Register for state changes
         self.app_state.register_state_change_callback(self._on_state_change)
@@ -162,16 +165,15 @@ class MainScreen(ctk.CTk):
         )
         self.configure_button.grid(row=4, column=0, padx=40, pady=10, sticky="ew")
         
-        # Process Data button (Phase 9)
-        self.process_button = ctk.CTkButton(
+        self.database_manage_button = ctk.CTkButton(
             self,
-            text="Process Data",
+            text="Create / Load database",
             font=ctk.CTkFont(size=14),
             height=50,
-            command=self._on_process_data,
-            state="disabled"
+            command=self._on_database_manage,
+            state="disabled",
         )
-        self.process_button.grid(row=5, column=0, padx=40, pady=10, sticky="ew")
+        self.database_manage_button.grid(row=5, column=0, padx=40, pady=10, sticky="ew")
         
         # Status message label
         self.status_label = ctk.CTkLabel(
@@ -198,20 +200,24 @@ class MainScreen(ctk.CTk):
             state="normal" if self.app_state.spreadsheet_loaded else "disabled"
         )
         
-        # Update process button state (Phase 9)
-        can_process = (self.app_state.spreadsheet_loaded and 
-                      self.app_state.spreadsheet_configured and 
-                      self.app_state.config_valid and
-                      not self.app_state.data_processed)
-        self.process_button.configure(
-            state="normal" if can_process else "disabled"
+        can_manage_db = (
+            self.app_state.spreadsheet_loaded
+            and self.app_state.spreadsheet_configured
+            and self.app_state.config_valid
+        )
+        self.database_manage_button.configure(
+            state="normal" if can_manage_db else "disabled"
         )
         
         # Update status message
         status_message = self.app_state.get_status_message()
         self.status_label.configure(text=status_message)
         
-        logger.debug(f"UI state updated. Can enter visualizer: {can_enter}, Can process: {can_process}")
+        logger.debug(
+            "UI state updated. Can enter visualizer: %s, Can manage DB: %s",
+            can_enter,
+            can_manage_db,
+        )
     
     def _apply_spreadsheet_loaded(
         self, file_path: str
@@ -298,6 +304,7 @@ class MainScreen(ctk.CTk):
             self,
             self.app_state,
             self.config_manager,
+            self.spreadsheet_loader,
         )
     
     def _on_load_spreadsheet(self) -> None:
@@ -393,49 +400,70 @@ class MainScreen(ctk.CTk):
         # Wait for dialog to close (modal behavior)
         self.wait_window(self.config_dialog)
     
-    def _on_process_data(self) -> None:
-        """Handle Process Data button click."""
+    def _on_database_manage(self) -> None:
+        """Open create / load / delete managed bulk database dialog."""
         if not self.app_state.spreadsheet_loaded or not self.app_state.spreadsheet_path:
-            logger.warning("Attempted to process data when no spreadsheet loaded")
+            logger.warning("Database manage requested without spreadsheet")
             return
-        
         if not self.app_state.config_valid:
-            logger.warning("Attempted to process data with invalid configuration")
             messagebox.showwarning(
                 "Configuration Required",
-                "Please complete spreadsheet configuration before processing data."
+                "Please complete spreadsheet configuration first.",
+                parent=self,
             )
             return
-        
-        logger.info("Process data button clicked")
-        
-        # Load configuration
+
+        def begin_bulk() -> None:
+            self._run_bulk_create_database_flow()
+
+        def on_database_loaded(path: str) -> None:
+            self.app_state.set_data_processed(True, path)
+            self._update_ui_state()
+
+        def on_active_cleared() -> None:
+            self.app_state.clear_active_database()
+            self._update_ui_state()
+
+        self.database_manage_dialog = DatabaseManageDialog(
+            self,
+            on_begin_bulk_create=begin_bulk,
+            on_database_loaded=on_database_loaded,
+            on_active_database_cleared=on_active_cleared,
+        )
+        self.wait_window(self.database_manage_dialog)
+        self.database_manage_dialog = None
+
+    def _run_bulk_create_database_flow(self) -> None:
+        """Run full SQLite build (ProcessDataDialog) after user confirms in manage dialog."""
+        if not self.app_state.spreadsheet_loaded or not self.app_state.spreadsheet_path:
+            return
         config = self.config_manager.load_default_config()
         if not config or not config.is_complete():
             messagebox.showerror(
                 "Configuration Error",
-                "No valid configuration found. Please configure the spreadsheet first."
+                "No valid configuration found. Please configure the spreadsheet first.",
+                parent=self,
             )
             return
-        
+
         def on_processing_success(result: DataProcessingResult) -> None:
-            """Handle successful data processing."""
-            # Update application state
             self.app_state.set_data_processed(True, result.database_path)
-            
-            logger.info(f"Data processing completed: {result.successful_compounds} compounds")
-        
+            logger.info(
+                "Bulk database created: %s compounds -> %s",
+                result.successful_compounds,
+                result.database_path,
+            )
+
         previous_close = self.protocol("WM_DELETE_WINDOW")
 
         def main_close_during_process() -> None:
-            """Allow quitting the app while the process dialog has focus."""
             dlg = getattr(self, "process_dialog", None)
             if dlg is not None:
                 try:
                     if dlg.winfo_exists() and getattr(dlg, "is_processing", False):
                         if not messagebox.askyesno(
                             "Quit",
-                            "Data processing is running. Cancel processing and exit LC-Seq?",
+                            "Database creation is running. Cancel and exit LC-Seq?",
                             parent=self,
                         ):
                             return
@@ -447,7 +475,6 @@ class MainScreen(ctk.CTk):
 
         self.protocol("WM_DELETE_WINDOW", main_close_during_process)
         try:
-            # Open processing dialog - store reference to prevent garbage collection
             self.process_dialog = ProcessDataDialog(
                 parent=self,
                 file_path=self.app_state.spreadsheet_path,
@@ -455,13 +482,11 @@ class MainScreen(ctk.CTk):
                 on_success=on_processing_success,
                 preset_display_name="Default",
             )
-            
-            # Wait for dialog to close (modal behavior)
             self.wait_window(self.process_dialog)
         finally:
             self.protocol("WM_DELETE_WINDOW", previous_close)
             self.process_dialog = None
-        
+
         if getattr(self, "_quit_after_process_dialog", False):
             self._quit_after_process_dialog = False
             self.on_close()

@@ -34,10 +34,23 @@ class TestAppState:
         state.set_spreadsheet_configured(True)
         assert state.can_enter_visualizer() is False
         
-        # Make config valid
+        # Make config valid (bulk DB / data_processed not required for visualizer)
         state.set_config_valid(True)
         assert state.can_enter_visualizer() is True
-    
+        state.set_data_processed(True, r"C:\fake\db.sqlite")
+        assert state.can_enter_visualizer() is True
+
+    def test_clear_active_database(self):
+        """Clearing active DB pointer does not require spreadsheet reload."""
+        state = AppState()
+        state.set_spreadsheet_loaded("test.xlsx")
+        state.set_spreadsheet_configured(True)
+        state.set_config_valid(True)
+        state.set_data_processed(True, r"C:\fake\db.sqlite")
+        state.clear_active_database()
+        assert state.data_processed is False
+        assert state.database_path is None
+
     def test_set_spreadsheet_loaded(self):
         """Test setting spreadsheet loaded state."""
         state = AppState()
@@ -87,10 +100,10 @@ class TestAppState:
         message = state.get_status_message()
         assert "incomplete" in message.lower() or "complete" in message.lower()
         
-        # Ready
+        # Ready for on-demand visualizer (no bulk DB required)
         state.set_config_valid(True)
         message = state.get_status_message()
-        assert "Ready" in message or "visualize" in message.lower()
+        assert "visualizer" in message.lower() or "on-demand" in message.lower()
     
     def test_state_change_callback(self):
         """Test state change callbacks."""

@@ -37,14 +37,17 @@ class AppState:
     def can_enter_visualizer(self) -> bool:
         """
         Check if user can enter the visualizer.
-        
+
         Returns:
-            True if spreadsheet is loaded, configured, and data is processed
+            True if spreadsheet is loaded, configuration is complete and valid.
+            Bulk database processing is optional; on-demand parsing is used when
+            no database path is active.
         """
-        return (self.spreadsheet_loaded and 
-                self.spreadsheet_configured and 
-                self.config_valid and 
-                self.data_processed)
+        return (
+            self.spreadsheet_loaded
+            and self.spreadsheet_configured
+            and self.config_valid
+        )
     
     def register_state_change_callback(self, callback: Callable) -> None:
         """
@@ -122,6 +125,10 @@ class AppState:
         self.database_path = database_path
         logger.info(f"Data processed state: {self.data_processed}, database: {database_path}")
         self._notify_state_change()
+
+    def clear_active_database(self) -> None:
+        """Unset bulk database path (does not delete the file on disk)."""
+        self.set_data_processed(False, None)
     
     def reset(self) -> None:
         """Reset all state to initial values."""
@@ -150,7 +157,13 @@ class AppState:
         if not self.config_valid:
             return "Configuration incomplete. Please complete spreadsheet configuration."
         
-        if not self.data_processed:
-            return "Configuration complete. Click 'Process Data' to build searchable database."
-        
-        return "Ready to visualize! Click 'Enter Chromatogram Visualizer' to view data."
+        if self.data_processed and self.database_path:
+            return (
+                "Bulk database is active. Open the visualizer to explore data, or use "
+                "'Create / Load database' to switch or build another file."
+            )
+
+        return (
+            "Configuration complete. Open the Chromatogram Visualizer to parse and plot "
+            "compounds on demand. Use 'Create / Load database' only if you want a full SQLite export."
+        )

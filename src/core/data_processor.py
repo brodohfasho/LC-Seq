@@ -16,6 +16,7 @@ from src.models.compound import Compound
 from src.models.chromatographic_data_point import ChromatographicDataPoint
 from src.core.data_store import DataStore
 from src.core.data_processing_result import DataProcessingResult, ProcessingError
+from src.core import database_library
 from src.utils.data_parser import DataParser
 
 logger = logging.getLogger(__name__)
@@ -140,10 +141,9 @@ class DataProcessor:
             # mode left no path and no file, which broke those flows for small datasets.
             use_memory = False
             
-            # Create database
+            # Create database under managed output folder unless caller supplies a path
             if db_path is None:
-                # Create database file next to spreadsheet
-                db_path = file_path_obj.parent / f"{file_path_obj.stem}_database.db"
+                db_path = database_library.allocate_new_database_path(file_path_obj.stem)
             
             data_store = DataStore(db_path=db_path, use_memory=use_memory)
             result.database_path = str(db_path)
@@ -341,6 +341,28 @@ class DataProcessor:
         
         self.result = result
         return result
+
+    def parse_dataframe_row_to_compound(
+        self,
+        row: pd.Series,
+        config: SpreadsheetConfig,
+        row_number: int,
+    ) -> tuple[Optional[Compound], DataProcessingResult]:
+        """
+        Parse a single in-memory spreadsheet row into a Compound (on-demand path).
+
+        Args:
+            row: One row of the loaded dataframe (column keys = spreadsheet headers).
+            config: Active spreadsheet configuration.
+            row_number: 1-based row label for error reporting.
+
+        Returns:
+            (compound, result) where result holds any recorded errors.
+        """
+        result = DataProcessingResult()
+        parser = DataParser(config.delimiters)
+        compound = self._process_row(row, config, parser, row_number, result)
+        return compound, result
     
     def _process_row(
         self,
