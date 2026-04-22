@@ -8,7 +8,7 @@ import logging
 import json
 import pandas as pd
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Sequence, Tuple
+from typing import Optional, List, Dict, Any, Sequence, Tuple, Set
 from contextlib import contextmanager
 
 from src.models.compound import Compound
@@ -601,7 +601,52 @@ class DataStore:
                 exc_info=True,
             )
             return []
-    
+
+    def list_compounds_physical_columns(self) -> Set[str]:
+        """
+        Return every column name currently defined on the ``compounds`` table.
+
+        Used to align search / SELECT with databases built under an older or
+        narrower metadata configuration.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("PRAGMA table_info(compounds)")
+            return {str(row[1]) for row in cursor.fetchall()}
+        except Exception as e:
+            logger.error("Error reading compounds columns: %s", e, exc_info=True)
+            return set()
+
+    def filter_metadata_columns_for_search(
+        self, logical_metadata_names: Sequence[str]
+    ) -> Tuple[List[str], List[str]]:
+        """
+        Split configured metadata names into those backed by a real table column
+        vs names missing from this database file.
+
+        Args:
+            logical_metadata_names: Headers from ``SpreadsheetConfig.selected_metadata_columns``.
+
+        Returns:
+            ``(present_in_table, missing_from_table)`` preserving input order for present.
+        """
+        physical = self.list_compounds_physical_columns()
+        present: List[str] = []
+        missing: List[str] = []
+        seen_safe_present: Set[str] = set()
+        seen_safe_missing: Set[str] = set()
+        for name in logical_metadata_names:
+            safe = self._sanitize_column_name(str(name))
+            if safe in physical:
+                if safe not in seen_safe_present:
+                    present.append(str(name))
+                    seen_safe_present.add(safe)
+            else:
+                if safe not in seen_safe_missing:
+                    missing.append(str(name))
+                    seen_safe_missing.add(safe)
+        return present, missing
+
     def count_compounds_where(self, where_sql: str, params: Sequence[Any]) -> int:
         """
         Count compound rows matching a parameterized WHERE fragment (no ``WHERE`` keyword).
