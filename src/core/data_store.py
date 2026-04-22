@@ -1,0 +1,555 @@
+# src/core/data_store.py
+"""
+Data storage layer for compounds and chromatographic data.
+"""
+
+import sqlite3
+import logging
+import json
+import pandas as pd
+from pathlib import Path
+from typing import Optional, List, Dict, Any, Set
+from contextlib import contextmanager
+
+from src.models.compound import Compound
+from src.models.chromatographic_data_point import ChromatographicDataPoint
+
+logger = logging.getLogger(__name__)
+
+
+class DataStore:
+    """
+    Manages storage and retrieval of compounds and chromatographic data.
+    
+    Uses SQLite database for efficient storage and fast queries.
+    Supports both in-memory (small datasets) and file-based (large datasets) storage.
+    """
+    
+    # Threshold for choosing storage mode
+    MEMORY_THRESHOLD = 100000  # 100K rows
+    
+    def __init__(self, db_path: Optional[Path] = None, use_memory: bool = False):
+        """
+        Initialize data store.
+        
+        Args:
+            db_path: Path to SQLite database file. If None and not use_memory, creates temp file.
+            use_memory: If True, use in-memory database. If False and db_path is None, creates file.
+        """
+        if use_memory:
+            self.db_path = ":memory:"
+            self.is_memory = True
+        else:
+            if db_path is None:
+                # Create temporary database file
+                import tempfile
+                temp_dir = Path(tempfile.gettempdir()) / "lc_seq"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                db_path = temp_dir / "compounds.db"
+            
+            self.db_path = Path(db_path)
+            self.is_memory = False
+        
+        self.conn: Optional[sqlite3.Connection] = None
+        self._initialize_database()
+    
+    def _initialize_database(self) -> None:
+        """Initialize database connection and create schema."""
+        try:
+            self.conn = sqlite3.connect(str(self.db_path))
+            self.conn.row_factory = sqlite3.Row  # Enable column access by name
+            
+            # Optimize SQLite for bulk inserts
+            self.conn.execute("PRAGMA journal_mode = WAL")  # Write-Ahead Logging for better concurrency
+            self.conn.execute("PRAGMA synchronous = NORMAL")  # Balance between safety and speed
+            self.conn.execute("PRAGMA cache_size = -10000")  # 10MB cache
+            self.conn.execute("PRAGMA temp_store = MEMORY")  # Store temp tables in memory
+            self.conn.execute("PRAGMA foreign_keys = OFF")  # Disable FK checks during bulk insert (re-enable later)
+            
+            self._create_schema()
+            logger.info(f"Initialized database at {self.db_path}")
+        except Exception as e:
+            logger.error(f"Error initializing database: {e}", exc_info=True)
+            raise
+    
+    def _create_schema(self) -> None:
+        """Create database schema."""
+        cursor = self.conn.cursor()
+        
+        # Compounds table - stores metadata
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS compounds (
+                compound_id TEXT PRIMARY KEY,
+                metadata_json TEXT,
+                data_point_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Data points table - stores chromatographic data
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS data_points (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                compound_id TEXT NOT NULL,
+                time REAL NOT NULL,
+                count_name TEXT NOT NULL,
+                count_value REAL NOT NULL,
+                FOREIGN KEY (compound_id) REFERENCES compounds(compound_id) ON DELETE CASCADE
+            )
+        """)
+        
+        # Indexes for fast lookups
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_data_points_compound 
+            ON data_points(compound_id, time)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_data_points_time 
+            ON data_points(compound_id, time)
+        """)
+        
+        self.conn.commit()
+        logger.debug("Database schema created")
+    
+    def create_metadata_columns(self, column_names: List[str], create_indexes: bool = False) -> None:
+        """
+        Create metadata columns in compounds table for fast searching.
+        
+        This allows direct SQL queries on metadata columns without JSON parsing.
+        
+        Args:
+            column_names: List of metadata column names to create
+            create_indexes: If True, create indexes immediately. If False, defer index creation.
+        """
+        if not column_names:
+            return
+        
+        cursor = self.conn.cursor()
+        
+        # Get existing columns
+        cursor.execute("PRAGMA table_info(compounds)")
+        existing_columns = {row[1] for row in cursor.fetchall()}
+        
+        # Add new columns (but don't create indexes yet for bulk insert performance)
+        for col_name in column_names:
+            # Sanitize column name for SQL
+            safe_name = self._sanitize_column_name(col_name)
+            
+            if safe_name not in existing_columns:
+                try:
+                    # Use TEXT for all metadata columns (flexible)
+                    cursor.execute(f"ALTER TABLE compounds ADD COLUMN {safe_name} TEXT")
+                    # Only create index if requested (defer for bulk inserts)
+                    if create_indexes:
+                        cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{safe_name} ON compounds({safe_name})")
+                        logger.debug(f"Created metadata column and index: {safe_name}")
+                    else:
+                        logger.debug(f"Created metadata column (index deferred): {safe_name}")
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Could not create column {safe_name}: {e}")
+        
+        self.conn.commit()
+    
+    def create_all_indexes(self, metadata_columns: List[str]) -> None:
+        """
+        Create all indexes after bulk data insertion is complete.
+        
+        This is much faster than creating indexes during inserts.
+        
+        Args:
+            metadata_columns: List of metadata column names to create indexes for
+        """
+        cursor = self.conn.cursor()
+        
+        # Create indexes on metadata columns
+        for col_name in metadata_columns:
+            safe_name = self._sanitize_column_name(col_name)
+            try:
+                cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{safe_name} ON compounds({safe_name})")
+                logger.debug(f"Created index on metadata column: {safe_name}")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Could not create index on {safe_name}: {e}")
+        
+        # Re-enable foreign keys
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        
+        self.conn.commit()
+        logger.info("All indexes created and foreign keys re-enabled")
+    
+    def _sanitize_column_name(self, name: str) -> str:
+        """
+        Sanitize column name for SQL use.
+        
+        Args:
+            name: Original column name
+            
+        Returns:
+            Sanitized column name safe for SQL
+        """
+        # Replace invalid characters with underscore
+        safe = "".join(c if c.isalnum() or c == '_' else '_' for c in name)
+        # Ensure it starts with a letter or underscore
+        if safe and not (safe[0].isalpha() or safe[0] == '_'):
+            safe = '_' + safe
+        # Ensure it's not empty
+        if not safe:
+            safe = 'col_' + str(hash(name))[:8]
+        return safe
+    
+    @contextmanager
+    def transaction(self):
+        """Context manager for database transactions."""
+        try:
+            yield
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+    
+    def add_compound(self, compound: Compound, metadata_columns: List[str]) -> bool:
+        """
+        Add a compound to the database.
+        
+        Args:
+            compound: Compound instance to add
+            metadata_columns: List of metadata column names (for column-based storage)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Prepare metadata JSON
+            metadata_json = json.dumps(compound.metadata, ensure_ascii=False)
+            
+            # Prepare column values for direct column storage
+            column_values = {}
+            for col in metadata_columns:
+                safe_col = self._sanitize_column_name(col)
+                value = compound.metadata.get(col)
+                # Convert value to string, handling None and NaN
+                if value is not None and not (isinstance(value, float) and pd.isna(value)):
+                    column_values[safe_col] = str(value)
+                else:
+                    column_values[safe_col] = None
+            
+            # Build INSERT statement
+            columns = ["compound_id", "metadata_json", "data_point_count"]
+            values = [compound.compound_id, metadata_json, len(compound.data_points)]
+            placeholders = ["?", "?", "?"]
+            
+            # Add metadata columns
+            for safe_col, value in column_values.items():
+                columns.append(safe_col)
+                values.append(value)
+                placeholders.append("?")
+            
+            # Insert compound
+            query = f"""
+                INSERT OR REPLACE INTO compounds ({', '.join(columns)})
+                VALUES ({', '.join(placeholders)})
+            """
+            cursor.execute(query, values)
+            
+            # Insert data points
+            if compound.data_points:
+                data_point_values = []
+                for dp in compound.data_points:
+                    for count_name, count_value in dp.counts.items():
+                        data_point_values.append((
+                            compound.compound_id,
+                            dp.time,
+                            count_name,
+                            count_value
+                        ))
+                
+                cursor.executemany("""
+                    INSERT INTO data_points (compound_id, time, count_name, count_value)
+                    VALUES (?, ?, ?, ?)
+                """, data_point_values)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error adding compound {compound.compound_id}: {e}", exc_info=True)
+            return False
+    
+    def add_compounds_batch(
+        self,
+        compounds: List[Compound],
+        metadata_columns: List[str],
+        batch_size: int = 5000
+    ) -> int:
+        """
+        Add multiple compounds in batches for efficiency using bulk inserts.
+        
+        Args:
+            compounds: List of compounds to add
+            metadata_columns: List of metadata column names
+            batch_size: Number of compounds per batch (larger = faster but more memory)
+            
+        Returns:
+            Number of successfully added compounds
+        """
+        if not compounds:
+            return 0
+        
+        cursor = self.conn.cursor()
+        added = 0
+        
+        # Prepare column names for bulk insert
+        base_columns = ["compound_id", "metadata_json", "data_point_count"]
+        safe_metadata_cols = [self._sanitize_column_name(col) for col in metadata_columns]
+        all_columns = base_columns + safe_metadata_cols
+        placeholders = ["?"] * len(all_columns)
+        
+        # Prepare bulk insert query
+        insert_compound_query = f"""
+            INSERT OR REPLACE INTO compounds ({', '.join(all_columns)})
+            VALUES ({', '.join(placeholders)})
+        """
+        
+        # Prepare data point insert query
+        insert_data_point_query = """
+            INSERT INTO data_points (compound_id, time, count_name, count_value)
+            VALUES (?, ?, ?, ?)
+        """
+        
+        # Process in batches
+        for i in range(0, len(compounds), batch_size):
+            batch = compounds[i:i + batch_size]
+            
+            try:
+                # Prepare compound data for bulk insert
+                compound_values = []
+                all_data_point_values = []
+                
+                for compound in batch:
+                    # Prepare metadata JSON
+                    metadata_json = json.dumps(compound.metadata, ensure_ascii=False)
+                    
+                    # Prepare compound row values
+                    row_values = [
+                        compound.compound_id,
+                        metadata_json,
+                        len(compound.data_points)
+                    ]
+                    
+                    # Add metadata column values
+                    for col in metadata_columns:
+                        value = compound.metadata.get(col)
+                        if value is not None and not (isinstance(value, float) and pd.isna(value)):
+                            row_values.append(str(value))
+                        else:
+                            row_values.append(None)
+                    
+                    compound_values.append(tuple(row_values))
+                    
+                    # Collect all data points for bulk insert
+                    for dp in compound.data_points:
+                        for count_name, count_value in dp.counts.items():
+                            all_data_point_values.append((
+                                compound.compound_id,
+                                dp.time,
+                                count_name,
+                                count_value
+                            ))
+                
+                # Bulk insert compounds
+                cursor.executemany(insert_compound_query, compound_values)
+                
+                # Bulk insert all data points
+                if all_data_point_values:
+                    cursor.executemany(insert_data_point_query, all_data_point_values)
+                
+                added += len(batch)
+                
+                # Commit after each batch (but batches are larger now)
+                self.conn.commit()
+                
+            except Exception as e:
+                logger.error(f"Error in bulk insert batch: {e}", exc_info=True)
+                self.conn.rollback()
+                # Fall back to individual inserts for this batch
+                for compound in batch:
+                    if self.add_compound(compound, metadata_columns):
+                        added += 1
+                self.conn.commit()
+        
+        logger.debug(f"Bulk inserted {added}/{len(compounds)} compounds")
+        return added
+    
+    def get_compound(self, compound_id: str) -> Optional[Compound]:
+        """
+        Get a compound by ID.
+        
+        Args:
+            compound_id: Compound ID to retrieve
+            
+        Returns:
+            Compound instance if found, None otherwise
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Get compound metadata
+            cursor.execute("SELECT * FROM compounds WHERE compound_id = ?", (compound_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return None
+            
+            # Parse metadata
+            metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            
+            # Get data points
+            cursor.execute("""
+                SELECT time, count_name, count_value
+                FROM data_points
+                WHERE compound_id = ?
+                ORDER BY time
+            """, (compound_id,))
+            
+            # Group data points by time
+            data_points_dict: Dict[float, Dict[str, float]] = {}
+            for dp_row in cursor.fetchall():
+                time = dp_row["time"]
+                count_name = dp_row["count_name"]
+                count_value = dp_row["count_value"]
+                
+                if time not in data_points_dict:
+                    data_points_dict[time] = {}
+                data_points_dict[time][count_name] = count_value
+            
+            # Create ChromatographicDataPoint objects
+            data_points = [
+                ChromatographicDataPoint(time=time, counts=counts)
+                for time, counts in sorted(data_points_dict.items())
+            ]
+            
+            return Compound(
+                compound_id=compound_id,
+                metadata=metadata,
+                data_points=data_points
+            )
+            
+        except Exception as e:
+            logger.error(f"Error getting compound {compound_id}: {e}", exc_info=True)
+            return None
+    
+    def search_compounds(
+        self,
+        filters: Dict[str, Any],
+        limit: Optional[int] = None
+    ) -> List[str]:
+        """
+        Search for compounds by field values.
+        
+        Args:
+            filters: Dictionary of field_name -> value filters
+                    Supports: =, !=, >, <, >=, <=, contains
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of compound IDs matching the filters
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Build WHERE clause
+            conditions = []
+            values = []
+            
+            for field, filter_value in filters.items():
+                safe_field = self._sanitize_column_name(field)
+                
+                # Handle different filter types
+                if isinstance(filter_value, dict):
+                    # Advanced filter: {"operator": ">", "value": 100}
+                    operator = filter_value.get("operator", "=")
+                    value = filter_value.get("value")
+                    
+                    if operator == "contains":
+                        conditions.append(f"{safe_field} LIKE ?")
+                        values.append(f"%{value}%")
+                    elif operator in ["=", "!=", ">", "<", ">=", "<="]:
+                        conditions.append(f"{safe_field} {operator} ?")
+                        values.append(value)
+                else:
+                    # Simple equality
+                    conditions.append(f"{safe_field} = ?")
+                    values.append(filter_value)
+            
+            # Build query
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            query = f"SELECT compound_id FROM compounds WHERE {where_clause}"
+            
+            if limit:
+                query += f" LIMIT {limit}"
+            
+            cursor.execute(query, values)
+            results = [row["compound_id"] for row in cursor.fetchall()]
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error searching compounds: {e}", exc_info=True)
+            return []
+    
+    def get_all_compound_ids(self) -> List[str]:
+        """
+        Get all compound IDs in the database.
+        
+        Returns:
+            List of all compound IDs
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT compound_id FROM compounds")
+            return [row["compound_id"] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"Error getting all compound IDs: {e}", exc_info=True)
+            return []
+    
+    def get_compound_count(self) -> int:
+        """
+        Get total number of compounds in database.
+        
+        Returns:
+            Number of compounds
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT COUNT(*) as count FROM compounds")
+            return cursor.fetchone()["count"]
+        except Exception as e:
+            logger.error(f"Error getting compound count: {e}", exc_info=True)
+            return 0
+    
+    def clear(self) -> None:
+        """Clear all data from the database."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM data_points")
+            cursor.execute("DELETE FROM compounds")
+            self.conn.commit()
+            logger.info("Cleared all data from database")
+        except Exception as e:
+            logger.error(f"Error clearing database: {e}", exc_info=True)
+    
+    def close(self) -> None:
+        """Close database connection."""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+            logger.debug("Database connection closed")
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.close()

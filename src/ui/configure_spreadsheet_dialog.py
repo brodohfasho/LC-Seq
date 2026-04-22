@@ -5,6 +5,7 @@ Dialog for configuring spreadsheet parsing settings.
 
 import customtkinter as ctk
 import logging
+import random
 import pandas as pd
 from typing import Optional, Callable, List
 
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class ConfigureSpreadsheetDialog(BaseWindow):
     """
-    Dialog window for configuring spreadsheet parsing.
+    Dialog window for configuring spreadsheet parsing (tabbed step workflow).
     
     Phase 5: Column Selection
     - Displays loaded spreadsheet column headers
@@ -39,7 +40,8 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         parent: ctk.CTk,
         loader: SpreadsheetLoader,
         config_manager: ConfigManager,
-        on_success: Optional[Callable[[SpreadsheetConfig], None]] = None
+        on_success: Optional[Callable[[SpreadsheetConfig], None]] = None,
+        on_default_preset_applied: Optional[Callable[[SpreadsheetConfig], None]] = None,
     ):
         """
         Initialize configure spreadsheet dialog.
@@ -49,19 +51,29 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             loader: SpreadsheetLoader instance with loaded data
             config_manager: ConfigManager instance
             on_success: Callback function called with SpreadsheetConfig on successful configuration
+            on_default_preset_applied: Called when the user loads the Default preset successfully,
+                before this dialog closes (used to sync main window application state).
         """
         super().__init__(parent, title="Configure Spreadsheet")
         
         self.loader = loader
         self.config_manager = config_manager
         self.on_success = on_success
+        self.on_default_preset_applied = on_default_preset_applied
         
-        self.geometry("1000x900")
-        self.center_window(1000, 900)
+        self.geometry("1020x820")
+        self.center_window(1020, 820)
+        self.resizable(True, True)
+        self.minsize(720, 580)
         
         # Column selections
         self.selected_compound_id_column: Optional[str] = None
         self.selected_chromatographic_data_column: Optional[str] = None
+        self._columns_sample_confirmed: bool = False
+        self._column_pair_sample_text: str = ""
+        self._sample_chrom_strings: List[str] = []
+        self._delimiter_parse_confirmed: bool = False
+        self._data_assignments_confirmed: bool = False
         
         # Delimiter configuration
         self.delimiters: List[str] = []
@@ -83,16 +95,6 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         # Get available columns
         self.available_columns: List[str] = self.loader.get_column_names()
         
-        # Common delimiters
-        self.common_delimiters = {
-            "Comma": ",",
-            "Semicolon": ";",
-            "Colon": ":",
-            "Tab": "\t",
-            "Pipe": "|",
-            "Space": " "
-        }
-        
         if not self.available_columns:
             logger.error("No columns available in loaded spreadsheet")
             self._show_error("No columns found in loaded spreadsheet. Please load a valid spreadsheet first.")
@@ -102,24 +104,9 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         # Load existing configuration if available
         self._load_existing_config()
         
-        # Create scrollable frame for content
-        self._create_scrollable_frame()
-        
-        # Create UI
         self._create_widgets()
         
         logger.info("Configure spreadsheet dialog initialized")
-    
-    def _create_scrollable_frame(self) -> None:
-        """Create scrollable frame for dialog content."""
-        # Main scrollable frame
-        self.scrollable_frame = ctk.CTkScrollableFrame(self)
-        self.scrollable_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        self.scrollable_frame.grid_columnconfigure(0, weight=1)
-        
-        # Configure main grid
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
     
     def _load_existing_config(self) -> None:
         """Load existing configuration if available and validate against spreadsheet."""
@@ -157,89 +144,110 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             logger.warning(f"Could not load existing configuration: {e}")
     
     def _create_widgets(self) -> None:
-        """Create and layout UI widgets."""
+        """Build tabbed configuration UI (one step per tab)."""
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+        self.wizard_hint = ctk.CTkLabel(
+            self,
+            text=(
+                "Work through each step in order. Next / Back and the tab bar use the same rules: "
+                "you cannot open a later tab until the current step passes validation (same as Next). "
+                "Presets are under Load preset / Save preset."
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            anchor="w",
+        )
+        self.wizard_hint.grid(row=0, column=0, padx=16, pady=(12, 4), sticky="ew")
+        self.tabview = ctk.CTkTabview(
+            self, height=540, command=self._on_wizard_tabview_changed
+        )
+        self.tabview.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
+        self._tab_labels = [
+            "1 — Columns",
+            "2 — Delimiters & parse",
+            "3 — Time & counts",
+            "4 — Metadata",
+        ]
+        tab__populate_tab_columns = self.tabview.add("1 — Columns")
+        tab__populate_tab_columns.grid_columnconfigure(0, weight=1)
+        self._populate_tab_columns(tab__populate_tab_columns)
+        tab__populate_tab_delimiters = self.tabview.add("2 — Delimiters & parse")
+        tab__populate_tab_delimiters.grid_columnconfigure(0, weight=1)
+        self._populate_tab_delimiters_and_parse(tab__populate_tab_delimiters)
+        tab__populate_tab_time_count = self.tabview.add("3 — Time & counts")
+        tab__populate_tab_time_count.grid_columnconfigure(0, weight=1)
+        self._populate_tab_time_count(tab__populate_tab_time_count)
+        tab__populate_tab_metadata = self.tabview.add("4 — Metadata")
+        tab__populate_tab_metadata.grid_columnconfigure(0, weight=1)
+        self._populate_tab_metadata(tab__populate_tab_metadata)
+        self.validation_label = ctk.CTkLabel(
+            self,
+            text="",
+            font=ctk.CTkFont(size=11),
+            wraplength=820,
+            justify="left",
+        )
+        self.validation_label.grid(row=2, column=0, padx=16, pady=(6, 4), sticky="ew")
+        self.nav_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.nav_frame.grid(row=3, column=0, padx=12, pady=(4, 12), sticky="ew")
+        self.nav_frame.grid_columnconfigure(2, weight=1)
+        self.back_tab_btn = ctk.CTkButton(
+            self.nav_frame, text="Back", width=90, command=self._wizard_tab_back
+        )
+        self.back_tab_btn.grid(row=0, column=0, padx=4, pady=4, sticky="w")
+        self.next_tab_btn = ctk.CTkButton(
+            self.nav_frame, text="Next", width=90, command=self._wizard_tab_next
+        )
+        self.next_tab_btn.grid(row=0, column=1, padx=4, pady=4, sticky="w")
+        self.load_preset_button = ctk.CTkButton(
+            self.nav_frame,
+            text="Load preset",
+            width=110,
+            command=self._show_load_preset_dialog,
+        )
+        self.load_preset_button.grid(row=0, column=3, padx=(16, 4), pady=4, sticky="e")
+        self.save_preset_button = ctk.CTkButton(
+            self.nav_frame,
+            text="Save preset",
+            width=100,
+            command=self._save_preset,
+        )
+        self.save_preset_button.grid(row=0, column=4, padx=4, pady=4, sticky="e")
+        self.cancel_button = ctk.CTkButton(
+            self.nav_frame,
+            text="Cancel",
+            command=self.on_close,
+            fg_color="gray40",
+            hover_color="gray25",
+            width=100,
+        )
+        self.cancel_button.grid(row=0, column=5, padx=4, pady=4, sticky="e")
+        self._tab_names = list(self._tab_labels)
+        self._wizard_tab_last_committed = self.tabview.get()
+        self._wizard_tab_revert_in_progress = False
+        self._apply_delimiter_entries_from_list(self.delimiters)
+        self._validate_selections()
+
+    def _populate_tab_columns(self, parent: ctk.CTkFrame) -> None:
         row = 0
-        
-        # Phase 8: Load/Save Configuration
-        config_management_frame = ctk.CTkFrame(self.scrollable_frame)
-        config_management_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="ew")
-        config_management_frame.grid_columnconfigure(1, weight=1)
-        row += 1
-        
-        load_config_label = ctk.CTkLabel(
-            config_management_frame,
-            text="Load Saved Configuration:",
-            font=ctk.CTkFont(size=12)
-        )
-        load_config_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
-        # List of saved configs
-        saved_configs = self.config_manager.list_named_configs()
-        config_names = [config["name"] for config in saved_configs]
-        
-        self.config_dropdown_var = ctk.StringVar()
-        self.config_dropdown = ctk.CTkComboBox(
-            config_management_frame,
-            variable=self.config_dropdown_var,
-            values=["Default"] + config_names if config_names else ["Default"],
-            command=self._on_load_saved_config,
-            state="readonly",
-            width=200
-        )
-        self.config_dropdown.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-        
-        load_button = ctk.CTkButton(
-            config_management_frame,
-            text="Load",
-            command=self._load_selected_config,
-            width=80
-        )
-        load_button.grid(row=0, column=2, padx=10, pady=10)
-        
-        save_as_button = ctk.CTkButton(
-            config_management_frame,
-            text="Save As...",
-            command=self._save_config_as,
-            width=100
-        )
-        save_as_button.grid(row=0, column=3, padx=10, pady=10)
-        
         # Instructions
         instructions = ctk.CTkLabel(
-            self.scrollable_frame,
-            text="Step 1: Select columns from your spreadsheet",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="w")
-        row += 1
-        
-        # Available columns display
-        columns_frame = ctk.CTkFrame(self.scrollable_frame)
-        columns_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        row += 1
-        columns_frame.grid_columnconfigure(0, weight=1)
-        
-        columns_label = ctk.CTkLabel(
-            columns_frame,
-            text="Available Columns:",
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        columns_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
-        
-        # Display column list
-        columns_text = ", ".join(self.available_columns)
-        columns_display = ctk.CTkLabel(
-            columns_frame,
-            text=columns_text,
-            font=ctk.CTkFont(size=11),
-            anchor="w",
+            parent,
+            text=(
+                "Step 1: Choose Compound ID and Chromatographic Data columns, then click "
+                "Show sample data. Values are always taken from the same row for both columns."
+            ),
+            font=ctk.CTkFont(size=14, weight="bold"),
+            wraplength=820,
             justify="left",
-            wraplength=650
+            anchor="w",
         )
-        columns_display.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="w")
+        instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="ew")
+        row += 1
         
         # Compound ID column selection
-        compound_frame = ctk.CTkFrame(self.scrollable_frame)
+        compound_frame = ctk.CTkFrame(parent)
         compound_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
         row += 1
         compound_frame.grid_columnconfigure(1, weight=1)
@@ -275,7 +283,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._update_compound_display()
         
         # Chromatographic Data column selection
-        data_frame = ctk.CTkFrame(self.scrollable_frame)
+        data_frame = ctk.CTkFrame(parent)
         data_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
         row += 1
         data_frame.grid_columnconfigure(1, weight=1)
@@ -310,332 +318,207 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self.data_selected_label.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
         self._update_data_display()
         
+        sample_frame = ctk.CTkFrame(parent)
+        sample_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 10), sticky="ew")
+        row += 1
+        sample_frame.grid_columnconfigure(0, weight=1)
+
+        self.show_column_sample_button = ctk.CTkButton(
+            sample_frame,
+            text="Show sample data",
+            command=self._on_show_column_samples,
+            width=160,
+        )
+        self.show_column_sample_button.grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
+
+        self.column_sample_text = ctk.CTkTextbox(sample_frame, height=150, wrap="word", activate_scrollbars=True)
+        self.column_sample_text.grid(row=1, column=0, padx=10, pady=(4, 10), sticky="ew")
+        self.column_sample_text.configure(state="disabled")
+
         # Separator
-        separator1 = ctk.CTkFrame(self.scrollable_frame, height=2, fg_color="gray")
+        separator1 = ctk.CTkFrame(parent, height=2, fg_color="gray")
         separator1.grid(row=row, column=0, columnspan=2, padx=20, pady=20, sticky="ew")
         row += 1
         
-        # Phase 6: Delimiter Configuration
-        delimiter_instructions = ctk.CTkLabel(
-            self.scrollable_frame,
-            text="Step 2: Configure delimiters for parsing chromatographic data",
-            font=ctk.CTkFont(size=14, weight="bold")
+
+    def _populate_tab_delimiters_and_parse(self, parent: ctk.CTkFrame) -> None:
+        """Step 2: full-width step 1 sample; delimiters + Test parse left, preview right."""
+        parent.grid_columnconfigure(0, weight=0)
+        parent.grid_columnconfigure(1, weight=1)
+        parent.grid_rowconfigure(2, weight=1)
+
+        instructions = ctk.CTkLabel(
+            parent,
+            text=(
+                "Step 2: Enter the delimiters separating your time and count(s) data and test parsing. "
+                "Leave extra delimiters blank if not needed."
+            ),
+            font=ctk.CTkFont(size=14, weight="bold"),
+            wraplength=920,
+            justify="left",
+            anchor="w",
         )
-        delimiter_instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 10), sticky="w")
-        row += 1
-        
-        # Delimiter configuration frame
-        delimiter_config_frame = ctk.CTkFrame(self.scrollable_frame)
-        delimiter_config_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        delimiter_config_frame.grid_columnconfigure(0, weight=1)
-        row += 1
-        
-        # Delimiter sequence display
-        delimiter_label = ctk.CTkLabel(
-            delimiter_config_frame,
-            text="Delimiter Sequence (order matters):",
-            font=ctk.CTkFont(size=12, weight="bold")
+        instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 6), sticky="ew")
+
+        self.delimiter_step_reference_text = ctk.CTkTextbox(
+            parent, height=100, wrap="word", activate_scrollbars=True
         )
-        delimiter_label.grid(row=0, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
-        
-        # Delimiter list display
-        self.delimiter_list_frame = ctk.CTkFrame(delimiter_config_frame)
-        self.delimiter_list_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
-        self.delimiter_list_frame.grid_columnconfigure(0, weight=1)
-        
-        self.delimiter_display_label = ctk.CTkLabel(
-            self.delimiter_list_frame,
-            text="No delimiters added",
-            font=ctk.CTkFont(size=11),
-            text_color="gray"
+        self.delimiter_step_reference_text.grid(
+            row=1, column=0, columnspan=2, padx=16, pady=(4, 8), sticky="ew"
         )
-        self.delimiter_display_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
-        # Common delimiter buttons
-        common_label = ctk.CTkLabel(
-            delimiter_config_frame,
-            text="Common Delimiters:",
-            font=ctk.CTkFont(size=11)
+        self.delimiter_step_reference_text.insert(
+            "1.0",
+            "Complete step 1 and click Show sample data.",
         )
-        common_label.grid(row=2, column=0, columnspan=3, padx=10, pady=(10, 5), sticky="w")
-        
-        common_buttons_frame = ctk.CTkFrame(delimiter_config_frame)
-        common_buttons_frame.grid(row=3, column=0, columnspan=3, padx=10, pady=5, sticky="ew")
-        
-        self.common_delimiter_buttons = {}
-        col = 0
-        for name, delimiter in self.common_delimiters.items():
-            btn = ctk.CTkButton(
-                common_buttons_frame,
-                text=name,
-                command=lambda d=delimiter: self._add_delimiter(d),
-                width=100,
-                height=30
+        self.delimiter_step_reference_text.configure(state="disabled")
+
+        left = ctk.CTkFrame(parent, fg_color="transparent")
+        left.grid(row=2, column=0, padx=(16, 6), pady=(4, 12), sticky="nsew")
+        left.grid_columnconfigure(0, weight=1)
+
+        self.delimiter_fields_frame = ctk.CTkFrame(left, fg_color="transparent")
+        self.delimiter_fields_frame.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
+        self.delimiter_fields_frame.grid_columnconfigure(1, weight=1)
+
+        self.delimiter_entry_widgets: List[ctk.CTkEntry] = []
+        for i in range(3):
+            lbl = ctk.CTkLabel(self.delimiter_fields_frame, text=f"Delimiter {i + 1}:")
+            lbl.grid(row=i, column=0, padx=8, pady=6, sticky="w")
+            ent = ctk.CTkEntry(
+                self.delimiter_fields_frame,
+                placeholder_text="(blank to skip)",
+                width=220,
             )
-            btn.grid(row=0, column=col, padx=5, pady=5)
-            self.common_delimiter_buttons[name] = btn
-            col += 1
-        
-        # Custom delimiter input
-        custom_frame = ctk.CTkFrame(delimiter_config_frame)
-        custom_frame.grid(row=4, column=0, columnspan=3, padx=10, pady=10, sticky="ew")
-        custom_frame.grid_columnconfigure(1, weight=1)
-        
-        custom_label = ctk.CTkLabel(
-            custom_frame,
-            text="Custom Delimiter:",
-            font=ctk.CTkFont(size=11)
+            ent.grid(row=i, column=1, padx=8, pady=6, sticky="ew")
+            ent.bind("<KeyRelease>", lambda _e: self._on_delimiter_field_edited())
+            self.delimiter_entry_widgets.append(ent)
+
+        self.test_parse_button = ctk.CTkButton(
+            left,
+            text="Test parse",
+            command=self._on_test_parse_click,
+            width=140,
         )
-        custom_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
-        self.custom_delimiter_entry = ctk.CTkEntry(
-            custom_frame,
-            placeholder_text="Enter custom delimiter",
-            width=200
-        )
-        self.custom_delimiter_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        
-        add_custom_button = ctk.CTkButton(
-            custom_frame,
-            text="Add",
-            command=self._add_custom_delimiter,
-            width=80
-        )
-        add_custom_button.grid(row=0, column=2, padx=10, pady=10)
-        
-        # Remove/Reorder buttons
-        control_frame = ctk.CTkFrame(delimiter_config_frame)
-        control_frame.grid(row=5, column=0, columnspan=3, padx=10, pady=10, sticky="ew")
-        
-        remove_button = ctk.CTkButton(
-            control_frame,
-            text="Remove Last",
-            command=self._remove_last_delimiter,
-            fg_color="red",
-            width=120
-        )
-        remove_button.grid(row=0, column=0, padx=5, pady=5)
-        
-        clear_button = ctk.CTkButton(
-            control_frame,
-            text="Clear All",
-            command=self._clear_delimiters,
-            fg_color="orange",
-            width=120
-        )
-        clear_button.grid(row=0, column=1, padx=5, pady=5)
-        
-        # Separator
-        separator2 = ctk.CTkFrame(self.scrollable_frame, height=2, fg_color="gray")
-        separator2.grid(row=row, column=0, columnspan=2, padx=20, pady=20, sticky="ew")
-        row += 1
-        
-        # Phase 6: Parsing Preview
-        preview_instructions = ctk.CTkLabel(
-            self.scrollable_frame,
-            text="Step 3: Test parsing with sample data",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        preview_instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 10), sticky="w")
-        row += 1
-        
-        # Test data input frame
-        test_data_frame = ctk.CTkFrame(self.scrollable_frame)
-        test_data_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        test_data_frame.grid_columnconfigure(1, weight=1)
-        row += 1
-        
-        test_data_label = ctk.CTkLabel(
-            test_data_frame,
-            text="Test Data:",
-            font=ctk.CTkFont(size=12)
-        )
-        test_data_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
-        self.test_data_entry = ctk.CTkEntry(
-            test_data_frame,
-            placeholder_text="Enter test data or click 'Load Sample'",
-            width=400
-        )
-        self.test_data_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        
-        load_sample_button = ctk.CTkButton(
-            test_data_frame,
-            text="Load Sample",
-            command=self._load_sample_data,
-            width=120
-        )
-        load_sample_button.grid(row=0, column=2, padx=10, pady=10)
-        
-        test_parse_button = ctk.CTkButton(
-            test_data_frame,
-            text="Test Parse",
-            command=self._test_parse,
-            width=120
-        )
-        test_parse_button.grid(row=0, column=3, padx=10, pady=10)
-        
-        # Parsing results frame
-        results_frame = ctk.CTkFrame(self.scrollable_frame)
-        results_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        results_frame.grid_columnconfigure(0, weight=1)
-        row += 1
-        
-        results_label = ctk.CTkLabel(
-            results_frame,
-            text="Parsing Results:",
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        results_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
-        
-        # Preview table (using text widget for simplicity)
+        self.test_parse_button.grid(row=1, column=0, padx=8, pady=(12, 8), sticky="w")
+
+        right = ctk.CTkFrame(parent, fg_color="transparent")
+        right.grid(row=2, column=1, padx=(6, 16), pady=(4, 12), sticky="nsew")
+        right.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(0, weight=1)
+
         self.preview_text = ctk.CTkTextbox(
-            results_frame,
-            height=150,
-            width=800
+            right, height=300, wrap="none", activate_scrollbars=True
         )
-        self.preview_text.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-        self.preview_text.insert("1.0", "No parsing results yet. Enter test data and click 'Test Parse'.")
-        
-        # Parse status
+        self.preview_text.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
+        self.preview_text.insert("1.0", "Enter delimiters and click Test parse.")
+
         self.parse_status_label = ctk.CTkLabel(
-            results_frame,
-            text="",
-            font=ctk.CTkFont(size=11)
+            right, text="", font=ctk.CTkFont(size=11), anchor="w", justify="left"
         )
-        self.parse_status_label.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="w")
-        
-        # Separator
-        separator3 = ctk.CTkFrame(self.scrollable_frame, height=2, fg_color="gray")
-        separator3.grid(row=row, column=0, columnspan=2, padx=20, pady=20, sticky="ew")
-        row += 1
-        
-        # Phase 7: Time & Count Selection
+        self.parse_status_label.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
+
+    def _populate_tab_time_count(self, parent: ctk.CTkFrame) -> None:
+        """Step 3: preview table on the left; time, counts, names, and test button stacked on the right."""
+        parent.grid_columnconfigure(0, weight=2)
+        parent.grid_columnconfigure(1, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+
         time_count_instructions = ctk.CTkLabel(
-            self.scrollable_frame,
-            text="Step 4: Select Time and Count fields",
-            font=ctk.CTkFont(size=14, weight="bold")
+            parent,
+            text="Step 3: Select Time and Count fields",
+            font=ctk.CTkFont(size=14, weight="bold"),
         )
-        time_count_instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 10), sticky="w")
-        row += 1
-        
-        # Items per point configuration
-        items_per_point_frame = ctk.CTkFrame(self.scrollable_frame)
-        items_per_point_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        items_per_point_frame.grid_columnconfigure(1, weight=1)
-        row += 1
-        
-        items_label = ctk.CTkLabel(
-            items_per_point_frame,
-            text="Items per Data Point:",
-            font=ctk.CTkFont(size=12)
-        )
-        items_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
-        self.items_per_point_entry = ctk.CTkEntry(
-            items_per_point_frame,
-            placeholder_text="e.g., 2 for Time,Count or 3 for Time,Count1,Count2",
-            width=300
-        )
-        self.items_per_point_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        
-        structure_button = ctk.CTkButton(
-            items_per_point_frame,
-            text="Structure Data",
-            command=self._structure_parsed_data,
-            width=120
-        )
-        structure_button.grid(row=0, column=2, padx=10, pady=10)
-        
-        # Structured data display
-        structured_frame = ctk.CTkFrame(self.scrollable_frame)
-        structured_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        structured_frame.grid_columnconfigure(0, weight=1)
-        row += 1
-        
+        time_count_instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(10, 6), sticky="w")
+
+        left = ctk.CTkFrame(parent, fg_color="transparent")
+        left.grid(row=1, column=0, padx=(16, 8), pady=(0, 12), sticky="nsew")
+        left.grid_columnconfigure(0, weight=1)
+        left.grid_rowconfigure(1, weight=1)
+
         structured_label = ctk.CTkLabel(
-            structured_frame,
-            text="Structured Data Points:",
-            font=ctk.CTkFont(size=12, weight="bold")
+            left,
+            text="Structured data preview:",
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
-        structured_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
-        
+        structured_label.grid(row=0, column=0, padx=4, pady=(0, 4), sticky="w")
+
         self.structured_text = ctk.CTkTextbox(
-            structured_frame,
-            height=120,
-            width=800
+            left,
+            height=350,
+            wrap="none",
+            activate_scrollbars=True,
         )
-        self.structured_text.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-        self.structured_text.insert("1.0", "Parse test data first, then specify items per point and click 'Structure Data'.")
-        
-        # Time selection
-        time_selection_frame = ctk.CTkFrame(self.scrollable_frame)
-        time_selection_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        time_selection_frame.grid_columnconfigure(1, weight=1)
-        row += 1
-        
+        self.structured_text.grid(row=1, column=0, padx=4, pady=(0, 4), sticky="nsew")
+        self.structured_text.insert(
+            "1.0",
+            "Complete step 2 (Test parse) to populate structured points here.",
+        )
+
+        right = ctk.CTkFrame(parent, fg_color="transparent")
+        right.grid(row=1, column=1, padx=(8, 16), pady=(0, 12), sticky="nsew")
+        right.grid_columnconfigure(0, weight=1)
+
+        ry = 0
         time_label = ctk.CTkLabel(
-            time_selection_frame,
-            text="Time Field Index:",
-            font=ctk.CTkFont(size=12)
+            right,
+            text="Time field:",
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
-        time_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
+        time_label.grid(row=ry, column=0, padx=4, pady=(0, 4), sticky="w")
+        ry += 1
+
         self.time_index_var = ctk.StringVar()
         self.time_index_dropdown = ctk.CTkComboBox(
-            time_selection_frame,
+            right,
             variable=self.time_index_var,
             values=[],
             command=self._on_time_index_selected,
             state="readonly",
-            width=200
+            width=220,
         )
-        self.time_index_dropdown.grid(row=0, column=1, padx=10, pady=10, sticky="w")
-        
-        # Count selection frame
-        count_selection_frame = ctk.CTkFrame(self.scrollable_frame)
-        count_selection_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        count_selection_frame.grid_columnconfigure(0, weight=1)
-        row += 1
-        
+        self.time_index_dropdown.grid(row=ry, column=0, padx=4, pady=(0, 12), sticky="w")
+        ry += 1
+
         count_label = ctk.CTkLabel(
-            count_selection_frame,
-            text="Count Fields (select multiple):",
-            font=ctk.CTkFont(size=12, weight="bold")
+            right,
+            text="Count Field (select multiple if necessary)",
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
-        count_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 5), sticky="w")
-        
-        # Scrollable frame for count checkboxes
-        self.count_checkboxes_frame = ctk.CTkScrollableFrame(count_selection_frame, height=100)
-        self.count_checkboxes_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        count_label.grid(row=ry, column=0, padx=4, pady=(0, 4), sticky="w")
+        ry += 1
+
+        self.count_checkboxes_frame = ctk.CTkFrame(right, fg_color="transparent")
+        self.count_checkboxes_frame.grid(row=ry, column=0, padx=4, pady=(0, 10), sticky="ew")
         self.count_checkboxes_frame.grid_columnconfigure(0, weight=1)
-        
-        # Count names frame
-        count_names_frame = ctk.CTkFrame(self.scrollable_frame)
-        count_names_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        count_names_frame.grid_columnconfigure(1, weight=1)
-        row += 1
-        
+        ry += 1
+
         count_names_label = ctk.CTkLabel(
-            count_names_frame,
-            text="Count Names:",
-            font=ctk.CTkFont(size=12, weight="bold")
+            right,
+            text="Count names:",
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
-        count_names_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 5), sticky="w")
-        
-        self.count_names_frame = ctk.CTkFrame(count_names_frame)
-        self.count_names_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=10, sticky="ew")
+        count_names_label.grid(row=ry, column=0, padx=4, pady=(0, 4), sticky="w")
+        ry += 1
+
+        self.count_names_frame = ctk.CTkFrame(right, fg_color="transparent")
+        self.count_names_frame.grid(row=ry, column=0, padx=4, pady=(0, 12), sticky="ew")
         self.count_names_frame.grid_columnconfigure(1, weight=1)
-        
-        # Separator
-        separator4 = ctk.CTkFrame(self.scrollable_frame, height=2, fg_color="gray")
-        separator4.grid(row=row, column=0, columnspan=2, padx=20, pady=20, sticky="ew")
-        row += 1
-        
+        ry += 1
+
+        self.test_assignments_button = ctk.CTkButton(
+            right,
+            text="Test data assignments",
+            width=200,
+            command=self._on_test_data_assignments_click,
+        )
+        self.test_assignments_button.grid(row=ry, column=0, padx=4, pady=(4, 4), sticky="ew")
+
+    def _populate_tab_metadata(self, parent: ctk.CTkFrame) -> None:
+        row = 0
         # Phase 7.3: Metadata Column Selection
         metadata_instructions = ctk.CTkLabel(
-            self.scrollable_frame,
-            text="Step 5: Select metadata columns for database (optional but recommended)",
+            parent,
+            text="Step 4: Select metadata columns for database (optional but recommended)",
             font=ctk.CTkFont(size=14, weight="bold")
         )
         metadata_instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 5), sticky="w")
@@ -644,11 +527,11 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         # Explanation text
         explanation_text = (
             "Select which metadata columns to include in the searchable database. "
-            "Including only necessary columns improves efficiency and speeds up searches. "
-            "You can search and filter by these columns in the visualizer."
+            "Include only columns necessary for searching to improve efficiency and speed up searches. "
+            "You can search and filter by these columns in the visualizer. "
         )
         explanation_label = ctk.CTkLabel(
-            self.scrollable_frame,
+            parent,
             text=explanation_text,
             font=ctk.CTkFont(size=11),
             wraplength=950,
@@ -658,7 +541,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         row += 1
         
         # Metadata column selection frame
-        metadata_selection_frame = ctk.CTkFrame(self.scrollable_frame)
+        metadata_selection_frame = ctk.CTkFrame(parent)
         metadata_selection_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
         metadata_selection_frame.grid_columnconfigure(0, weight=1)
         row += 1
@@ -674,12 +557,11 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self.metadata_columns = self._get_metadata_columns()
         
         if self.metadata_columns:
-            # Scrollable frame for metadata checkboxes
-            self.metadata_checkboxes_frame = ctk.CTkScrollableFrame(metadata_selection_frame, height=150)
-            self.metadata_checkboxes_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
-            self.metadata_checkboxes_frame.grid_columnconfigure(0, weight=1)
-            
-            # Create checkboxes for each metadata column
+            self.metadata_checkboxes_frame = ctk.CTkFrame(
+                metadata_selection_frame, fg_color="transparent"
+            )
+            self.metadata_checkboxes_frame.grid(row=1, column=0, padx=10, pady=8, sticky="ew")
+
             self._create_metadata_checkboxes()
             
             # Select All / Deselect All buttons
@@ -720,54 +602,100 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 text_color="gray"
             )
             no_metadata_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
-        
-        # Validation message
-        self.validation_label = ctk.CTkLabel(
-            self.scrollable_frame,
-            text="",
-            font=ctk.CTkFont(size=11),
-            wraplength=850,
-            justify="left"
-        )
-        self.validation_label.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="w")
-        row += 1
-        
-        # Buttons frame
-        button_frame = ctk.CTkFrame(self.scrollable_frame)
-        button_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=20, sticky="ew")
-        button_frame.grid_columnconfigure(0, weight=1)
-        button_frame.grid_columnconfigure(1, weight=1)
-        
-        # Accept Configuration button (Phase 7 - replaces Continue)
-        self.continue_button = ctk.CTkButton(
-            button_frame,
-            text="Accept Configuration",
+
+        self.accept_button = ctk.CTkButton(
+            parent,
+            text="Accept configuration",
             command=self._on_accept_configuration,
-            state="disabled"
+            state="disabled",
+            width=220,
         )
-        self.continue_button.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        
-        # Cancel button
-        cancel_button = ctk.CTkButton(
-            button_frame,
-            text="Cancel",
-            command=self.on_close,
-            fg_color="gray"
-        )
-        cancel_button.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        
-        # Update delimiter display
-        self._update_delimiter_display()
-        
-        # Initial validation
-        self._validate_selections()
-    
+        self.accept_button.grid(row=row, column=0, columnspan=2, padx=20, pady=(20, 16), sticky="e")
+
+    def _wizard_tab_index(self) -> int:
+        name = self.tabview.get()
+        return self._tab_names.index(name)
+
+    def _on_wizard_tabview_changed(self) -> None:
+        """Enforce the same validation gates as Next when switching tabs from the tab bar."""
+        if self._wizard_tab_revert_in_progress:
+            return
+        new_name = self.tabview.get()
+        old_name = self._wizard_tab_last_committed
+        new_idx = self._tab_names.index(new_name)
+        old_idx = self._tab_names.index(old_name)
+        if new_idx <= old_idx:
+            self._wizard_tab_last_committed = new_name
+            return
+        for k in range(old_idx, new_idx):
+            ok, msg = self._can_advance_from_tab(k)
+            if not ok:
+                self._wizard_tab_revert_in_progress = True
+                try:
+                    self.tabview.set(old_name)
+                finally:
+                    self._wizard_tab_revert_in_progress = False
+                self._show_error(msg)
+                return
+        self._wizard_tab_last_committed = new_name
+
+    def _wizard_tab_back(self) -> None:
+        i = self._wizard_tab_index()
+        if i > 0:
+            self.tabview.set(self._tab_names[i - 1])
+            self._wizard_tab_last_committed = self.tabview.get()
+
+    def _wizard_tab_next(self) -> None:
+        i = self._wizard_tab_index()
+        ok, msg = self._can_advance_from_tab(i)
+        if not ok:
+            self._show_error(msg)
+            return
+        if i < len(self._tab_names) - 1:
+            self.tabview.set(self._tab_names[i + 1])
+            self._wizard_tab_last_committed = self.tabview.get()
+
+    def _can_advance_from_tab(self, tab_index: int) -> tuple[bool, str]:
+        if tab_index == 0:
+            if not self.selected_compound_id_column or not self.selected_chromatographic_data_column:
+                return False, "Select Compound ID and Chromatographic Data columns."
+            if self.selected_compound_id_column == self.selected_chromatographic_data_column:
+                return False, "Compound ID and Chromatographic Data must be different."
+            if not self._columns_sample_confirmed:
+                return (
+                    False,
+                    'Click "Show sample data" to verify paired values from the same rows before continuing.',
+                )
+        if tab_index == 1:
+            if self._get_delimiters_from_ui() is None:
+                return False, "Enter at least one delimiter on step 2 (leave extras blank)."
+            if not self._delimiter_parse_confirmed or not self.parsed_data_points:
+                return False, 'Run "Test parse" successfully on step 2 before continuing.'
+        if tab_index == 2:
+            if not self.parsed_data_points:
+                return False, "Complete step 2 (Test parse) before selecting time and counts."
+            if self.selected_time_index is None:
+                return False, "Select the time field index."
+            if not self.selected_count_indices:
+                return False, "Select at least one count field."
+            for count_idx in sorted(self.selected_count_indices):
+                entry = self.count_name_entries.get(count_idx)
+                if not entry or not entry.get().strip():
+                    return False, f"Enter a name for count field {count_idx}."
+            if not self._data_assignments_confirmed:
+                return (
+                    False,
+                    'Click "Test data assignments" on step 3 before continuing to metadata.',
+                )
+        return True, ""
+
     def _on_compound_id_selected(self, choice: str) -> None:
         """Handle Compound ID column selection."""
         if choice and choice in self.available_columns:
             self.selected_compound_id_column = choice
             logger.debug(f"Selected Compound ID column: {choice}")
             self._update_compound_display()
+            self._reset_columns_sample_confirmation()
             # Update metadata columns list (exclude newly selected compound_id column)
             self._refresh_metadata_checkboxes()
             self._validate_selections()
@@ -780,14 +708,100 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.selected_chromatographic_data_column = choice
             logger.debug(f"Selected Chromatographic Data column: {choice}")
             self._update_data_display()
+            self._reset_columns_sample_confirmation()
             # Update metadata columns list (exclude newly selected chromatographic_data column)
             self._refresh_metadata_checkboxes()
             self._validate_selections()
         else:
             logger.warning(f"Invalid Chromatographic Data column selection: {choice}")
+
+    def _reset_columns_sample_confirmation(self) -> None:
+        """Clear sample preview; user must click Show sample data again after column changes."""
+        self._columns_sample_confirmed = False
+        self._column_pair_sample_text = ""
+        self._sample_chrom_strings = []
+        if hasattr(self, "column_sample_text"):
+            self.column_sample_text.configure(state="normal")
+            self.column_sample_text.delete("1.0", "end")
+            self.column_sample_text.configure(state="disabled")
+        self._refresh_delimiter_step_reference()
+        self._invalidate_delimiter_parse()
+
+    def _format_sample_cell(self, value: object) -> str:
+        """Format a spreadsheet cell for the column sample preview."""
+        try:
+            if value is None or pd.isna(value):
+                return "(empty)"
+        except (ValueError, TypeError):
+            pass
+        text = str(value).strip()
+        if len(text) > 220:
+            return f"{text[:217]}..."
+        return text
+
+    def _on_show_column_samples(self) -> None:
+        """Display random rows: Compound ID and chromatographic text from the same row."""
+        if not self.selected_compound_id_column or not self.selected_chromatographic_data_column:
+            self._show_error("Select both columns before showing sample data.")
+            return
+        if self.selected_compound_id_column == self.selected_chromatographic_data_column:
+            self._show_error("Compound ID and Chromatographic Data must be different columns.")
+            return
+
+        df = self.loader.get_data()
+        if df is None or df.empty:
+            self._show_error("No spreadsheet data is loaded.")
+            return
+
+        cid_col = self.selected_compound_id_column
+        chrom_col = self.selected_chromatographic_data_column
+        if cid_col not in df.columns or chrom_col not in df.columns:
+            self._show_error("Selected columns are missing from the loaded data.")
+            return
+
+        valid_positions: List[int] = []
+        for pos in range(len(df)):
+            row = df.iloc[pos]
+            if pd.isna(row[cid_col]) and pd.isna(row[chrom_col]):
+                continue
+            valid_positions.append(pos)
+
+        if not valid_positions:
+            self._show_error("No rows found with data in at least one of the selected columns.")
+            return
+
+        k = min(3, len(valid_positions))
+        picked = random.sample(valid_positions, k=k)
+
+        lines: List[str] = []
+        chrom_values: List[str] = []
+        for n, pos in enumerate(picked, start=1):
+            row = df.iloc[pos]
+            lines.append(f"--- Sample {n} · data row {pos + 1} of {len(df)} ---\n")
+            lines.append(f"{cid_col}:\n  {self._format_sample_cell(row[cid_col])}\n\n")
+            lines.append(f"{chrom_col}:\n  {self._format_sample_cell(row[chrom_col])}\n\n")
+            if pd.notna(row[chrom_col]):
+                chrom_values.append(str(row[chrom_col]).strip())
+            else:
+                chrom_values.append("")
+
+        self._column_pair_sample_text = "".join(lines)
+        self._sample_chrom_strings = chrom_values
+        self._refresh_delimiter_step_reference()
+
+        self.column_sample_text.configure(state="normal")
+        self.column_sample_text.delete("1.0", "end")
+        self.column_sample_text.insert("1.0", self._column_pair_sample_text)
+        self.column_sample_text.configure(state="disabled")
+
+        self._columns_sample_confirmed = True
+        self._validate_selections()
+        logger.info("User confirmed column selections via sample data preview (%s rows)", k)
     
     def _update_compound_display(self) -> None:
         """Update Compound ID selection display."""
+        if not hasattr(self, "compound_selected_label"):
+            return
         if self.selected_compound_id_column:
             self.compound_selected_label.configure(
                 text=f"Selected: {self.selected_compound_id_column}",
@@ -801,6 +815,8 @@ class ConfigureSpreadsheetDialog(BaseWindow):
     
     def _update_data_display(self) -> None:
         """Update Chromatographic Data selection display."""
+        if not hasattr(self, "data_selected_label"):
+            return
         if self.selected_chromatographic_data_column:
             self.data_selected_label.configure(
                 text=f"Selected: {self.selected_chromatographic_data_column}",
@@ -812,250 +828,279 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 text_color="gray"
             )
     
-    def _add_delimiter(self, delimiter: str) -> None:
-        """Add a delimiter to the sequence."""
-        if delimiter:
-            self.delimiters.append(delimiter)
-            self._update_delimiter_display()
-            self._validate_selections()
-            logger.debug(f"Added delimiter: {repr(delimiter)}")
-    
-    def _add_custom_delimiter(self) -> None:
-        """Add custom delimiter from input field."""
-        custom_delimiter = self.custom_delimiter_entry.get().strip()
-        if custom_delimiter:
-            self._add_delimiter(custom_delimiter)
-            self.custom_delimiter_entry.delete(0, "end")
-        else:
-            logger.warning("Attempted to add empty custom delimiter")
-    
-    def _remove_last_delimiter(self) -> None:
-        """Remove the last delimiter from the sequence."""
-        if self.delimiters:
-            removed = self.delimiters.pop()
-            self._update_delimiter_display()
-            self._validate_selections()
-            logger.debug(f"Removed delimiter: {repr(removed)}")
-    
-    def _clear_delimiters(self) -> None:
-        """Clear all delimiters."""
-        self.delimiters.clear()
-        self._update_delimiter_display()
-        self._validate_selections()
-        logger.debug("Cleared all delimiters")
-    
-    def _update_delimiter_display(self) -> None:
-        """Update the delimiter sequence display."""
-        # Clear existing display
-        for widget in self.delimiter_list_frame.winfo_children():
-            widget.destroy()
-        
-        if not self.delimiters:
-            self.delimiter_display_label = ctk.CTkLabel(
-                self.delimiter_list_frame,
-                text="No delimiters added",
-                font=ctk.CTkFont(size=11),
-                text_color="gray"
-            )
-            self.delimiter_display_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        else:
-            # Display delimiter sequence
-            delimiter_text = " → ".join([repr(d) if d in ["\t", " "] else d for d in self.delimiters])
-            self.delimiter_display_label = ctk.CTkLabel(
-                self.delimiter_list_frame,
-                text=f"Sequence: {delimiter_text}",
-                font=ctk.CTkFont(size=11),
-                text_color="green"
-            )
-            self.delimiter_display_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-    
-    def _load_sample_data(self) -> None:
-        """Load sample data from the chromatographic data column."""
-        if not self.selected_chromatographic_data_column:
-            self._show_error("Please select a Chromatographic Data column first.")
+    def _refresh_delimiter_step_reference(self) -> None:
+        """Mirror the step 1 sample text into the delimiters tab."""
+        if not hasattr(self, "delimiter_step_reference_text"):
             return
-        
-        try:
-            dataframe = self.loader.get_data()
-            if dataframe is None or dataframe.empty:
-                self._show_error("No data loaded in spreadsheet.")
-                return
-            
-            # Get first non-null value from the selected column
-            column_data = dataframe[self.selected_chromatographic_data_column]
-            sample_value = None
-            for value in column_data:
-                if pd.notna(value) and str(value).strip():
-                    sample_value = str(value).strip()
-                    break
-            
-            if sample_value:
-                self.test_data_entry.delete(0, "end")
-                self.test_data_entry.insert(0, sample_value)
-                logger.debug(f"Loaded sample data: {sample_value[:50]}...")
-            else:
-                self._show_error("No valid data found in the selected column.")
-        except Exception as e:
-            error_msg = f"Error loading sample data: {str(e)}"
-            self._show_error(error_msg)
-            logger.error(error_msg, exc_info=True)
-    
-    def _test_parse(self) -> None:
-        """Test parsing with current delimiters and test data."""
-        test_data = self.test_data_entry.get().strip()
-        
-        if not test_data:
-            self.parse_status_label.configure(
-                text="✗ Please enter test data",
-                text_color="red"
-            )
+        placeholder = (
+            "Complete step 1 and click Show sample data — the same preview will appear here."
+        )
+        body = self._column_pair_sample_text.strip() or placeholder
+        self.delimiter_step_reference_text.configure(state="normal")
+        self.delimiter_step_reference_text.delete("1.0", "end")
+        self.delimiter_step_reference_text.insert("1.0", body)
+        self.delimiter_step_reference_text.configure(state="disabled")
+
+    def _reset_data_assignments_confirmation(self) -> None:
+        """Clear assignment preview confirmation; user must click Test data assignments again."""
+        self._data_assignments_confirmed = False
+        if (
+            self.parsed_data_points
+            and self.items_per_point is not None
+            and hasattr(self, "structured_text")
+        ):
+            self._display_structured_data(use_assignment_headers=False)
+
+    def _invalidate_delimiter_parse(self) -> None:
+        """Clear parse results when delimiters or samples change."""
+        self._delimiter_parse_confirmed = False
+        self._data_assignments_confirmed = False
+        self.parsed_flat_items = []
+        self.parsed_data_points = []
+        self.items_per_point = None
+        if hasattr(self, "preview_text"):
             self.preview_text.delete("1.0", "end")
-            self.preview_text.insert("1.0", "No test data provided.")
-            return
-        
-        if not self.delimiters:
-            self.parse_status_label.configure(
-                text="✗ Please add at least one delimiter",
-                text_color="red"
-            )
-            self.preview_text.delete("1.0", "end")
-            self.preview_text.insert("1.0", "No delimiters configured. Please add delimiters first.")
-            return
-        
-        try:
-            # Create parser with current delimiters
-            parser = DataParser(self.delimiters.copy())
-            
-            # Parse the test data (returns flat list)
-            parsed_items = parser.parse(test_data)
-            
-            # Store parsed items for Phase 7
-            self.parsed_flat_items = parsed_items
-            
-            # Display results
-            if parsed_items:
-                # Format results for display
-                result_text = f"Parsed {len(parsed_items)} items:\n\n"
-                result_text += "Items:\n"
-                
-                # Show items in a readable format
-                for i, item in enumerate(parsed_items[:50], 1):  # Limit to first 50
-                    result_text += f"  {i}. {item}\n"
-                
-                if len(parsed_items) > 50:
-                    result_text += f"\n... and {len(parsed_items) - 50} more items\n"
-                
-                result_text += "\n💡 Tip: Specify 'Items per Data Point' below to structure this data."
-                
-                self.preview_text.delete("1.0", "end")
-                self.preview_text.insert("1.0", result_text)
-                
-                self.parse_status_label.configure(
-                    text=f"✓ Successfully parsed {len(parsed_items)} items. Now specify items per point to structure.",
-                    text_color="green"
-                )
-                
-                logger.debug(f"Successfully parsed test data into {len(parsed_items)} items")
-            else:
-                self.preview_text.delete("1.0", "end")
-                self.preview_text.insert("1.0", "Parsing returned no items.")
-                self.parse_status_label.configure(
-                    text="⚠ Parsing returned no items",
-                    text_color="orange"
-                )
-                
-        except Exception as e:
-            error_msg = str(e)
-            self.preview_text.delete("1.0", "end")
-            self.preview_text.insert("1.0", f"Parsing Error:\n{error_msg}")
-            self.parse_status_label.configure(
-                text=f"✗ Parsing failed: {error_msg}",
-                text_color="red"
-            )
-            logger.error(f"Parsing test failed: {error_msg}", exc_info=True)
-    
-    def _structure_parsed_data(self) -> None:
-        """Structure parsed flat items into data points based on items_per_point."""
-        if not hasattr(self, 'parsed_flat_items') or not self.parsed_flat_items:
-            self._show_error("Please parse test data first.")
-            return
-        
-        try:
-            items_per_point_str = self.items_per_point_entry.get().strip()
-            if not items_per_point_str:
-                self._show_error("Please enter items per data point.")
-                return
-            
-            items_per_point = int(items_per_point_str)
-            if items_per_point < 1:
-                self._show_error("Items per point must be at least 1.")
-                return
-            
-            # Check if data divides evenly
-            if len(self.parsed_flat_items) % items_per_point != 0:
-                self._show_error(
-                    f"Data has {len(self.parsed_flat_items)} items, which is not divisible by "
-                    f"{items_per_point} items per point. Please check your delimiters or items per point."
-                )
-                return
-            
-            # Group into data points
-            data_points = []
-            for i in range(0, len(self.parsed_flat_items), items_per_point):
-                data_point = self.parsed_flat_items[i:i + items_per_point]
-                data_points.append(data_point)
-            
-            self.parsed_data_points = data_points
-            self.items_per_point = items_per_point
-            
-            # Display structured data
-            self._display_structured_data()
-            
-            # Update time and count selection UIs
-            self._update_field_selection_ui()
-            
-            logger.debug(f"Structured data into {len(data_points)} data points with {items_per_point} items each")
-            
-        except ValueError:
-            self._show_error("Items per point must be a valid integer.")
-        except Exception as e:
-            error_msg = f"Error structuring data: {str(e)}"
-            self._show_error(error_msg)
-            logger.error(error_msg, exc_info=True)
-    
-    def _display_structured_data(self) -> None:
-        """Display structured data points."""
-        if not self.parsed_data_points:
+            self.preview_text.insert("1.0", "Enter delimiters and click Test parse.")
+        if hasattr(self, "parse_status_label"):
+            self.parse_status_label.configure(text="")
+        if hasattr(self, "structured_text"):
             self.structured_text.delete("1.0", "end")
-            self.structured_text.insert("1.0", "No structured data. Parse test data and specify items per point.")
+            self.structured_text.insert(
+                "1.0",
+                "Complete step 2 (Test parse) to populate structured points here.",
+            )
+        self._validate_selections()
+
+    def _on_delimiter_field_edited(self) -> None:
+        """Delimiter text changed — require a new test parse."""
+        self._invalidate_delimiter_parse()
+
+    def _get_delimiters_from_ui(self) -> Optional[List[str]]:
+        """Return non-blank delimiters in order (up to three slots); None if none entered."""
+        if not getattr(self, "delimiter_entry_widgets", None):
+            return None
+        out: List[str] = []
+        for ent in self.delimiter_entry_widgets:
+            raw = ent.get()
+            if raw == "":
+                continue
+            out.append(raw)
+        if not out:
+            return None
+        return out
+
+    def _apply_delimiter_entries_from_list(self, delims: List[str]) -> None:
+        """Populate the three delimiter fields from a saved list (extras omitted)."""
+        if not hasattr(self, "delimiter_entry_widgets"):
             return
-        
-        result_text = f"Structured into {len(self.parsed_data_points)} data points:\n\n"
-        result_text += "Data Points (showing first 10):\n"
-        result_text += "Index | " + " | ".join([f"Field {i}" for i in range(self.items_per_point)]) + "\n"
-        result_text += "-" * (20 + self.items_per_point * 15) + "\n"
-        
+        self._invalidate_delimiter_parse()
+        trimmed = list(delims[:3])
+        for i in range(3):
+            self.delimiter_entry_widgets[i].delete(0, "end")
+            if i < len(trimmed):
+                self.delimiter_entry_widgets[i].insert(0, trimmed[i])
+
+    def _format_structured_preview_table(self) -> str:
+        """Build a compact text table for the parse preview area."""
+        if not self.parsed_data_points or self.items_per_point is None:
+            return ""
+        lines: List[str] = []
+        header = "Idx | " + " | ".join(f"Fld {j}" for j in range(self.items_per_point))
+        lines.append(header)
+        lines.append("-" * min(96, max(40, len(header))))
+        for i, pt in enumerate(self.parsed_data_points[:24]):
+            row = " | ".join(str(x)[:22] for x in pt)
+            lines.append(f"{i:3} | {row}")
+        if len(self.parsed_data_points) > 24:
+            lines.append(f"... ({len(self.parsed_data_points)} points total)")
+        return "\n".join(lines)
+
+    def _on_test_parse_click(self) -> None:
+        """User clicked Test parse (shows errors in dialog)."""
+        self._run_delimiter_test_parse(silent=False)
+
+    def _ensure_chrom_sample_strings(self) -> None:
+        """If step 1 did not fill chrom samples, take the first non-empty spreadsheet cell."""
+        if self._sample_chrom_strings:
+            return
+        if not self.selected_chromatographic_data_column:
+            return
+        df = self.loader.get_data()
+        if df is None or self.selected_chromatographic_data_column not in df.columns:
+            return
+        col = df[self.selected_chromatographic_data_column]
+        for val in col:
+            if pd.notna(val) and str(val).strip():
+                self._sample_chrom_strings = [str(val).strip()]
+                break
+
+    def _run_delimiter_test_parse(self, silent: bool = False) -> bool:
+        """
+        Parse the first non-empty chrom sample using UI delimiters.
+        Fields per point always equals len(delimiters).
+        """
+        def fail(msg: str) -> bool:
+            self._delimiter_parse_confirmed = False
+            if hasattr(self, "parse_status_label"):
+                self.parse_status_label.configure(text=f"✗ {msg}", text_color="red")
+            if hasattr(self, "preview_text"):
+                self.preview_text.delete("1.0", "end")
+                self.preview_text.insert("1.0", msg)
+            if not silent:
+                self._show_error(msg)
+            self._validate_selections()
+            return False
+
+        test_data = ""
+        for s in self._sample_chrom_strings:
+            if s and str(s).strip():
+                test_data = str(s).strip()
+                break
+        if not test_data:
+            return fail("No chromatographic sample from step 1. Use Show sample data first.")
+
+        dlist = self._get_delimiters_from_ui()
+        if dlist is None:
+            return fail("Enter at least one delimiter. Leave unused delimiter fields blank.")
+
+        items_per = len(dlist)
+        try:
+            parser = DataParser(dlist.copy())
+            flat = parser.parse(test_data)
+        except Exception as e:
+            logger.error("Delimiter test parse failed", exc_info=True)
+            return fail(str(e))
+
+        if not flat:
+            return fail("Parsing produced no items.")
+
+        if len(flat) % items_per != 0:
+            return fail(
+                f"Parsed {len(flat)} field(s), not evenly divisible by {items_per} "
+                f"(your delimiter count). Adjust delimiters or pick a matching sample row."
+            )
+
+        self.delimiters = dlist.copy()
+        self.parsed_flat_items = flat
+        self.parsed_data_points = [
+            flat[i : i + items_per] for i in range(0, len(flat), items_per)
+        ]
+        self.items_per_point = items_per
+        self._delimiter_parse_confirmed = True
+
+        if hasattr(self, "preview_text"):
+            self.preview_text.delete("1.0", "end")
+            self.preview_text.insert("1.0", self._format_structured_preview_table())
+        if hasattr(self, "parse_status_label"):
+            self.parse_status_label.configure(
+                text=(
+                    f"✓ {len(self.parsed_data_points)} data point(s), "
+                    f"{items_per} field(s) per point (= {items_per} delimiter(s))."
+                ),
+                text_color="green",
+            )
+        self._data_assignments_confirmed = False
+        self._display_structured_data(use_assignment_headers=False)
+        self._update_field_selection_ui()
+        self._validate_selections()
+        logger.info(
+            "Test parse OK: %s points, items_per_point=%s",
+            len(self.parsed_data_points),
+            items_per,
+        )
+        return True
+    
+    def _get_structured_column_headers(self, use_assignment_headers: bool) -> List[str]:
+        """Build preview column titles: generic Field n, or Time / count names when testing assignments."""
+        if self.items_per_point is None:
+            return []
+        headers: List[str] = []
+        for i in range(self.items_per_point):
+            if use_assignment_headers and self.selected_time_index == i:
+                headers.append("Time")
+            elif use_assignment_headers and i in self.selected_count_indices:
+                ent = self.count_name_entries.get(i)
+                name = ent.get().strip() if ent else ""
+                if not name and self.count_names:
+                    sorted_idx = sorted(self.selected_count_indices)
+                    if i in sorted_idx:
+                        pos = sorted_idx.index(i)
+                        if pos < len(self.count_names):
+                            name = str(self.count_names[pos]).strip()
+                headers.append(name if name else f"Count (field {i})")
+            else:
+                headers.append(f"Field {i}")
+        return headers
+
+    def _display_structured_data(self, use_assignment_headers: bool = False) -> None:
+        """Display structured data points; optional headers from time/count assignments."""
+        if not hasattr(self, "structured_text"):
+            return
+        if not self.parsed_data_points or self.items_per_point is None:
+            self.structured_text.delete("1.0", "end")
+            self.structured_text.insert(
+                "1.0",
+                "No structured data yet. Complete step 2 with Test parse.",
+            )
+            return
+
+        headers = self._get_structured_column_headers(use_assignment_headers)
+        mode = "Assignment preview" if use_assignment_headers else "Field index preview"
+        result_text = f"{mode} — {len(self.parsed_data_points)} data points (first 10 rows):\n\n"
+        result_text += "Idx | " + " | ".join(headers) + "\n"
+        sep_len = min(96, max(36, 6 + sum(max(8, len(h)) for h in headers)))
+        result_text += "-" * sep_len + "\n"
+
         for i, point in enumerate(self.parsed_data_points[:10], 0):
-            result_text += f"  {i}   | " + " | ".join([str(item)[:10] for item in point]) + "\n"
-        
+            result_text += f"{i:3} | " + " | ".join(str(item)[:14] for item in point) + "\n"
+
         if len(self.parsed_data_points) > 10:
             result_text += f"\n... and {len(self.parsed_data_points) - 10} more data points\n"
-        
-        result_text += f"\nEach data point has {self.items_per_point} fields (indices 0-{self.items_per_point - 1})"
-        
+
+        if use_assignment_headers:
+            result_text += "\nHeaders reflect your time field and count names."
+        else:
+            result_text += (
+                f"\nUse Test data assignments to replace headers with Time and your count names."
+            )
+
         self.structured_text.delete("1.0", "end")
         self.structured_text.insert("1.0", result_text)
-    
+
+    def _on_test_data_assignments_click(self) -> None:
+        """Refresh the structured preview using Time + count name column headers."""
+        if not self.parsed_data_points:
+            self._show_error("Complete step 2 with Test parse first.")
+            return
+        if self.selected_time_index is None:
+            self._show_error("Select a time field first.")
+            return
+        if not self.selected_count_indices:
+            self._show_error("Select at least one count field first.")
+            return
+        for idx in sorted(self.selected_count_indices):
+            entry = self.count_name_entries.get(idx)
+            if not entry or not entry.get().strip():
+                self._show_error(
+                    f"Enter a name for each selected count field (missing for field {idx})."
+                )
+                return
+        self._display_structured_data(use_assignment_headers=True)
+        self._data_assignments_confirmed = True
+        self._validate_selections()
+
     def _update_field_selection_ui(self) -> None:
         """Update time and count selection UIs based on structured data."""
         if not self.parsed_data_points or self.items_per_point is None:
             return
+        if not hasattr(self, "time_index_dropdown"):
+            return
         
         # Update time index dropdown
-        field_indices = [str(i) for i in range(self.items_per_point)]
-        self.time_index_dropdown.configure(values=field_indices)
+        field_labels = [f"Field {i}" for i in range(self.items_per_point)]
+        self.time_index_dropdown.configure(values=field_labels)
         if self.selected_time_index is not None and self.selected_time_index < self.items_per_point:
-            self.time_index_var.set(str(self.selected_time_index))
+            self.time_index_var.set(f"Field {self.selected_time_index}")
         
         # Clear and recreate count checkboxes
         for widget in self.count_checkboxes_frame.winfo_children():
@@ -1078,10 +1123,16 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._update_count_names_ui()
     
     def _on_time_index_selected(self, choice: str) -> None:
-        """Handle time index selection."""
+        """Handle time index selection (combobox shows 'Field 0', 'Field 1', ...)."""
         try:
-            self.selected_time_index = int(choice)
+            raw = (choice or "").strip()
+            prefix = "Field "
+            if raw.startswith(prefix):
+                self.selected_time_index = int(raw[len(prefix) :].strip())
+            else:
+                self.selected_time_index = int(raw)
             logger.debug(f"Selected time index: {self.selected_time_index}")
+            self._reset_data_assignments_confirmation()
             self._validate_selections()
         except (ValueError, TypeError):
             logger.warning(f"Invalid time index selection: {choice}")
@@ -1113,6 +1164,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                     self._update_count_names_ui()
         
         self._update_count_names_ui()
+        self._reset_data_assignments_confirmation()
         self._validate_selections()
         logger.debug(f"Count selection changed. Selected indices: {self.selected_count_indices}")
     
@@ -1128,27 +1180,18 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 self.count_names_frame,
                 text="No count fields selected",
                 font=ctk.CTkFont(size=11),
-                text_color="gray"
+                text_color="gray",
             )
-            label.grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky="w")
+            label.grid(row=0, column=0, columnspan=2, padx=6, pady=8, sticky="w")
             return
-        
-        # Create label
-        label = ctk.CTkLabel(
-            self.count_names_frame,
-            text="Enter names for each count field:",
-            font=ctk.CTkFont(size=11)
-        )
-        label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 5), sticky="w")
-        
-        # Create entry for each selected count
-        for row_idx, count_idx in enumerate(sorted(self.selected_count_indices), 1):
+
+        for row_idx, count_idx in enumerate(sorted(self.selected_count_indices)):
             field_label = ctk.CTkLabel(
                 self.count_names_frame,
                 text=f"Field {count_idx}:",
-                font=ctk.CTkFont(size=11)
+                font=ctk.CTkFont(size=11),
             )
-            field_label.grid(row=row_idx, column=0, padx=10, pady=5, sticky="w")
+            field_label.grid(row=row_idx, column=0, padx=(6, 8), pady=3, sticky="w")
             
             # Get existing name if available
             existing_name = ""
@@ -1163,11 +1206,11 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             entry = ctk.CTkEntry(
                 self.count_names_frame,
                 placeholder_text=f"Name for field {count_idx}",
-                width=200
+                width=240,
             )
             if existing_name:
                 entry.insert(0, existing_name)
-            entry.grid(row=row_idx, column=1, padx=10, pady=5, sticky="ew")
+            entry.grid(row=row_idx, column=1, padx=(0, 6), pady=3, sticky="ew")
             entry.bind("<KeyRelease>", lambda e, idx=count_idx: self._on_count_name_changed(idx))
             
             self.count_name_entries[count_idx] = entry
@@ -1178,7 +1221,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         """Handle count name change."""
         entry = self.count_name_entries.get(index)
         if entry:
-            # Will be collected in validation
+            self._reset_data_assignments_confirmation()
             self._validate_selections()
     
     def _get_metadata_columns(self) -> List[str]:
@@ -1202,26 +1245,49 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         
         return metadata_cols
     
+    def _metadata_checkbox_caption(self, col_name: str) -> str:
+        """Shorten very long header text so multi-column layout stays readable."""
+        max_len = 48
+        if len(col_name) <= max_len:
+            return col_name
+        return col_name[: max_len - 1] + "…"
+
+    def _metadata_grid_column_count(self) -> int:
+        """Pick 2–5 columns from how many metadata fields exist (reduces vertical stacking)."""
+        n = len(self.metadata_columns)
+        if n <= 1:
+            return 1
+        if n <= 8:
+            return 2
+        if n <= 18:
+            return 3
+        if n <= 36:
+            return 4
+        return 5
+
     def _create_metadata_checkboxes(self) -> None:
-        """Create checkboxes for metadata column selection."""
-        # Clear existing checkboxes
+        """Lay out metadata checkboxes in a multi-column grid across the tab."""
         for widget in self.metadata_checkboxes_frame.winfo_children():
             widget.destroy()
         self.metadata_checkboxes.clear()
-        
-        # Create checkbox for each metadata column
-        for i, col_name in enumerate(sorted(self.metadata_columns)):
+
+        cols = self._metadata_grid_column_count()
+        for c in range(cols):
+            self.metadata_checkboxes_frame.grid_columnconfigure(
+                c, weight=1, uniform="metadata_checkbox_col"
+            )
+
+        sorted_names = sorted(self.metadata_columns)
+        for i, col_name in enumerate(sorted_names):
+            r, c = divmod(i, cols)
             checkbox = ctk.CTkCheckBox(
                 self.metadata_checkboxes_frame,
-                text=col_name,
-                command=lambda col=col_name: self._on_metadata_column_toggled(col)
+                text=self._metadata_checkbox_caption(col_name),
+                command=lambda col=col_name: self._on_metadata_column_toggled(col),
             )
-            checkbox.grid(row=i, column=0, padx=10, pady=5, sticky="w")
-            
-            # Check if this column was previously selected
+            checkbox.grid(row=r, column=c, padx=8, pady=4, sticky="nw")
             if col_name in self.selected_metadata_columns:
                 checkbox.select()
-            
             self.metadata_checkboxes[col_name] = checkbox
     
     def _on_metadata_column_toggled(self, column_name: str) -> None:
@@ -1305,13 +1371,16 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         
         self._update_metadata_selection_display()
     
-    def _validate_selections(self) -> None:
+    def _validate_selections(self) -> bool:
         """
         Validate column selections and delimiter configuration.
         
         Returns:
             True if selections are valid, False otherwise
         """
+        if not hasattr(self, "validation_label") or not hasattr(self, "accept_button"):
+            return False
+
         errors = []
         
         # Check Compound ID column
@@ -1332,11 +1401,35 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.selected_compound_id_column == self.selected_chromatographic_data_column):
             errors.append("Compound ID and Chromatographic Data columns must be different")
         
-        # Check delimiters (Phase 6)
-        if not self.delimiters:
-            errors.append("Please add at least one delimiter")
+        if (
+            self.selected_compound_id_column
+            and self.selected_chromatographic_data_column
+            and self.selected_compound_id_column != self.selected_chromatographic_data_column
+            and self.selected_compound_id_column in self.available_columns
+            and self.selected_chromatographic_data_column in self.available_columns
+            and not self._columns_sample_confirmed
+        ):
+            errors.append(
+                'Click "Show sample data" to verify paired values from the same rows before continuing.'
+            )
         
-            # Phase 7: Time & Count validation
+        if errors:
+            error_text = "Validation errors:\n" + "\n".join(f"• {error}" for error in errors)
+            self.validation_label.configure(text=error_text, text_color="red")
+            self.accept_button.configure(state="disabled")
+            return False
+
+        if not self._delimiter_parse_confirmed:
+            self.validation_label.configure(
+                text=(
+                    "✓ Column selections verified. On step 2, enter delimiters and click Test parse."
+                ),
+                text_color="green",
+            )
+            self.accept_button.configure(state="disabled")
+            return False
+        
+        # Phase 7: Time & Count validation
         if self.parsed_data_points:
             # Data is structured, so validate time and count selections
             if self.selected_time_index is None:
@@ -1384,25 +1477,37 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 if not errors:
                     self.count_names = count_names
         
-        # Update validation message
         if errors:
             error_text = "Validation errors:\n" + "\n".join(f"• {error}" for error in errors)
             self.validation_label.configure(text=error_text, text_color="red")
-            self.continue_button.configure(state="disabled")
+            self.accept_button.configure(state="disabled")
             return False
+
+        if self.parsed_data_points and self.selected_time_index is not None and self.selected_count_indices:
+            if not self._data_assignments_confirmed:
+                self.validation_label.configure(
+                    text=(
+                        '✓ Time and count fields look valid. Click "Test data assignments" on step 3, '
+                        "then use Accept configuration below on this tab."
+                    ),
+                    text_color="green",
+                )
+                self.accept_button.configure(state="disabled")
+                return False
+            self.validation_label.configure(
+                text=(
+                    "✓ Configuration is complete and valid. "
+                    "Use Accept configuration below when you are done with metadata."
+                ),
+                text_color="green",
+            )
         else:
-            if self.parsed_data_points and self.selected_time_index is not None and self.selected_count_indices:
-                self.validation_label.configure(
-                    text="✓ Configuration is complete and valid. Click 'Accept Configuration' to save.",
-                    text_color="green"
-                )
-            else:
-                self.validation_label.configure(
-                    text="✓ Basic configuration is valid. Complete time and count selection to finalize.",
-                    text_color="green"
-                )
-            self.continue_button.configure(state="normal")
-            return True
+            self.validation_label.configure(
+                text="✓ Basic configuration is valid. Complete time and count selection to finalize.",
+                text_color="green",
+            )
+        self.accept_button.configure(state="normal")
+        return True
     
     def _on_accept_configuration(self) -> None:
         """Handle Accept Configuration button click (Phase 7 - final step)."""
@@ -1420,6 +1525,11 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 return
             if not self.count_names or len(self.count_names) != len(self.selected_count_indices):
                 self._show_error("Please enter names for all selected count fields.")
+                return
+            if not self._data_assignments_confirmed:
+                self._show_error(
+                    'Click "Test data assignments" on step 3 before accepting configuration.'
+                )
                 return
         
         try:
@@ -1473,86 +1583,259 @@ class ConfigureSpreadsheetDialog(BaseWindow):
     def _show_error(self, message: str) -> None:
         """Show error message in a messagebox."""
         from tkinter import messagebox
-        messagebox.showerror("Error", message)
+        messagebox.showerror("Error", message, parent=self)
     
-    def _on_load_saved_config(self, choice: str) -> None:
-        """Handle saved config dropdown selection."""
-        logger.debug(f"Selected config: {choice}")
-    
-    def _load_selected_config(self) -> None:
-        """Load the selected saved configuration."""
-        selected = self.config_dropdown_var.get()
-        if not selected or selected == "Default":
-            # Load default config
+    def _format_default_preset_summary(self) -> str:
+        """Build a short summary of parameters from the default config file (for Load preset)."""
+        config = self.config_manager.load_default_config()
+        if not config:
+            return (
+                "Default preset (from default_config.json):\n\n"
+                "No default configuration file was found, or it could not be read. "
+                "Choosing Default still attempts to load it; complete the wizard manually if needed."
+            )
+        delim_line = (
+            ", ".join(repr(d) for d in config.delimiters)
+            if config.delimiters
+            else "(none)"
+        )
+        count_pairs = []
+        for idx, name in zip(config.count_column_indices, config.count_names):
+            count_pairs.append(f"{idx} → {name}")
+        counts_line = "; ".join(count_pairs) if count_pairs else "(not set in file)"
+        meta_n = len(config.selected_metadata_columns)
+        meta_line = (
+            f"{meta_n} column(s): {', '.join(config.selected_metadata_columns)}"
+            if meta_n
+            else "None"
+        )
+        return (
+            "Default preset (from default_config.json):\n\n"
+            f"Compound ID column: {config.compound_id_column}\n"
+            f"Chromatographic data column: {config.chromatographic_data_column}\n"
+            f"Delimiters (order): {delim_line}\n"
+            f"Time column index: {config.time_column_index}\n"
+            f"Count fields: {counts_line}\n"
+            f"Metadata: {meta_line}"
+        )
+
+    def _show_load_preset_dialog(self) -> None:
+        """Open a small dialog showing default parameters and a preset picker."""
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("Load preset")
+        dlg.geometry("520x440")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.grid_columnconfigure(0, weight=1)
+        dlg.grid_rowconfigure(1, weight=1)
+
+        header = ctk.CTkLabel(
+            dlg,
+            text="Default file parameters (reference). Choose a preset to apply to this spreadsheet.",
+            font=ctk.CTkFont(size=12),
+            wraplength=480,
+            justify="left",
+            anchor="w",
+        )
+        header.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="ew")
+
+        summary_box = ctk.CTkTextbox(dlg, height=200, wrap="word", activate_scrollbars=True)
+        summary_box.grid(row=1, column=0, padx=16, pady=8, sticky="nsew")
+        summary_box.insert("1.0", self._format_default_preset_summary())
+        summary_box.configure(state="disabled")
+
+        picker_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        picker_frame.grid(row=2, column=0, padx=16, pady=8, sticky="ew")
+        picker_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(picker_frame, text="Preset:").grid(row=0, column=0, padx=(0, 8), pady=4, sticky="w")
+        saved_configs = self.config_manager.list_named_configs()
+        config_names = [c["name"] for c in saved_configs]
+        preset_var = ctk.StringVar(value="Default")
+        combo = ctk.CTkComboBox(
+            picker_frame,
+            variable=preset_var,
+            values=["Default"] + config_names if config_names else ["Default"],
+            state="readonly",
+            width=280,
+        )
+        combo.grid(row=0, column=1, padx=0, pady=4, sticky="ew")
+
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.grid(row=3, column=0, padx=16, pady=(8, 16), sticky="e")
+
+        def on_load() -> None:
+            from tkinter import messagebox
+
+            choice = preset_var.get() or "Default"
+            loaded_config = self._load_preset(choice)
+            if loaded_config is None:
+                return
+            dlg.destroy()
+            if choice == "Default":
+                messagebox.showinfo(
+                    "Default configuration",
+                    "Validation passed: the saved default configuration is compatible "
+                    "with this spreadsheet.",
+                    parent=self,
+                )
+                if self.on_default_preset_applied:
+                    self.on_default_preset_applied(loaded_config)
+                self.on_close()
+
+        def on_cancel() -> None:
+            try:
+                dlg.grab_release()
+            except Exception:
+                pass
+            dlg.destroy()
+
+        ctk.CTkButton(btn_row, text="Load preset", width=110, command=on_load).grid(
+            row=0, column=0, padx=4, pady=4
+        )
+        ctk.CTkButton(
+            btn_row,
+            text="Close",
+            width=90,
+            fg_color="gray40",
+            hover_color="gray25",
+            command=on_cancel,
+        ).grid(row=0, column=1, padx=4, pady=4)
+
+        dlg.protocol("WM_DELETE_WINDOW", on_cancel)
+
+    def _load_preset(self, preset_name: str) -> Optional[SpreadsheetConfig]:
+        """
+        Load the default or a named preset into the wizard.
+
+        Returns:
+            The applied SpreadsheetConfig if loading succeeded, or None on failure.
+        """
+        if not preset_name or preset_name == "Default":
             config = self.config_manager.load_default_config()
         else:
-            # Load named config
-            config = self.config_manager.load_named_config(selected)
-        
+            config = self.config_manager.load_named_config(preset_name)
+
         if not config:
             self._show_error("No configuration found to load.")
-            return
-        
-        # Validate config against current spreadsheet
+            return None
+
         is_valid, error_msg = self.config_manager.validate_config_against_spreadsheet(
             config, self.available_columns
         )
-        
+
         if not is_valid:
-            self._show_error(f"Cannot load configuration: {error_msg}")
-            return
-        
-        # Load configuration into UI
+            self._show_error(
+                "Cannot load configuration: "
+                f"{error_msg or 'This preset does not match the current spreadsheet.'}"
+            )
+            return None
+
         self.selected_compound_id_column = config.compound_id_column
         self.selected_chromatographic_data_column = config.chromatographic_data_column
         self.delimiters = config.delimiters.copy() if config.delimiters else []
+        if len(self.delimiters) > 3:
+            logger.warning("Preset lists more than 3 delimiters; using the first 3 for this wizard.")
+            self.delimiters = self.delimiters[:3]
         self.selected_time_index = config.time_column_index
-        self.selected_count_indices = config.count_column_indices.copy() if config.count_column_indices else []
+        self.selected_count_indices = (
+            config.count_column_indices.copy() if config.count_column_indices else []
+        )
         self.count_names = config.count_names.copy() if config.count_names else []
-        self.selected_metadata_columns = config.selected_metadata_columns.copy() if config.selected_metadata_columns else []
-        
-        # Update UI
+        self.selected_metadata_columns = (
+            config.selected_metadata_columns.copy() if config.selected_metadata_columns else []
+        )
+
         if self.selected_compound_id_column:
             self.compound_var.set(self.selected_compound_id_column)
         if self.selected_chromatographic_data_column:
             self.data_var.set(self.selected_chromatographic_data_column)
-        
+
         self._update_compound_display()
         self._update_data_display()
-        self._update_delimiter_display()
-        
-        # Update metadata checkboxes
-        if hasattr(self, 'metadata_checkboxes_frame'):
+        self._apply_delimiter_entries_from_list(self.delimiters)
+
+        if hasattr(self, "metadata_checkboxes_frame"):
             self._refresh_metadata_checkboxes()
-        
-        # Update Phase 7 UI if we have structured data
-        if self.items_per_point:
-            self._update_field_selection_ui()
-        
-        self._validate_selections()
-        
-        logger.info(f"Loaded configuration: {selected}")
-    
-    def _save_config_as(self) -> None:
-        """Save current configuration with a custom name."""
-        from tkinter import simpledialog
-        
-        # Get name from user
-        name = simpledialog.askstring(
-            "Save Configuration",
-            "Enter a name for this configuration:",
-            initialvalue=""
+
+        preset_note = (
+            "Preset applied: columns were validated for this spreadsheet. "
+            "Change a column selection if you want a new preview via Show sample data.\n"
         )
-        
+        self._columns_sample_confirmed = True
+        self._column_pair_sample_text = preset_note
+        if hasattr(self, "column_sample_text"):
+            self.column_sample_text.configure(state="normal")
+            self.column_sample_text.delete("1.0", "end")
+            self.column_sample_text.insert("1.0", preset_note)
+            self.column_sample_text.configure(state="disabled")
+        self._refresh_delimiter_step_reference()
+
+        self._ensure_chrom_sample_strings()
+        parse_ok = False
+        if self.delimiters and self._sample_chrom_strings:
+            parse_ok = self._run_delimiter_test_parse(silent=True)
+        if not parse_ok:
+            self.selected_time_index = None
+            self.selected_count_indices = []
+            self.count_names = []
+        elif self.items_per_point is not None:
+            if self.selected_time_index is not None and self.selected_time_index >= self.items_per_point:
+                self.selected_time_index = None
+            self.selected_count_indices = [
+                i for i in self.selected_count_indices if i < self.items_per_point
+            ]
+            self.count_names = self.count_names[: len(self.selected_count_indices)]
+            self._update_field_selection_ui()
+
+        self._data_assignments_confirmed = False
+        self._validate_selections()
+
+        try:
+            applied = SpreadsheetConfig(
+                compound_id_column=self.selected_compound_id_column,
+                chromatographic_data_column=self.selected_chromatographic_data_column,
+                delimiters=self.delimiters.copy(),
+                time_column_index=self.selected_time_index,
+                count_column_indices=self.selected_count_indices.copy(),
+                count_names=self.count_names.copy(),
+                selected_metadata_columns=self.selected_metadata_columns.copy(),
+            )
+            applied.__post_init__()
+        except ValueError as e:
+            logger.error("Preset produced invalid configuration: %s", e, exc_info=True)
+            self._show_error(f"Loaded preset has invalid field layout: {e}")
+            return None
+
+        logger.info("Loaded preset: %s", preset_name)
+        return applied
+
+    def _save_preset(self) -> None:
+        """Save current configuration as a named preset (same as former Save As)."""
+        from tkinter import messagebox
+        from tkinter import simpledialog
+
+        messagebox.showinfo(
+            "Save preset",
+            "This saves your current spreadsheet configuration settings only: "
+            "column mappings, delimiter sequence, parsed field layout, time and count fields, "
+            "and selected metadata. It does not export spreadsheet data. "
+            "You can load this preset later with Load preset.",
+        )
+
+        name = simpledialog.askstring(
+            "Save preset",
+            "Enter a name for this configuration preset:",
+            initialvalue="",
+        )
+
         if not name or not name.strip():
             return
-        
-        # Validate current configuration
+
         if not self._validate_selections():
             self._show_error("Cannot save: Configuration is incomplete or invalid.")
             return
-        
-        # Create config object
+
         try:
             config = SpreadsheetConfig(
                 compound_id_column=self.selected_compound_id_column,
@@ -1560,26 +1843,18 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 delimiters=self.delimiters.copy(),
                 time_column_index=self.selected_time_index,
                 count_column_indices=self.selected_count_indices.copy(),
-                count_names=self.count_names.copy()
+                count_names=self.count_names.copy(),
+                selected_metadata_columns=self.selected_metadata_columns.copy(),
             )
-            
-            # Save named config
+
             success = self.config_manager.save_named_config(config, name.strip())
-            
+
             if success:
-                from tkinter import messagebox
-                messagebox.showinfo("Success", f"Configuration saved as '{name}'")
-                
-                # Refresh dropdown
-                saved_configs = self.config_manager.list_named_configs()
-                config_names = [config["name"] for config in saved_configs]
-                self.config_dropdown.configure(values=["Default"] + config_names)
-                self.config_dropdown_var.set(name.strip())
-                
-                logger.info(f"Saved configuration as '{name}'")
+                messagebox.showinfo("Success", f"Configuration preset saved as '{name.strip()}'.")
+                logger.info("Saved configuration preset as '%s'", name.strip())
             else:
                 self._show_error("Failed to save configuration.")
-                
+
         except Exception as e:
             error_msg = f"Error saving configuration: {str(e)}"
             self._show_error(error_msg)

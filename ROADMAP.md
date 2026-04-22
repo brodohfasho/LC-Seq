@@ -224,44 +224,44 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 ## Phase 9: Data Processing & Storage
 
 ### 9.1 Chunked CSV Processing
-- [ ] Implement chunked CSV reading (process in batches)
-- [ ] Detect dataset size and choose processing strategy
-- [ ] Use pandas chunksize for memory-efficient processing
-- [ ] Implement progress reporting during processing
-- [ ] Handle large files (millions to billions of rows)
-- [ ] Support background processing with UI updates
+- [x] Implement chunked CSV reading (process in batches)
+- [x] Detect dataset size and choose processing strategy
+- [x] Use pandas chunksize for memory-efficient processing
+- [x] Implement progress reporting during processing
+- [x] Handle large files (millions to billions of rows)
+- [x] Support background processing with UI updates
 
 ### 9.2 Data Parsing & Extraction
-- [ ] Parse rows using configured delimiters (chunked)
-- [ ] Extract Compound ID from configured column
-- [ ] Extract only selected metadata columns (from Phase 7.3)
-- [ ] Extract Time and Count data for each compound
-- [ ] Handle parsing errors gracefully (skip invalid rows with warning)
-- [ ] Track processing statistics (successful, skipped, errors)
+- [x] Parse rows using configured delimiters (chunked)
+- [x] Extract Compound ID from configured column
+- [x] Extract only selected metadata columns (from Phase 7.3)
+- [x] Extract Time and Count data for each compound
+- [x] Handle parsing errors gracefully (skip invalid rows with warning)
+- [x] Track processing statistics (successful, skipped, errors)
 
 ### 9.3 Database Storage (SQLite)
-- [ ] Create SQLite database schema for compounds
-- [ ] Store compound metadata in indexed columns (only selected columns)
-- [ ] Store chromatographic data points in separate table
-- [ ] Create indexes on searchable metadata columns
-- [ ] Implement batch inserts for efficiency
-- [ ] Support both in-memory (small datasets) and database (large datasets) modes
+- [x] Create SQLite database schema for compounds
+- [x] Store compound metadata in indexed columns (only selected columns)
+- [x] Store chromatographic data points in separate table
+- [x] Create indexes on searchable metadata columns
+- [x] Implement batch inserts for efficiency
+- [x] Support both in-memory (small datasets) and database (large datasets) modes
 
 ### 9.4 Data Validation & Cleaning
-- [ ] Validate Time values (numeric, reasonable range)
-- [ ] Validate Count values (numeric, non-negative)
-- [ ] Handle missing or invalid data points
-- [ ] Skip invalid rows with detailed error logging
-- [ ] Report data quality issues to user
-- [ ] Store validation results and statistics
+- [x] Validate Time values (numeric, reasonable range)
+- [x] Validate Count values (numeric, non-negative)
+- [x] Handle missing or invalid data points
+- [x] Skip invalid rows with detailed error logging
+- [x] Report data quality issues to user
+- [x] Store validation results and statistics
 
 ### 9.5 Database Building & Indexing
-- [ ] Build database from processed chunks
-- [ ] Create indexes on all selected metadata columns
-- [ ] Create compound ID index for fast lookup
-- [ ] Optimize database for query performance
-- [ ] Provide database build progress and completion status
-- [ ] Handle database file management (location, cleanup)
+- [x] Build database from processed chunks
+- [x] Create indexes on all selected metadata columns
+- [x] Create compound ID index for fast lookup
+- [x] Optimize database for query performance
+- [x] Provide database build progress and completion status
+- [x] Handle database file management (location, cleanup)
 
 ---
 
@@ -476,9 +476,9 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 8 - Configuration Persistence (Complete)  
+**Phase**: Phase 9 - Data Processing & Storage (Complete)  
 **Last Updated**: 2026-02-01  
-**Next Steps**: Begin Phase 9 - Data Processing & Storage
+**Next Steps**: Begin Phase 10 - Chromatogram Visualizer - Part 1 (Basic Plotting)
 
 **Key Design Decisions**:
 - **Scalability**: Chunked processing for large datasets (millions-billions of rows)
