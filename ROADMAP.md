@@ -338,35 +338,35 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 ## Phase 11: Chromatogram Visualizer - Part 2 (Search Functionality)
 
 ### 11.1 Query Builder Interface
-- [ ] Create visual query builder UI
-- [ ] Support field selection dropdown (all selected metadata columns)
-- [ ] Support operators: =, !=, >, <, >=, <=, contains, starts with, ends with
-- [ ] Support value input (text, numeric, date based on field type)
-- [ ] Support AND/OR logic between conditions
-- [ ] Allow adding/removing conditions dynamically
-- [ ] Display query structure visually
-- [ ] Create "Search" and "Clear" buttons
+- [x] Create visual query builder UI
+- [x] Support field selection dropdown (all selected metadata columns)
+- [x] Support operators: =, !=, >, <, >=, <=, contains, starts with, ends with
+- [x] Support value input (text, numeric, date based on field type)
+- [x] Support AND/OR logic between conditions
+- [x] Allow adding/removing conditions dynamically
+- [x] Display query structure visually
+- [x] Create "Search" and "Clear" buttons
 
 ### 11.2 Search Logic & Database Queries
-- [ ] Convert query builder conditions to SQL queries
-- [ ] Execute queries against SQLite database with indexes
-- [ ] Handle different data types (text, numeric, date)
-- [ ] Support case-sensitive and case-insensitive text searches
-- [ ] Return matching compound IDs efficiently
-- [ ] Handle empty search results with user feedback
-- [ ] Optimize queries for performance (use indexes)
+- [x] Convert query builder conditions to SQL queries
+- [x] Execute queries against SQLite database with indexes
+- [x] Handle different data types (text, numeric, date)
+- [x] Support case-sensitive and case-insensitive text searches
+- [x] Return matching compound IDs efficiently
+- [x] Handle empty search results with user feedback
+- [x] Optimize queries for performance (use indexes)
 
 ### 11.3 Search Results Display (Virtual Scrolling)
-- [ ] Implement virtual scrolling list widget
-- [ ] Display matching compounds with selected metadata columns
-- [ ] Show compound ID and relevant metadata in results
-- [ ] Render only visible items (20-50 at a time)
-- [ ] Load more items as user scrolls
-- [ ] Implement result selection (checkboxes for multiple selection)
-- [ ] Add "Select All" / "Select None" functionality
-- [ ] Highlight selected compounds
-- [ ] Display result count and status
-- [ ] Support secondary filtering of results (optional)
+- [x] Implement virtual scrolling list widget
+- [x] Display matching compounds with selected metadata columns
+- [x] Show compound ID and relevant metadata in results
+- [x] Render only visible items (20-50 at a time)
+- [x] Load more items as user scrolls
+- [x] Implement result selection (checkboxes for multiple selection)
+- [x] Add "Select All" / "Select None" functionality
+- [x] Highlight selected compounds
+- [x] Display result count and status
+- [x] Support secondary filtering of results (optional)
 
 ---
 
@@ -521,9 +521,9 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 10 complete; Phase 10.5 (on-demand + managed bulk DB) complete  
-**Last Updated**: 2026-04-20  
-**Next Steps**: Phase 11 — Chromatogram Visualizer Part 2 (search / query builder)
+**Phase**: Phase 11 (visualizer search + virtual results) complete  
+**Last Updated**: 2026-04-22  
+**Next Steps**: Phase 12 — Chromatogram Visualizer Part 3 (multi-compound plotting polish)
 
 **Key Design Decisions**:
 - **Primary workflow**: Spreadsheet + valid configuration → enter visualizer → **parse/plot on demand** per compound (no bulk SQLite required).

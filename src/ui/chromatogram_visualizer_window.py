@@ -1,13 +1,13 @@
 # src/ui/chromatogram_visualizer_window.py
 """
-Chromatogram visualizer: basic Count vs Time plotting (Phase 10).
+Chromatogram visualizer: Count vs Time plotting (Phase 10) and metadata search (Phase 11).
 """
 
 import logging
 import tkinter as tk
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 import customtkinter as ctk
 import pandas as pd
@@ -19,10 +19,18 @@ from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
 from src.core.data_processor import DataProcessor
 from src.core.data_store import DataStore
+from src.core.metadata_search import (
+    append_results_text_filter,
+    build_where_clause,
+    sanitize_sql_column,
+    validate_conditions,
+)
 from src.core.spreadsheet_loader import SpreadsheetLoader
 from src.models.compound import Compound
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
+from src.ui.query_builder_panel import QueryBuilderPanel
+from src.ui.virtual_metadata_results import VirtualMetadataResultList
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +78,13 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._compound_cache: "OrderedDict[str, Compound]" = OrderedDict()
         self._primary_variant_cache: "OrderedDict[str, List[Compound]]" = OrderedDict()
         self._processor = DataProcessor()
+        self._active_search_where: Optional[str] = None
+        self._active_search_params: List[Any] = []
+        self._result_filter_debounce: Optional[str] = None
+        self._query_panel: Optional[QueryBuilderPanel] = None
+        self._virtual_results: Optional[VirtualMetadataResultList] = None
+        self._search_status: Optional[ctk.CTkLabel] = None
+        self._result_filter_var: Optional[tk.StringVar] = None
 
         self.geometry("1600x980")
         self.center_window(1600, 980)
@@ -285,30 +300,43 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._variant_series_frame.grid(row=r, column=0, padx=8, pady=(0, 8), sticky="ew")
 
     def _build_compound_list_column(self) -> None:
-        """Middle column: searchable compound list with tall viewport."""
+        """Middle column: Browse tab (list) and optional Search tab (query builder + virtual results)."""
         middle = self._middle_panel
-        middle.grid_rowconfigure(2, weight=1)
+        middle.grid_rowconfigure(0, weight=1)
         middle.grid_columnconfigure(0, weight=1)
 
-        list_title = (
-            "Compound (primary ID)" if self._uses_variants else "Compound ID"
-        )
+        self._compound_tabs = ctk.CTkTabview(middle)
+        self._compound_tabs.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+
+        browse_tab = self._compound_tabs.add("Browse")
+        self._build_browse_compound_ui(browse_tab)
+
+        if not self._on_demand_mode:
+            search_tab = self._compound_tabs.add("Search")
+            self._build_search_tab(search_tab)
+
+    def _build_browse_compound_ui(self, parent: ctk.CTkFrame) -> None:
+        """Compound list + text filter (spreadsheet or full DB browse)."""
+        parent.grid_rowconfigure(2, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        list_title = "Compound (primary ID)" if self._uses_variants else "Compound ID"
         ctk.CTkLabel(
-            middle,
+            parent,
             text=list_title,
             font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
 
         self._filter_var = tk.StringVar(value="")
         filter_entry = ctk.CTkEntry(
-            middle,
+            parent,
             placeholder_text="Filter compounds…",
             textvariable=self._filter_var,
         )
         filter_entry.grid(row=1, column=0, padx=8, pady=4, sticky="ew")
         filter_entry.bind("<KeyRelease>", lambda _e: self._apply_compound_filter())
 
-        list_frame = ctk.CTkFrame(middle)
+        list_frame = ctk.CTkFrame(parent)
         list_frame.grid(row=2, column=0, padx=8, pady=4, sticky="nsew")
         list_frame.grid_rowconfigure(0, weight=1)
         list_frame.grid_columnconfigure(0, weight=1)
@@ -326,11 +354,247 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._compound_listbox.bind("<<ListboxSelect>>", self._on_compound_list_select)
 
         self._list_status = ctk.CTkLabel(
-            middle, text="", font=ctk.CTkFont(size=11), text_color="gray"
+            parent, text="", font=ctk.CTkFont(size=11), text_color="gray"
         )
         self._list_status.grid(row=3, column=0, padx=8, pady=(4, 6), sticky="w")
 
         self._apply_compound_filter()
+
+    def _build_search_tab(self, parent: ctk.CTkFrame) -> None:
+        """Metadata query builder and virtual results (bulk database mode only)."""
+        assert self._config is not None
+        parent.grid_rowconfigure(4, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            parent,
+            text="Search compounds (SQLite)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
+
+        meta = list(self._config.selected_metadata_columns or [])
+        self._query_panel = QueryBuilderPanel(
+            parent,
+            metadata_fields=meta,
+            on_search=self._on_query_search_clicked,
+            on_clear=self._on_query_clear_clicked,
+        )
+        self._query_panel.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+
+        self._result_filter_var = tk.StringVar(value="")
+        rf = ctk.CTkEntry(
+            parent,
+            placeholder_text="Filter results (matches ID or any metadata text)…",
+            textvariable=self._result_filter_var,
+        )
+        rf.grid(row=2, column=0, padx=8, pady=(0, 4), sticky="ew")
+        rf.bind("<KeyRelease>", lambda _e: self._schedule_result_filter_refresh())
+
+        actions = ctk.CTkFrame(parent, fg_color="transparent")
+        actions.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
+        ctk.CTkButton(actions, text="Select all results", width=130, command=self._on_search_select_all).pack(
+            side="left", padx=4
+        )
+        ctk.CTkButton(
+            actions, text="Select none", width=90, fg_color="gray40", command=self._on_search_select_none
+        ).pack(side="left", padx=4)
+        ctk.CTkButton(
+            actions,
+            text="Load selected into plot",
+            width=160,
+            fg_color="#238636",
+            hover_color="#2ea043",
+            command=self._on_load_search_selection_into_plot,
+        ).pack(side="left", padx=4)
+
+        cols = self._search_result_column_headers()
+        self._virtual_results = VirtualMetadataResultList(parent, columns=cols)
+        self._virtual_results.grid(row=4, column=0, sticky="nsew", padx=8, pady=4)
+
+        self._search_status = ctk.CTkLabel(
+            parent, text="Run a search to see matches.", font=ctk.CTkFont(size=11), text_color="gray"
+        )
+        self._search_status.grid(row=5, column=0, padx=8, pady=(0, 8), sticky="w")
+
+    def _search_result_column_headers(self) -> List[str]:
+        """Column headers for the virtual results table."""
+        assert self._config is not None
+        meta = list(self._config.selected_metadata_columns or [])
+        if self._uses_variants:
+            return ["primary_compound_id", "compound_variant", *meta]
+        return ["compound_id", *meta]
+
+    def _compute_search_where(self) -> Tuple[str, List[Any]]:
+        """Build WHERE clause from the query panel plus optional results text filter."""
+        assert self._config is not None
+        assert self._query_panel is not None
+        conditions = self._query_panel.get_conditions()
+        combiners = self._query_panel.get_combiners()
+        while len(combiners) < max(0, len(conditions) - 1):
+            combiners.append("AND")
+        where_sql, params = build_where_clause(conditions, combiners)
+        needle = (self._result_filter_var.get() if self._result_filter_var else "").strip()
+        meta_safe = [sanitize_sql_column(c) for c in self._config.selected_metadata_columns]
+        or_cols = ["compound_id", *meta_safe]
+        where_sql, params = append_results_text_filter(where_sql, list(params), needle, or_cols)
+        return where_sql, params
+
+    def _on_query_search_clicked(self) -> None:
+        """Validate, execute search, populate virtual list."""
+        assert self._config is not None
+        assert self._data_store is not None
+        assert self._query_panel is not None
+        assert self._virtual_results is not None
+        assert self._search_status is not None
+
+        conditions = self._query_panel.get_conditions()
+        allowed = self._config.selected_metadata_columns or []
+        errs = validate_conditions(conditions, allowed)
+        if errs:
+            messagebox.showerror("Search", "\n".join(errs), parent=self)
+            return
+        try:
+            where_sql, params = self._compute_search_where()
+        except ValueError as exc:
+            messagebox.showerror("Search", str(exc), parent=self)
+            return
+
+        self._active_search_where = where_sql
+        self._active_search_params = list(params)
+        total = self._data_store.count_compounds_where(where_sql, params)
+        if total == 0:
+            self._search_status.configure(text="No matches for this query.")
+            self._virtual_results.clear_results()
+            return
+
+        display_cols = list(self._config.selected_metadata_columns or [])
+
+        def fetch_page(offset: int, limit: int) -> List[dict]:
+            rows, _t = self._data_store.search_compounds_page(
+                display_cols,
+                where_sql,
+                tuple(params),
+                limit,
+                offset,
+            )
+            return rows
+
+        self._virtual_results.set_columns(self._search_result_column_headers())
+        self._virtual_results.set_query(total, fetch_page)
+        self._search_status.configure(text=f"{total} match(es). Scroll to load more rows.")
+
+    def _on_query_clear_clicked(self) -> None:
+        """Reset search results pane (query panel clears itself)."""
+        self._active_search_where = None
+        self._active_search_params = []
+        if self._virtual_results is not None:
+            self._virtual_results.clear_results()
+        if self._search_status is not None:
+            self._search_status.configure(text="Run a search to see matches.")
+
+    def _schedule_result_filter_refresh(self) -> None:
+        """Debounce secondary filter while typing."""
+        if self._active_search_where is None:
+            return
+        if self._result_filter_debounce is not None:
+            try:
+                self.after_cancel(self._result_filter_debounce)
+            except Exception:
+                pass
+        self._result_filter_debounce = self.after(400, self._apply_result_filter_refresh)
+
+    def _apply_result_filter_refresh(self) -> None:
+        self._result_filter_debounce = None
+        if self._active_search_where is None or self._data_store is None:
+            return
+        if self._query_panel is None or self._virtual_results is None or self._search_status is None:
+            return
+        conditions = self._query_panel.get_conditions()
+        allowed = self._config.selected_metadata_columns or []  # type: ignore[union-attr]
+        errs_rf = validate_conditions(conditions, allowed)
+        if errs_rf:
+            return
+        try:
+            where_sql, params = self._compute_search_where()
+        except ValueError:
+            return
+        self._active_search_where = where_sql
+        self._active_search_params = list(params)
+        total = self._data_store.count_compounds_where(where_sql, params)
+        display_cols = list(self._config.selected_metadata_columns or [])
+
+        def fetch_page(offset: int, limit: int) -> List[dict]:
+            rows, _t = self._data_store.search_compounds_page(
+                display_cols,
+                where_sql,
+                tuple(params),
+                limit,
+                offset,
+            )
+            return rows
+
+        self._virtual_results.set_query(total, fetch_page)
+        self._search_status.configure(text=f"{total} match(es) after result filter.")
+
+    def _on_search_select_all(self) -> None:
+        """Select every compound_id returned by the active query (capped)."""
+        if self._data_store is None or self._active_search_where is None:
+            messagebox.showinfo("Search", "Run a search first.", parent=self)
+            return
+        assert self._virtual_results is not None
+        total = self._data_store.count_compounds_where(
+            self._active_search_where, self._active_search_params
+        )
+        cap = VirtualMetadataResultList.max_select_all()
+        if total > cap:
+            messagebox.showwarning(
+                "Search",
+                f"Your query matches {total} rows, which exceeds the select-all limit "
+                f"of {cap}. Narrow the query before using Select all results.",
+                parent=self,
+            )
+            return
+        ids = self._data_store.list_compound_ids_where(
+            self._active_search_where, self._active_search_params
+        )
+        self._virtual_results.select_all_ids(ids)
+        if self._search_status is not None:
+            self._search_status.configure(text=f"Selected all {len(ids)} result(s).")
+
+    def _on_search_select_none(self) -> None:
+        if self._virtual_results is not None:
+            self._virtual_results.select_none()
+        if self._search_status is not None:
+            self._search_status.configure(text="Selection cleared.")
+
+    def _on_load_search_selection_into_plot(self) -> None:
+        """Load checked search hits into the chromatogram plot."""
+        if self._data_store is None:
+            return
+        assert self._virtual_results is not None
+        ids = self._virtual_results.get_selected_compound_ids()
+        if not ids:
+            messagebox.showinfo("Plot", "Select one or more results (checkboxes) first.", parent=self)
+            return
+        if len(ids) > 200:
+            ids = ids[:200]
+            messagebox.showwarning(
+                "Plot",
+                "Too many compounds selected; only the first 200 will be loaded.",
+                parent=self,
+            )
+
+        loaded: List[Compound] = []
+        for cid in ids:
+            c = self._data_store.get_compound(cid)
+            if c is not None:
+                loaded.append(c)
+        if not loaded:
+            messagebox.showerror("Plot", "Could not load selected compound(s).", parent=self)
+            return
+        self._current_compounds = loaded
+        self._refresh_variant_toggles()
+        self._redraw_plot()
 
     def _on_process_data_clicked(self) -> None:
         """Parse selected spreadsheet row(s) into Compound(s) (on-demand)."""

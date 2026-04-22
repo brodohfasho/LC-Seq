@@ -8,7 +8,7 @@ import logging
 import json
 import pandas as pd
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Set
+from typing import Optional, List, Dict, Any, Sequence, Tuple
 from contextlib import contextmanager
 
 from src.models.compound import Compound
@@ -221,24 +221,25 @@ class DataStore:
         self.conn.commit()
         logger.info("All indexes created and foreign keys re-enabled")
     
-    def _sanitize_column_name(self, name: str) -> str:
+    @staticmethod
+    def _sanitize_column_name(name: str) -> str:
         """
         Sanitize column name for SQL use.
-        
+
         Args:
             name: Original column name
-            
+
         Returns:
             Sanitized column name safe for SQL
         """
         # Replace invalid characters with underscore
-        safe = "".join(c if c.isalnum() or c == '_' else '_' for c in name)
+        safe = "".join(c if c.isalnum() or c == "_" else "_" for c in name)
         # Ensure it starts with a letter or underscore
-        if safe and not (safe[0].isalpha() or safe[0] == '_'):
-            safe = '_' + safe
+        if safe and not (safe[0].isalpha() or safe[0] == "_"):
+            safe = "_" + safe
         # Ensure it's not empty
         if not safe:
-            safe = 'col_' + str(hash(name))[:8]
+            safe = "col_" + str(hash(name))[:8]
         return safe
     
     @contextmanager
@@ -601,6 +602,105 @@ class DataStore:
             )
             return []
     
+    def count_compounds_where(self, where_sql: str, params: Sequence[Any]) -> int:
+        """
+        Count compound rows matching a parameterized WHERE fragment (no ``WHERE`` keyword).
+
+        Args:
+            where_sql: SQL boolean expression referencing ``compounds`` columns.
+            params: Bound parameters for the fragment.
+
+        Returns:
+            Match count, or 0 on error.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                f"SELECT COUNT(*) AS c FROM compounds WHERE ({where_sql})",
+                tuple(params),
+            )
+            row = cursor.fetchone()
+            return int(row["c"]) if row else 0
+        except Exception as e:
+            logger.error("Error counting compounds: %s", e, exc_info=True)
+            return 0
+
+    def search_compounds_page(
+        self,
+        display_columns: Sequence[str],
+        where_sql: str,
+        where_params: Sequence[Any],
+        limit: int,
+        offset: int,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """
+        Paginated compound search for the visual query builder (Phase 11).
+
+        Always returns ``compound_id``, ``primary_compound_id``, ``compound_variant``,
+        plus each requested metadata column (original header names as dict keys).
+
+        Args:
+            display_columns: Metadata column headers from configuration (whitelist).
+            where_sql: Parameterized boolean SQL (no ``WHERE`` keyword).
+            where_params: Parameters for ``where_sql``.
+            limit: Maximum rows (page size).
+            offset: Row offset for paging.
+
+        Returns:
+            Tuple of (page rows as dicts, total matching row count).
+        """
+        total = self.count_compounds_where(where_sql, where_params)
+        if total == 0 or limit <= 0:
+            return [], total
+
+        safe_meta = [self._sanitize_column_name(c) for c in display_columns]
+        base_cols = ["compound_id", "primary_compound_id", "compound_variant"]
+        select_sql_parts: List[str] = list(base_cols)
+        for idx, safe in enumerate(safe_meta):
+            select_sql_parts.append(f"{safe} AS meta_{idx}")
+
+        query = (
+            f"SELECT {', '.join(select_sql_parts)} FROM compounds "
+            f"WHERE ({where_sql}) ORDER BY compound_id LIMIT ? OFFSET ?"
+        )
+        params = tuple(where_params) + (int(limit), int(offset))
+
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(query, params)
+            rows_out: List[Dict[str, Any]] = []
+            for row in cursor.fetchall():
+                d: Dict[str, Any] = {
+                    "compound_id": row["compound_id"],
+                    "primary_compound_id": row["primary_compound_id"],
+                    "compound_variant": row["compound_variant"],
+                }
+                for idx, orig in enumerate(display_columns):
+                    key = f"meta_{idx}"
+                    d[orig] = row[key] if key in row.keys() else None
+                rows_out.append(d)
+            return rows_out, total
+        except Exception as e:
+            logger.error("Error in paginated search: %s", e, exc_info=True)
+            return [], total
+
+    def list_compound_ids_where(self, where_sql: str, params: Sequence[Any]) -> List[str]:
+        """
+        Return all ``compound_id`` values matching the WHERE fragment (no LIMIT).
+
+        Used for "select all results" in the search UI; may be heavy on huge databases.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                f"SELECT compound_id FROM compounds WHERE ({where_sql}) ORDER BY compound_id",
+                tuple(params),
+            )
+            return [str(r["compound_id"]) for r in cursor.fetchall() if r["compound_id"]]
+        except Exception as e:
+            logger.error("Error listing compound ids: %s", e, exc_info=True)
+            return []
+
     def search_compounds(
         self,
         filters: Dict[str, Any],
