@@ -11,9 +11,10 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 **Workflow**:
 1. Load spreadsheet (.csv containing possibly millions-billions of rows)
 2. Configure spreadsheet (select columns, delimiters, time/count fields, metadata columns)
-3. Build searchable database (chunked processing, SQLite storage)
-4. Query database (visual query builder with complex conditions)
-5. Visualize data (plot selected compounds' chromatographic data)
+3. **Primary:** Open Chromatogram Visualizer and **parse/plot on demand** per compound from the loaded sheet
+4. **Optional:** Create or load a **bulk SQLite** database under `output/databases/` for repeated indexed access or future full-sheet search (Phase 11)
+5. Query database (visual query builder — Phase 11, when bulk DB is in use)
+6. Visualize data (count vs time; optional overlay features in future phases)
 
 ---
 
@@ -268,25 +269,69 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 ## Phase 10: Chromatogram Visualizer - Part 1 (Basic Plotting)
 
 ### 10.1 Visualizer Window
-- [ ] Create visualizer window/dialog
-- [ ] Design window layout (plot area, controls panel)
-- [ ] Implement window sizing and resizing
-- [ ] Add navigation back to main screen
+- [x] Create visualizer window/dialog
+- [x] Design window layout (plot area, controls panel)
+- [x] Implement window sizing and resizing
+- [x] Add navigation back to main screen
 
 ### 10.2 Basic Plotting
-- [ ] Integrate plotting library (matplotlib or plotly)
-- [ ] Create basic Count vs Time plot
-- [ ] Plot single compound's data
-- [ ] Implement interactive features (zoom, pan)
-- [ ] Add axis labels and title
-- [ ] Display compound ID in plot title
+- [x] Integrate plotting library (matplotlib)
+- [x] Create basic Count vs Time plot
+- [x] Plot single compound's data
+- [x] Implement interactive features (zoom, pan)
+- [x] Add axis labels and title
+- [x] Display compound ID in plot title
 
 ### 10.3 Count Series Selection
-- [ ] Create UI for selecting which count(s) to display
-- [ ] Implement count series toggle/selection
-- [ ] Plot multiple count series on same plot (different colors)
-- [ ] Add legend for count series
-- [ ] Update plot when count selection changes
+- [x] Create UI for selecting which count(s) to display
+- [x] Implement count series toggle/selection
+- [x] Plot multiple count series on same plot (different colors)
+- [x] Add legend for count series
+- [x] Update plot when count selection changes
+
+---
+
+## Phase 10.5: On-Demand Processing & Managed Bulk Databases
+
+**Goal:** Default workflow = spreadsheet + config → visualizer → parse/plot per compound on demand. Optional bulk SQLite build lives under `output/databases/` with create/load/delete UI. Enter visualizer without prior bulk processing.
+
+### 10.5.1 Roadmap & project layout
+- [x] Mark Phase 10 checklist complete (implemented in codebase)
+- [x] Add `output/databases/` managed folder (with `.gitkeep`)
+- [x] Ignore generated `*.db` / WAL/SHM under that folder in `.gitignore`
+- [x] Add `src/core/database_library.py`: project root resolution, `ensure_databases_dir()`, `list_managed_databases()`, `allocate_new_database_path(stem)`, `delete_managed_database(path)`
+
+### 10.5.2 Data layer
+- [x] `DataProcessor.process_spreadsheet`: when `db_path` is `None`, write to `database_library.allocate_new_database_path(...)` instead of next to spreadsheet
+- [x] Add `DataProcessor.parse_dataframe_row_to_compound(row, config, row_number)` for on-demand path (reuse `_process_row` + `DataParser`)
+
+### 10.5.3 Application state & main UI
+- [x] `AppState.can_enter_visualizer()`: require spreadsheet loaded + configured + config valid; **remove** requirement for `data_processed`
+- [x] `AppState.get_status_message()`: reflect on-demand vs bulk database messaging
+- [x] Replace main **Process Data** button with **Create / Load database** (opens manage dialog)
+- [x] Enable **Create / Load database** when spreadsheet loaded + configured + config valid (allow repeat visits; not gated on `data_processed`)
+- [x] `MainScreen._on_enter_visualizer`: pass `SpreadsheetLoader` into visualizer
+
+### 10.5.4 Bulk create dialog (existing `ProcessDataDialog`)
+- [x] Title/copy: bulk create is optional / large-file warning in parent manage UI
+- [x] Use managed output path for `_start_processing` / summary text (`output/databases/…`)
+
+### 10.5.5 `DatabaseManageDialog` (new)
+- [x] Modal dialog with **Create database** tab: large-file warning copy, confirm, then `wait_window(ProcessDataDialog)` on main
+- [x] **Load database** tab: `CTkComboBox` of `list_managed_databases()`, **Load** sets `app_state.set_data_processed(True, path)`, **Delete** with confirmation removes file (+ WAL/SHM) and refreshes list
+- [x] Optional **Clear active database** (unset `database_path` / `data_processed` without deleting file)
+
+### 10.5.6 Chromatogram visualizer (on-demand)
+- [x] Constructor accepts `loader: SpreadsheetLoader`
+- [x] `_resolve_database_path`: only `app_state.database_path` if file exists (remove implicit `{stem}_database.db` beside spreadsheet)
+- [x] **DB mode:** existing `DataStore` + list from DB
+- [x] **Spreadsheet mode:** compound list from `loader.current_data` + `config.compound_id_column` (unique, order-preserving; cap list display as today)
+- [x] **Process data** button (spreadsheet mode): find row for selected ID, `parse_dataframe_row_to_compound`, show errors, cache `Compound`, redraw
+- [x] **Clear memory cache** button (spreadsheet mode): evict in-memory parsed compounds (FIFO cap e.g. 32)
+
+### 10.5.7 Documentation & cleanup
+- [x] Update **Current Status** / **Next Steps** at bottom of `ROADMAP.md`
+- [x] Run `py_compile` / fix lints on touched files
 
 ---
 
@@ -476,20 +521,15 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 9 - Data Processing & Storage (Complete)  
-**Last Updated**: 2026-02-01  
-**Next Steps**: Begin Phase 10 - Chromatogram Visualizer - Part 1 (Basic Plotting)
+**Phase**: Phase 10 complete; Phase 10.5 (on-demand + managed bulk DB) complete  
+**Last Updated**: 2026-04-20  
+**Next Steps**: Phase 11 — Chromatogram Visualizer Part 2 (search / query builder)
 
 **Key Design Decisions**:
-- **Scalability**: Chunked processing for large datasets (millions-billions of rows)
-- **Storage**: SQLite database backend for efficient search and memory management
-- **Metadata Selection**: Users select which metadata columns to include during configuration (Phase 7.3)
-- **Search**: Full-featured query builder with AND/OR logic, multiple operators (Phase 11)
-- **Results Display**: Virtual scrolling for efficient rendering of large result sets (Phase 11.3)
-
-**Key Design Decisions**:
-- **Scalability**: Chunked processing for large datasets (millions-billions of rows)
-- **Storage**: SQLite database backend for efficient search and memory management
-- **Metadata Selection**: Users select which metadata columns to include during configuration (Phase 7.3)
-- **Search**: Full-featured query builder with AND/OR logic, multiple operators (Phase 11)
-- **Results Display**: Virtual scrolling for efficient rendering of large result sets (Phase 11.3)
+- **Primary workflow**: Spreadsheet + valid configuration → enter visualizer → **parse/plot on demand** per compound (no bulk SQLite required).
+- **Optional bulk SQLite**: Full-database build is a **special** path; databases are stored under `output/databases/` with create/load/delete management UI.
+- **Scalability**: Chunked processing remains for bulk CSV builds; on-demand parses one row at a time from the in-memory dataframe.
+- **Storage**: SQLite retained for optional indexed bulk storage and future search (Phase 11).
+- **Metadata Selection**: Users select which metadata columns to include during configuration (Phase 7.3).
+- **Search**: Full-featured query builder with AND/OR logic, multiple operators (Phase 11).
+- **Results Display**: Virtual scrolling for efficient rendering of large result sets (Phase 11.3).

@@ -53,6 +53,10 @@ config/settings.json
 config/*.json
 !config/default_config.json.example
 data/
+# Bulk SQLite outputs (managed UI); keep folder via .gitkeep
+output/databases/*.db
+output/databases/*.db-wal
+output/databases/*.db-shm
 *.xlsx
 *.xls
 *.csv
