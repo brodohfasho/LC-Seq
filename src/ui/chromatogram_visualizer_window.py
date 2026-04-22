@@ -85,7 +85,10 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._virtual_results: Optional[VirtualMetadataResultList] = None
         self._search_status: Optional[ctk.CTkLabel] = None
         self._result_filter_var: Optional[tk.StringVar] = None
-        self._compound_tabs: Optional[ctk.CTkTabview] = None
+        self._browse_column_frame: Optional[ctk.CTkFrame] = None
+        self._search_column_frame: Optional[ctk.CTkFrame] = None
+        self._nav_list_btn: Optional[ctk.CTkButton] = None
+        self._nav_search_btn: Optional[ctk.CTkButton] = None
 
         self.geometry("1600x980")
         self.center_window(1600, 980)
@@ -302,24 +305,70 @@ class ChromatogramVisualizerWindow(BaseWindow):
     def _build_compound_list_column(self) -> None:
         """Middle column: compound list; optional Search tab only when a bulk DB is active."""
         middle = self._middle_panel
-        middle.grid_rowconfigure(0, weight=1)
         middle.grid_columnconfigure(0, weight=1)
 
         # On-demand mode has no SQL search — a single tab labeled "Browse" looked like a broken
         # button (re-selecting the current tab does nothing). Embed the list directly.
         if self._on_demand_mode:
-            self._compound_tabs = None
+            middle.grid_rowconfigure(0, weight=1)
+            self._browse_column_frame = None
+            self._search_column_frame = None
+            self._nav_list_btn = None
+            self._nav_search_btn = None
             self._build_browse_compound_ui(middle)
             return
 
-        self._compound_tabs = ctk.CTkTabview(middle)
-        self._compound_tabs.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        # CTkTabview inside a PanedWindow often gets zero-height content on Windows;
+        # use explicit nav buttons + two frames instead.
+        middle.grid_rowconfigure(0, weight=0)
+        middle.grid_rowconfigure(1, weight=1)
 
-        list_tab = self._compound_tabs.add("Compound list")
-        self._build_browse_compound_ui(list_tab)
+        nav = ctk.CTkFrame(middle, fg_color="transparent")
+        nav.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 0))
 
-        search_tab = self._compound_tabs.add("Search")
-        self._build_search_tab(search_tab)
+        self._browse_column_frame = ctk.CTkFrame(middle, fg_color="transparent")
+        self._search_column_frame = ctk.CTkFrame(middle, fg_color="transparent")
+        self._browse_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        self._search_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        self._search_column_frame.grid_remove()
+
+        self._nav_list_btn = ctk.CTkButton(
+            nav,
+            text="Compound list",
+            width=130,
+            command=lambda: self._set_middle_compound_view("list"),
+        )
+        self._nav_search_btn = ctk.CTkButton(
+            nav,
+            text="Search",
+            width=100,
+            command=lambda: self._set_middle_compound_view("search"),
+        )
+        self._nav_list_btn.pack(side="left", padx=(0, 6))
+        self._nav_search_btn.pack(side="left")
+
+        self._build_browse_compound_ui(self._browse_column_frame)
+        self._build_search_tab(self._search_column_frame)
+        self._set_middle_compound_view("list")
+
+    def _set_middle_compound_view(self, mode: str) -> None:
+        """Toggle compound list vs SQL search (database mode only)."""
+        if self._browse_column_frame is None or self._search_column_frame is None:
+            return
+        if self._nav_list_btn is None or self._nav_search_btn is None:
+            return
+        selected = ("#1f538d", "#14375e")
+        idle = ("gray70", "gray35")
+        if mode == "search":
+            self._browse_column_frame.grid_remove()
+            self._search_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+            self._nav_list_btn.configure(fg_color=idle)
+            self._nav_search_btn.configure(fg_color=selected)
+        else:
+            self._search_column_frame.grid_remove()
+            self._browse_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+            self._nav_list_btn.configure(fg_color=selected)
+            self._nav_search_btn.configure(fg_color=idle)
 
     def _build_browse_compound_ui(self, parent: ctk.CTkFrame) -> None:
         """Compound list + text filter (spreadsheet or full DB browse)."""
@@ -414,7 +463,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         ).pack(side="left", padx=4)
 
         cols = self._search_result_column_headers()
-        self._virtual_results = VirtualMetadataResultList(parent, columns=cols)
+        self._virtual_results = VirtualMetadataResultList(parent, columns=cols, height=220)
         self._virtual_results.grid(row=4, column=0, sticky="nsew", padx=8, pady=4)
 
         self._search_status = ctk.CTkLabel(

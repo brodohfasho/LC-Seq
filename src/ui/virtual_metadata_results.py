@@ -63,21 +63,23 @@ class VirtualMetadataResultList(ctk.CTkFrame):
         self._inner_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
         self._inner.bind("<Configure>", self._on_inner_configure)
         self._canvas.bind("<Configure>", self._on_canvas_configure)
+        # Local scroll only — bind_all(MouseWheel) caused crashes when the window closed
+        # or when events fired after destroy.
         self._canvas.bind("<MouseWheel>", self._on_mousewheel)
-        self._canvas.bind("<Enter>", lambda _e: self._canvas.bind_all("<MouseWheel>", self._on_mousewheel))
-        self._canvas.bind("<Leave>", lambda _e: self._canvas.unbind_all("<MouseWheel>"))
 
         self._build_header()
         self._row_widgets: List[tk.Frame] = []
         self._repaint_scheduled = False
+        self._last_canvas_width = 0
 
     def _scroll_cmd(self, *args: str) -> None:
         self._canvas.yview(*args)
         self._schedule_repaint()
 
     def _yscroll_cmd(self, lo: str, hi: str) -> None:
+        # Do not schedule repaint here: updating scrollregion / inner height invokes
+        # yscrollcommand again and can recurse until stack overflow / hard crash.
         self._scrollbar.set(lo, hi)
-        self._schedule_repaint()
 
     def _on_mousewheel(self, event: tk.Event) -> None:
         if event.delta:
@@ -88,8 +90,13 @@ class VirtualMetadataResultList(ctk.CTkFrame):
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
     def _on_canvas_configure(self, event: tk.Event) -> None:
-        self._canvas.itemconfig(self._inner_id, width=event.width)
-        self._schedule_repaint()
+        w = int(event.width)
+        if w <= 1:
+            return
+        if w != self._last_canvas_width:
+            self._last_canvas_width = w
+            self._canvas.itemconfig(self._inner_id, width=w)
+            self._schedule_repaint()
 
     def _build_header(self) -> None:
         for w in self._header.winfo_children():
@@ -280,4 +287,9 @@ class VirtualMetadataResultList(ctk.CTkFrame):
 
     def _repaint_idle(self) -> None:
         self._repaint_scheduled = False
-        self._repaint()
+        try:
+            if not self.winfo_exists():
+                return
+            self._repaint()
+        except tk.TclError:
+            pass
