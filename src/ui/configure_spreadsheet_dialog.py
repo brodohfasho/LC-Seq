@@ -69,6 +69,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         # Column selections
         self.selected_compound_id_column: Optional[str] = None
         self.selected_chromatographic_data_column: Optional[str] = None
+        self.selected_variant_column: Optional[str] = None
         self._columns_sample_confirmed: bool = False
         self._column_pair_sample_text: str = ""
         self._sample_chrom_strings: List[str] = []
@@ -137,6 +138,9 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                     # Load Phase 7.3 metadata columns if available
                     if existing_config.selected_metadata_columns:
                         self.selected_metadata_columns = existing_config.selected_metadata_columns.copy()
+                    vcol = getattr(existing_config, "compound_variant_column", None)
+                    if vcol and str(vcol).strip() and str(vcol) in self.available_columns:
+                        self.selected_variant_column = str(vcol).strip()
                     logger.debug("Loaded and validated existing configuration")
                 else:
                     logger.warning(f"Existing configuration is not valid for current spreadsheet: {error_msg}")
@@ -317,6 +321,40 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         )
         self.data_selected_label.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
         self._update_data_display()
+
+        variant_frame = ctk.CTkFrame(parent)
+        variant_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
+        row += 1
+        variant_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            variant_frame,
+            text="Compound variant column (optional):",
+            font=ctk.CTkFont(size=12),
+        ).grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        self.variant_var = ctk.StringVar(value="(none)")
+        self.variant_dropdown = ctk.CTkComboBox(
+            variant_frame,
+            variable=self.variant_var,
+            values=["(none)"] + self.available_columns,
+            command=self._on_variant_column_selected,
+            state="readonly",
+        )
+        self.variant_dropdown.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        if self.selected_variant_column:
+            self.variant_var.set(self.selected_variant_column)
+        ctk.CTkLabel(
+            variant_frame,
+            text=(
+                "Distinguishes multiple versions of the same compound (e.g. linear vs cyclized). "
+                "Each row must have a non-empty value. The visualizer lists primaries once and "
+                "coplots every variant × count series you enable."
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=760,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
         
         sample_frame = ctk.CTkFrame(parent)
         sample_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 10), sticky="ew")
@@ -696,6 +734,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             logger.debug(f"Selected Compound ID column: {choice}")
             self._update_compound_display()
             self._reset_columns_sample_confirmation()
+            self._ensure_variant_column_valid()
             # Update metadata columns list (exclude newly selected compound_id column)
             self._refresh_metadata_checkboxes()
             self._validate_selections()
@@ -709,11 +748,35 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             logger.debug(f"Selected Chromatographic Data column: {choice}")
             self._update_data_display()
             self._reset_columns_sample_confirmation()
+            self._ensure_variant_column_valid()
             # Update metadata columns list (exclude newly selected chromatographic_data column)
             self._refresh_metadata_checkboxes()
             self._validate_selections()
         else:
             logger.warning(f"Invalid Chromatographic Data column selection: {choice}")
+
+    def _on_variant_column_selected(self, choice: str) -> None:
+        """Optional column that labels compound versions (e.g. linear / cyclized)."""
+        if not choice or choice == "(none)":
+            self.selected_variant_column = None
+        elif choice in self.available_columns:
+            self.selected_variant_column = choice
+        else:
+            self.selected_variant_column = None
+        logger.debug("Variant column: %s", self.selected_variant_column)
+        self._refresh_metadata_checkboxes()
+        self._validate_selections()
+
+    def _ensure_variant_column_valid(self) -> None:
+        """Clear variant selection if it now matches compound ID or chromatographic column."""
+        if not self.selected_variant_column:
+            return
+        if self.selected_variant_column == self.selected_compound_id_column:
+            self.selected_variant_column = None
+            self.variant_var.set("(none)")
+        elif self.selected_variant_column == self.selected_chromatographic_data_column:
+            self.selected_variant_column = None
+            self.variant_var.set("(none)")
 
     def _reset_columns_sample_confirmation(self) -> None:
         """Clear sample preview; user must click Show sample data again after column changes."""
@@ -1238,6 +1301,8 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             excluded.add(self.selected_compound_id_column)
         if self.selected_chromatographic_data_column:
             excluded.add(self.selected_chromatographic_data_column)
+        if self.selected_variant_column:
+            excluded.add(self.selected_variant_column)
         
         for col in self.available_columns:
             if col not in excluded:
@@ -1400,6 +1465,16 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.selected_chromatographic_data_column and
             self.selected_compound_id_column == self.selected_chromatographic_data_column):
             errors.append("Compound ID and Chromatographic Data columns must be different")
+
+        if self.selected_variant_column:
+            if self.selected_variant_column not in self.available_columns:
+                errors.append(
+                    f"Variant column '{self.selected_variant_column}' not found in spreadsheet"
+                )
+            if self.selected_variant_column == self.selected_compound_id_column:
+                errors.append("Variant column must differ from Compound ID column")
+            if self.selected_variant_column == self.selected_chromatographic_data_column:
+                errors.append("Variant column must differ from Chromatographic Data column")
         
         if (
             self.selected_compound_id_column
@@ -1537,6 +1612,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             config = SpreadsheetConfig(
                 compound_id_column=self.selected_compound_id_column,
                 chromatographic_data_column=self.selected_chromatographic_data_column,
+                compound_variant_column=self.selected_variant_column,
                 delimiters=self.delimiters.copy(),
                 time_column_index=self.selected_time_index,
                 count_column_indices=self.selected_count_indices.copy(),
@@ -1609,10 +1685,16 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             if meta_n
             else "None"
         )
+        vline = (
+            config.compound_variant_column
+            if getattr(config, "compound_variant_column", None)
+            else "(none)"
+        )
         return (
             "Default preset (from default_config.json):\n\n"
             f"Compound ID column: {config.compound_id_column}\n"
             f"Chromatographic data column: {config.chromatographic_data_column}\n"
+            f"Variant column: {vline}\n"
             f"Delimiters (order): {delim_line}\n"
             f"Time column index: {config.time_column_index}\n"
             f"Count fields: {counts_line}\n"
@@ -1746,6 +1828,14 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             config.selected_metadata_columns.copy() if config.selected_metadata_columns else []
         )
 
+        vcol = getattr(config, "compound_variant_column", None)
+        if vcol and str(vcol).strip() and str(vcol).strip() in self.available_columns:
+            self.selected_variant_column = str(vcol).strip()
+            self.variant_var.set(self.selected_variant_column)
+        else:
+            self.selected_variant_column = None
+            self.variant_var.set("(none)")
+
         if self.selected_compound_id_column:
             self.compound_var.set(self.selected_compound_id_column)
         if self.selected_chromatographic_data_column:
@@ -1795,6 +1885,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             applied = SpreadsheetConfig(
                 compound_id_column=self.selected_compound_id_column,
                 chromatographic_data_column=self.selected_chromatographic_data_column,
+                compound_variant_column=self.selected_variant_column,
                 delimiters=self.delimiters.copy(),
                 time_column_index=self.selected_time_index,
                 count_column_indices=self.selected_count_indices.copy(),
@@ -1840,6 +1931,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             config = SpreadsheetConfig(
                 compound_id_column=self.selected_compound_id_column,
                 chromatographic_data_column=self.selected_chromatographic_data_column,
+                compound_variant_column=self.selected_variant_column,
                 delimiters=self.delimiters.copy(),
                 time_column_index=self.selected_time_index,
                 count_column_indices=self.selected_count_indices.copy(),

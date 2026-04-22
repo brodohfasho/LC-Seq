@@ -21,10 +21,15 @@ class SpreadsheetConfig:
         count_names: List of names for each count column (must match count_column_indices)
         selected_metadata_columns: List of metadata column names to include in database
                                   (excludes compound_id_column and chromatographic_data_column)
+        compound_variant_column: Optional column that distinguishes versions of the same
+                                 primary compound (e.g. linear vs cyclized). When set, each
+                                 row must have a non-empty value; storage IDs are unique
+                                 per (primary, variant).
     """
     
     compound_id_column: str
     chromatographic_data_column: str
+    compound_variant_column: Optional[str] = None
     delimiters: List[str] = field(default_factory=list)
     time_column_index: Optional[int] = None
     count_column_indices: List[int] = field(default_factory=list)
@@ -66,6 +71,21 @@ class SpreadsheetConfig:
                 raise ValueError("All count column indices must be non-negative")
             if len(self.count_column_indices) != len(set(self.count_column_indices)):
                 raise ValueError("Count column indices must be unique")
+
+        if self.compound_variant_column is not None:
+            v = str(self.compound_variant_column).strip()
+            if not v:
+                self.compound_variant_column = None
+            else:
+                self.compound_variant_column = v
+                if v == str(self.compound_id_column).strip():
+                    raise ValueError(
+                        "Compound variant column must differ from compound ID column"
+                    )
+                if v == str(self.chromatographic_data_column).strip():
+                    raise ValueError(
+                        "Compound variant column must differ from chromatographic data column"
+                    )
     
     def is_complete(self) -> bool:
         """
@@ -94,6 +114,7 @@ class SpreadsheetConfig:
         return {
             "compound_id_column": self.compound_id_column,
             "chromatographic_data_column": self.chromatographic_data_column,
+            "compound_variant_column": self.compound_variant_column,
             "delimiters": self.delimiters.copy(),
             "time_column_index": self.time_column_index,
             "count_column_indices": self.count_column_indices.copy(),
@@ -120,9 +141,15 @@ class SpreadsheetConfig:
         if "chromatographic_data_column" not in data:
             raise ValueError("Dictionary must contain 'chromatographic_data_column' key")
         
+        raw_variant = data.get("compound_variant_column")
+        variant_col: Optional[str] = None
+        if raw_variant is not None and str(raw_variant).strip():
+            variant_col = str(raw_variant).strip()
+
         return cls(
             compound_id_column=str(data["compound_id_column"]),
             chromatographic_data_column=str(data["chromatographic_data_column"]),
+            compound_variant_column=variant_col,
             delimiters=data.get("delimiters", []),
             time_column_index=data.get("time_column_index"),
             count_column_indices=data.get("count_column_indices", []),

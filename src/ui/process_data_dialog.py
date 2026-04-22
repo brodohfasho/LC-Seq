@@ -49,6 +49,11 @@ def _format_processing_parameters_summary(
     lines.append("")
     lines.append(f"Compound ID column: {config.compound_id_column}")
     lines.append(f"Chromatographic data column: {config.chromatographic_data_column}")
+    lines.append(
+        f"Compound variant column: {config.compound_variant_column}"
+        if config.compound_variant_column
+        else "Compound variant column: (none)"
+    )
     lines.append(f"Delimiters (order): {delim_line}")
     lines.append(f"Time field index: {config.time_column_index}")
     lines.append(f"Count field indices: {counts_line}")
