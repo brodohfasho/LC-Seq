@@ -89,6 +89,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._search_column_frame: Optional[ctk.CTkFrame] = None
         self._nav_list_btn: Optional[ctk.CTkButton] = None
         self._nav_search_btn: Optional[ctk.CTkButton] = None
+        self._searchable_metadata_columns: List[str] = []
 
         self.geometry("1600x980")
         self.center_window(1600, 980)
@@ -418,19 +419,43 @@ class ChromatogramVisualizerWindow(BaseWindow):
     def _build_search_tab(self, parent: ctk.CTkFrame) -> None:
         """Metadata query builder and virtual results (bulk database mode only)."""
         assert self._config is not None
+        assert self._data_store is not None
         parent.grid_rowconfigure(4, weight=1)
         parent.grid_columnconfigure(0, weight=1)
 
+        all_meta = list(self._config.selected_metadata_columns or [])
+        present, missing = self._data_store.filter_metadata_columns_for_search(all_meta)
+        self._searchable_metadata_columns = present
+
+        title_row = ctk.CTkFrame(parent, fg_color="transparent")
+        title_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        title_row.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            parent,
+            title_row,
             text="Search compounds (SQLite)",
             font=ctk.CTkFont(size=13, weight="bold"),
-        ).grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
+        ).grid(row=0, column=0, sticky="w")
+        if missing:
+            miss_show = ", ".join(missing[:12])
+            if len(missing) > 12:
+                miss_show += ", …"
+            ctk.CTkLabel(
+                title_row,
+                text=(
+                    "These metadata columns are not stored in this database file "
+                    "(rebuild the database after changing metadata selection): "
+                    f"{miss_show}"
+                ),
+                text_color="orange",
+                font=ctk.CTkFont(size=11),
+                anchor="w",
+                justify="left",
+                wraplength=520,
+            ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
-        meta = list(self._config.selected_metadata_columns or [])
         self._query_panel = QueryBuilderPanel(
             parent,
-            metadata_fields=meta,
+            metadata_fields=present,
             on_search=self._on_query_search_clicked,
             on_clear=self._on_query_clear_clicked,
         )
@@ -474,7 +499,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
     def _search_result_column_headers(self) -> List[str]:
         """Column headers for the virtual results table."""
         assert self._config is not None
-        meta = list(self._config.selected_metadata_columns or [])
+        meta = list(self._searchable_metadata_columns or [])
         if self._uses_variants:
             return ["primary_compound_id", "compound_variant", *meta]
         return ["compound_id", *meta]
@@ -489,7 +514,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
             combiners.append("AND")
         where_sql, params = build_where_clause(conditions, combiners)
         needle = (self._result_filter_var.get() if self._result_filter_var else "").strip()
-        meta_safe = [sanitize_sql_column(c) for c in self._config.selected_metadata_columns]
+        meta_safe = [sanitize_sql_column(c) for c in self._searchable_metadata_columns]
         or_cols = ["compound_id", *meta_safe]
         where_sql, params = append_results_text_filter(where_sql, list(params), needle, or_cols)
         return where_sql, params
@@ -503,7 +528,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         assert self._search_status is not None
 
         conditions = self._query_panel.get_conditions()
-        allowed = self._config.selected_metadata_columns or []
+        allowed = self._searchable_metadata_columns or []
         errs = validate_conditions(conditions, allowed)
         if errs:
             messagebox.showerror("Search", "\n".join(errs), parent=self)
@@ -522,7 +547,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._virtual_results.clear_results()
             return
 
-        display_cols = list(self._config.selected_metadata_columns or [])
+        display_cols = list(self._searchable_metadata_columns or [])
 
         def fetch_page(offset: int, limit: int) -> List[dict]:
             rows, _t = self._data_store.search_compounds_page(
@@ -565,7 +590,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         if self._query_panel is None or self._virtual_results is None or self._search_status is None:
             return
         conditions = self._query_panel.get_conditions()
-        allowed = self._config.selected_metadata_columns or []  # type: ignore[union-attr]
+        allowed = self._searchable_metadata_columns or []
         errs_rf = validate_conditions(conditions, allowed)
         if errs_rf:
             return
@@ -576,7 +601,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._active_search_where = where_sql
         self._active_search_params = list(params)
         total = self._data_store.count_compounds_where(where_sql, params)
-        display_cols = list(self._config.selected_metadata_columns or [])
+        display_cols = list(self._searchable_metadata_columns or [])
 
         def fetch_page(offset: int, limit: int) -> List[dict]:
             rows, _t = self._data_store.search_compounds_page(
