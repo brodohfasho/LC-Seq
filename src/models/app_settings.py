@@ -17,6 +17,7 @@ class AppSettings:
     
     Attributes:
         last_loaded_file: Path to the last loaded spreadsheet file
+        last_loaded_sheet: Excel sheet name last used (None for CSV or first sheet)
         window_width: Default window width in pixels
         window_height: Default window height in pixels
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -25,6 +26,7 @@ class AppSettings:
     """
     
     last_loaded_file: Optional[str] = None
+    last_loaded_sheet: Optional[str] = None
     window_width: int = 1200
     window_height: int = 800
     log_level: str = "INFO"
@@ -87,6 +89,7 @@ class AppSettings:
         """
         result = {
             "last_loaded_file": self.last_loaded_file,
+            "last_loaded_sheet": self.last_loaded_sheet,
             "window_width": self.window_width,
             "window_height": self.window_height,
             "log_level": self.log_level,
@@ -111,6 +114,7 @@ class AppSettings:
         """
         settings = cls(
             last_loaded_file=data.get("last_loaded_file"),
+            last_loaded_sheet=data.get("last_loaded_sheet"),
             window_width=data.get("window_width", 1200),
             window_height=data.get("window_height", 800),
             log_level=data.get("log_level", "INFO"),

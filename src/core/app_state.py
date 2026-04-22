@@ -20,12 +20,16 @@ class AppState:
         spreadsheet_path: Path to the loaded spreadsheet file
         spreadsheet_configured: Whether the spreadsheet has been configured
         config_valid: Whether the current configuration is valid
+        data_processed: Whether data has been processed into database
+        database_path: Path to the processed database file
     """
     
     spreadsheet_loaded: bool = False
     spreadsheet_path: Optional[str] = None
     spreadsheet_configured: bool = False
     config_valid: bool = False
+    data_processed: bool = False
+    database_path: Optional[str] = None
     
     # List of callbacks to notify when state changes
     _state_change_callbacks: list[Callable] = field(default_factory=list, repr=False)
@@ -35,9 +39,12 @@ class AppState:
         Check if user can enter the visualizer.
         
         Returns:
-            True if spreadsheet is loaded and configured
+            True if spreadsheet is loaded, configured, and data is processed
         """
-        return self.spreadsheet_loaded and self.spreadsheet_configured and self.config_valid
+        return (self.spreadsheet_loaded and 
+                self.spreadsheet_configured and 
+                self.config_valid and 
+                self.data_processed)
     
     def register_state_change_callback(self, callback: Callable) -> None:
         """
@@ -103,12 +110,27 @@ class AppState:
         logger.info(f"Config valid state: {self.config_valid}")
         self._notify_state_change()
     
+    def set_data_processed(self, processed: bool = True, database_path: Optional[str] = None) -> None:
+        """
+        Set data processed state.
+        
+        Args:
+            processed: Whether data has been processed
+            database_path: Path to the database file
+        """
+        self.data_processed = processed
+        self.database_path = database_path
+        logger.info(f"Data processed state: {self.data_processed}, database: {database_path}")
+        self._notify_state_change()
+    
     def reset(self) -> None:
         """Reset all state to initial values."""
         self.spreadsheet_loaded = False
         self.spreadsheet_path = None
         self.spreadsheet_configured = False
         self.config_valid = False
+        self.data_processed = False
+        self.database_path = None
         logger.info("Application state reset")
         self._notify_state_change()
     
@@ -127,5 +149,8 @@ class AppState:
         
         if not self.config_valid:
             return "Configuration incomplete. Please complete spreadsheet configuration."
+        
+        if not self.data_processed:
+            return "Configuration complete. Click 'Process Data' to build searchable database."
         
         return "Ready to visualize! Click 'Enter Chromatogram Visualizer' to view data."

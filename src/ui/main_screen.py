@@ -3,8 +3,12 @@
 Main screen UI for LC-Seq application.
 """
 
-import customtkinter as ctk
 import logging
+import tkinter as tk
+from tkinter import messagebox
+from pathlib import Path
+
+import customtkinter as ctk
 from typing import Optional
 
 from src.core.app_state import AppState
@@ -12,6 +16,9 @@ from src.core.config_manager import ConfigManager
 from src.core.spreadsheet_loader import SpreadsheetLoader
 from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
 from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
+from src.ui.process_data_dialog import ProcessDataDialog
+from src.ui.chromatogram_visualizer_window import ChromatogramVisualizerWindow
+from src.core.data_processing_result import DataProcessingResult
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,7 @@ class MainScreen(ctk.CTk):
         self.app_state = app_state
         self.config_manager = config_manager
         self.spreadsheet_loader = SpreadsheetLoader()
+        self._chromatogram_window: Optional[ChromatogramVisualizerWindow] = None
         
         # Register for state changes
         self.app_state.register_state_change_callback(self._on_state_change)
@@ -62,6 +70,8 @@ class MainScreen(ctk.CTk):
         
         # Set initial geometry
         self.geometry(f"{width}x{height}")
+        # Native title-bar maximize (square) requires user resizing to be allowed
+        self.resizable(True, True)
         
         # Configure grid weights for responsive layout
         self.grid_columnconfigure(0, weight=1)
@@ -78,6 +88,9 @@ class MainScreen(ctk.CTk):
         
         # Initial state update
         self._update_ui_state()
+        
+        # Reload last spreadsheet from settings (if path still valid)
+        self.after(150, self._restore_last_spreadsheet_if_available)
         
         logger.info("Main screen initialized")
     
@@ -149,6 +162,17 @@ class MainScreen(ctk.CTk):
         )
         self.configure_button.grid(row=4, column=0, padx=40, pady=10, sticky="ew")
         
+        # Process Data button (Phase 9)
+        self.process_button = ctk.CTkButton(
+            self,
+            text="Process Data",
+            font=ctk.CTkFont(size=14),
+            height=50,
+            command=self._on_process_data,
+            state="disabled"
+        )
+        self.process_button.grid(row=5, column=0, padx=40, pady=10, sticky="ew")
+        
         # Status message label
         self.status_label = ctk.CTkLabel(
             self,
@@ -157,7 +181,7 @@ class MainScreen(ctk.CTk):
             wraplength=600,
             justify="center"
         )
-        self.status_label.grid(row=5, column=0, padx=40, pady=(30, 20), sticky="n")
+        self.status_label.grid(row=6, column=0, padx=40, pady=(30, 20), sticky="n")
     
     def _on_state_change(self) -> None:
         """Handle application state change."""
@@ -174,11 +198,86 @@ class MainScreen(ctk.CTk):
             state="normal" if self.app_state.spreadsheet_loaded else "disabled"
         )
         
+        # Update process button state (Phase 9)
+        can_process = (self.app_state.spreadsheet_loaded and 
+                      self.app_state.spreadsheet_configured and 
+                      self.app_state.config_valid and
+                      not self.app_state.data_processed)
+        self.process_button.configure(
+            state="normal" if can_process else "disabled"
+        )
+        
         # Update status message
         status_message = self.app_state.get_status_message()
         self.status_label.configure(text=status_message)
         
-        logger.debug(f"UI state updated. Can enter visualizer: {can_enter}")
+        logger.debug(f"UI state updated. Can enter visualizer: {can_enter}, Can process: {can_process}")
+    
+    def _apply_spreadsheet_loaded(
+        self, file_path: str
+    ) -> Optional[tuple[bool, str]]:
+        """
+        Update application state and settings after a successful spreadsheet load.
+
+        Resets configuration and processing state for the new file, then applies the
+        saved default configuration only if it validates against the spreadsheet.
+
+        Args:
+            file_path: Path to the loaded file (resolved)
+
+        Returns:
+            None if there is no default configuration file to check.
+            (True, "") if a default exists and is valid for this spreadsheet.
+            (False, message) if a default exists but is not valid for this spreadsheet.
+        """
+        self.app_state.set_spreadsheet_loaded(file_path)
+        self.app_state.set_data_processed(False, None)
+        self.app_state.set_spreadsheet_configured(False)
+        self.app_state.set_config_valid(False)
+
+        settings = self.config_manager.load_settings()
+        settings.set_last_loaded_file(file_path)
+        settings.last_loaded_sheet = self.spreadsheet_loader.current_sheet_name
+        self.config_manager.save_settings(settings)
+
+        default_config = self.config_manager.load_default_config()
+        if not default_config:
+            return None
+
+        available_columns = self.spreadsheet_loader.get_column_names()
+        is_valid, error_msg = self.config_manager.validate_config_against_spreadsheet(
+            default_config, available_columns
+        )
+        if is_valid:
+            self.app_state.set_spreadsheet_configured(True)
+            self.app_state.set_config_valid(default_config.is_complete())
+            logger.info("Loaded and validated default configuration for spreadsheet")
+            return True, ""
+
+        detail = (error_msg or "Unknown validation error").strip()
+        logger.info("Default configuration not valid for this spreadsheet: %s", detail)
+        return False, detail
+    
+    def _restore_last_spreadsheet_if_available(self) -> None:
+        """If settings contain a last file path that still exists, load it silently."""
+        if self.app_state.spreadsheet_loaded:
+            return
+        settings = self.config_manager.load_settings()
+        path = settings.last_loaded_file
+        if not path:
+            return
+        p = Path(path)
+        if not p.is_file():
+            logger.info("Last spreadsheet path is not available: %s", path)
+            return
+        sheet = settings.last_loaded_sheet
+        success, err, df = self.spreadsheet_loader.load_file(str(p), sheet_name=sheet)
+        if not success or df is None:
+            logger.info("Could not restore last spreadsheet: %s", err)
+            return
+        self._apply_spreadsheet_loaded(str(p.resolve()))
+        self._update_ui_state()
+        logger.info("Restored last spreadsheet from settings: %s", path)
     
     def _on_enter_visualizer(self) -> None:
         """Handle Enter Visualizer button click."""
@@ -187,56 +286,72 @@ class MainScreen(ctk.CTk):
             return
         
         logger.info("Entering chromatogram visualizer")
-        # TODO: Implement visualizer window (Phase 10-12)
-        # For now, show a placeholder message
-        from tkinter import messagebox
-        messagebox.showinfo(
-            "Visualizer",
-            "Chromatogram Visualizer will be implemented in Phase 10-12.\n\n"
-            "This will allow you to plot and search your chromatographic data."
+        if self._chromatogram_window is not None:
+            try:
+                self._chromatogram_window.lift()
+                self._chromatogram_window.focus()
+                return
+            except tk.TclError:
+                self._chromatogram_window = None
+
+        self._chromatogram_window = ChromatogramVisualizerWindow(
+            self,
+            self.app_state,
+            self.config_manager,
         )
     
     def _on_load_spreadsheet(self) -> None:
         """Handle Load Spreadsheet button click."""
         logger.info("Load spreadsheet button clicked")
-        
+        self._default_validation_after_load = None
+
         def on_load_success(file_path: str, dataframe) -> None:
             """Handle successful spreadsheet load."""
-            # Update application state
-            self.app_state.set_spreadsheet_loaded(file_path)
-            
-            # Save file path to settings
-            settings = self.config_manager.load_settings()
-            settings.set_last_loaded_file(file_path)
-            self.config_manager.save_settings(settings)
-            
-            # Phase 8: Try to load default configuration if available
-            default_config = self.config_manager.load_default_config()
-            if default_config:
-                # Validate config against loaded spreadsheet
-                available_columns = self.spreadsheet_loader.get_column_names()
-                is_valid, error_msg = self.config_manager.validate_config_against_spreadsheet(
-                    default_config, available_columns
-                )
-                if is_valid:
-                    # Config is valid - mark as configured
-                    self.app_state.set_spreadsheet_configured(True)
-                    self.app_state.set_config_valid(default_config.is_complete())
-                    logger.info("Loaded and validated default configuration for spreadsheet")
-                else:
-                    logger.info(f"Default configuration not valid for this spreadsheet: {error_msg}")
-            
-            logger.info(f"Spreadsheet loaded successfully: {file_path}")
+            self._default_validation_after_load = self._apply_spreadsheet_loaded(
+                file_path
+            )
+            logger.info("Spreadsheet loaded successfully: %s", file_path)
+        
+        dlg_settings = self.config_manager.load_settings()
+        initial_path: Optional[str] = None
+        initial_sheet: Optional[str] = None
+        if dlg_settings.last_loaded_file:
+            lp = Path(dlg_settings.last_loaded_file)
+            if lp.is_file():
+                initial_path = str(lp)
+                initial_sheet = dlg_settings.last_loaded_sheet
         
         # Open load dialog - store reference to prevent garbage collection
         self.load_dialog = LoadSpreadsheetDialog(
             parent=self,
             loader=self.spreadsheet_loader,
-            on_success=on_load_success
+            on_success=on_load_success,
+            initial_file_path=initial_path,
+            initial_sheet_name=initial_sheet,
         )
         
         # Wait for dialog to close (modal behavior)
         self.wait_window(self.load_dialog)
+
+        pending = getattr(self, "_default_validation_after_load", None)
+        self._default_validation_after_load = None
+        if pending is not None:
+            ok, detail = pending
+            if ok:
+                messagebox.showinfo(
+                    "Default configuration",
+                    "Validation passed: the saved default configuration is compatible "
+                    "with this spreadsheet.",
+                    parent=self,
+                )
+            else:
+                messagebox.showerror(
+                    "Default configuration",
+                    "Validation failed: the saved default configuration is not valid "
+                    f"for this spreadsheet.\n\n{detail}\n\n"
+                    "Use Configure Spreadsheet to set up parsing for this file.",
+                    parent=self,
+                )
     
     def _on_configure_spreadsheet(self) -> None:
         """Handle Configure Spreadsheet button click."""
@@ -256,17 +371,100 @@ class MainScreen(ctk.CTk):
             self.app_state.set_config_valid(config.is_complete())
             
             logger.info(f"Configuration saved and validated. Complete: {config.is_complete()}")
+
+        def on_default_preset_applied(config) -> None:
+            """Sync app state after Load preset → Default (file already on disk)."""
+            self.app_state.set_spreadsheet_configured(True)
+            self.app_state.set_config_valid(config.is_complete())
+            logger.info(
+                "Default preset applied from configure dialog. Complete: %s",
+                config.is_complete(),
+            )
         
         # Open configuration dialog - store reference to prevent garbage collection
         self.config_dialog = ConfigureSpreadsheetDialog(
             parent=self,
             loader=self.spreadsheet_loader,
             config_manager=self.config_manager,
-            on_success=on_config_success
+            on_success=on_config_success,
+            on_default_preset_applied=on_default_preset_applied,
         )
         
         # Wait for dialog to close (modal behavior)
         self.wait_window(self.config_dialog)
+    
+    def _on_process_data(self) -> None:
+        """Handle Process Data button click."""
+        if not self.app_state.spreadsheet_loaded or not self.app_state.spreadsheet_path:
+            logger.warning("Attempted to process data when no spreadsheet loaded")
+            return
+        
+        if not self.app_state.config_valid:
+            logger.warning("Attempted to process data with invalid configuration")
+            messagebox.showwarning(
+                "Configuration Required",
+                "Please complete spreadsheet configuration before processing data."
+            )
+            return
+        
+        logger.info("Process data button clicked")
+        
+        # Load configuration
+        config = self.config_manager.load_default_config()
+        if not config or not config.is_complete():
+            messagebox.showerror(
+                "Configuration Error",
+                "No valid configuration found. Please configure the spreadsheet first."
+            )
+            return
+        
+        def on_processing_success(result: DataProcessingResult) -> None:
+            """Handle successful data processing."""
+            # Update application state
+            self.app_state.set_data_processed(True, result.database_path)
+            
+            logger.info(f"Data processing completed: {result.successful_compounds} compounds")
+        
+        previous_close = self.protocol("WM_DELETE_WINDOW")
+
+        def main_close_during_process() -> None:
+            """Allow quitting the app while the process dialog has focus."""
+            dlg = getattr(self, "process_dialog", None)
+            if dlg is not None:
+                try:
+                    if dlg.winfo_exists() and getattr(dlg, "is_processing", False):
+                        if not messagebox.askyesno(
+                            "Quit",
+                            "Data processing is running. Cancel processing and exit LC-Seq?",
+                            parent=self,
+                        ):
+                            return
+                        dlg.user_requested_exit(quit_app=True)
+                        return
+                except Exception:
+                    pass
+            previous_close()
+
+        self.protocol("WM_DELETE_WINDOW", main_close_during_process)
+        try:
+            # Open processing dialog - store reference to prevent garbage collection
+            self.process_dialog = ProcessDataDialog(
+                parent=self,
+                file_path=self.app_state.spreadsheet_path,
+                config=config,
+                on_success=on_processing_success,
+                preset_display_name="Default",
+            )
+            
+            # Wait for dialog to close (modal behavior)
+            self.wait_window(self.process_dialog)
+        finally:
+            self.protocol("WM_DELETE_WINDOW", previous_close)
+            self.process_dialog = None
+        
+        if getattr(self, "_quit_after_process_dialog", False):
+            self._quit_after_process_dialog = False
+            self.on_close()
     
     def on_close(self) -> None:
         """Handle window close event."""

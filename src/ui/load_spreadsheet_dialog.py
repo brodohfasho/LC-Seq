@@ -25,7 +25,14 @@ class LoadSpreadsheetDialog(BaseWindow):
     - Loading status feedback
     """
     
-    def __init__(self, parent: ctk.CTk, loader: SpreadsheetLoader, on_success: Optional[Callable] = None):
+    def __init__(
+        self,
+        parent: ctk.CTk,
+        loader: SpreadsheetLoader,
+        on_success: Optional[Callable] = None,
+        initial_file_path: Optional[str] = None,
+        initial_sheet_name: Optional[str] = None,
+    ):
         """
         Initialize load spreadsheet dialog.
         
@@ -33,6 +40,8 @@ class LoadSpreadsheetDialog(BaseWindow):
             parent: Parent window
             loader: SpreadsheetLoader instance
             on_success: Callback function called with (file_path, dataframe) on successful load
+            initial_file_path: If set and the file exists, pre-select this path (from saved settings)
+            initial_sheet_name: If set and valid for the file, pre-select this Excel sheet
         """
         super().__init__(parent, title="Load Spreadsheet")
         
@@ -48,6 +57,17 @@ class LoadSpreadsheetDialog(BaseWindow):
         
         # Create UI
         self._create_widgets()
+        
+        if initial_file_path and Path(initial_file_path).is_file():
+            self.selected_file_path = str(Path(initial_file_path))
+            self._update_file_display()
+            self._check_for_sheets()
+            if initial_sheet_name:
+                sheets = self.loader.get_available_sheets(self.selected_file_path)
+                if sheets and initial_sheet_name in sheets:
+                    self.sheet_var.set(initial_sheet_name)
+                elif sheets and len(sheets) == 1:
+                    self.sheet_var.set(sheets[0])
         
         logger.info("Load spreadsheet dialog initialized")
     
@@ -143,16 +163,19 @@ class LoadSpreadsheetDialog(BaseWindow):
         """Handle Browse button click."""
         from tkinter import filedialog
         
-        # Open file dialog
-        file_path = filedialog.askopenfilename(
-            title="Select Spreadsheet File",
-            filetypes=[
+        fd_kwargs = {
+            "title": "Select Spreadsheet File",
+            "filetypes": [
                 ("All Supported", "*.xlsx *.xls *.csv"),
                 ("Excel Files", "*.xlsx *.xls"),
                 ("CSV Files", "*.csv"),
-                ("All Files", "*.*")
-            ]
-        )
+                ("All Files", "*.*"),
+            ],
+        }
+        if self.selected_file_path:
+            fd_kwargs["initialdir"] = str(Path(self.selected_file_path).parent)
+
+        file_path = filedialog.askopenfilename(**fd_kwargs)
         
         if file_path:
             self.selected_file_path = file_path
