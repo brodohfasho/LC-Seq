@@ -85,6 +85,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._virtual_results: Optional[VirtualMetadataResultList] = None
         self._search_status: Optional[ctk.CTkLabel] = None
         self._result_filter_var: Optional[tk.StringVar] = None
+        self._compound_tabs: Optional[ctk.CTkTabview] = None
 
         self.geometry("1600x980")
         self.center_window(1600, 980)
@@ -299,20 +300,26 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._variant_series_frame.grid(row=r, column=0, padx=8, pady=(0, 8), sticky="ew")
 
     def _build_compound_list_column(self) -> None:
-        """Middle column: Browse tab (list) and optional Search tab (query builder + virtual results)."""
+        """Middle column: compound list; optional Search tab only when a bulk DB is active."""
         middle = self._middle_panel
         middle.grid_rowconfigure(0, weight=1)
         middle.grid_columnconfigure(0, weight=1)
 
+        # On-demand mode has no SQL search — a single tab labeled "Browse" looked like a broken
+        # button (re-selecting the current tab does nothing). Embed the list directly.
+        if self._on_demand_mode:
+            self._compound_tabs = None
+            self._build_browse_compound_ui(middle)
+            return
+
         self._compound_tabs = ctk.CTkTabview(middle)
         self._compound_tabs.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
-        browse_tab = self._compound_tabs.add("Browse")
-        self._build_browse_compound_ui(browse_tab)
+        list_tab = self._compound_tabs.add("Compound list")
+        self._build_browse_compound_ui(list_tab)
 
-        if not self._on_demand_mode:
-            search_tab = self._compound_tabs.add("Search")
-            self._build_search_tab(search_tab)
+        search_tab = self._compound_tabs.add("Search")
+        self._build_search_tab(search_tab)
 
     def _build_browse_compound_ui(self, parent: ctk.CTkFrame) -> None:
         """Compound list + text filter (spreadsheet or full DB browse)."""
