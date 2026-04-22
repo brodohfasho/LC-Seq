@@ -12,6 +12,7 @@ from typing import Optional, List, Dict, Any, Set
 from contextlib import contextmanager
 
 from src.models.compound import Compound
+from src.models.compound_identity import split_compound_storage_id
 from src.models.chromatographic_data_point import ChromatographicDataPoint
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class DataStore:
             self.conn.execute("PRAGMA foreign_keys = OFF")  # Disable FK checks during bulk insert (re-enable later)
             
             self._create_schema()
+            self._migrate_compound_identity_columns()
             logger.info(f"Initialized database at {self.db_path}")
         except Exception as e:
             logger.error(f"Error initializing database: {e}", exc_info=True)
@@ -82,6 +84,8 @@ class DataStore:
                 compound_id TEXT PRIMARY KEY,
                 metadata_json TEXT,
                 data_point_count INTEGER DEFAULT 0,
+                primary_compound_id TEXT,
+                compound_variant TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -111,6 +115,46 @@ class DataStore:
         
         self.conn.commit()
         logger.debug("Database schema created")
+
+    def _migrate_compound_identity_columns(self) -> None:
+        """Add primary/variant columns to legacy databases and backfill primary IDs."""
+        cursor = self.conn.cursor()
+        cursor.execute("PRAGMA table_info(compounds)")
+        cols = {row[1] for row in cursor.fetchall()}
+        altered = False
+        if "primary_compound_id" not in cols:
+            cursor.execute("ALTER TABLE compounds ADD COLUMN primary_compound_id TEXT")
+            altered = True
+        if "compound_variant" not in cols:
+            cursor.execute("ALTER TABLE compounds ADD COLUMN compound_variant TEXT")
+            altered = True
+        if altered:
+            self.conn.commit()
+            logger.info("Migrated compounds table: added primary_compound_id / compound_variant")
+        try:
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_compounds_primary
+                ON compounds(primary_compound_id)
+                """
+            )
+        except sqlite3.OperationalError as exc:
+            logger.warning("Could not create idx_compounds_primary: %s", exc)
+        if altered:
+            cursor.execute("SELECT compound_id FROM compounds")
+            for (cid,) in cursor.fetchall():
+                if not cid:
+                    continue
+                prim, var = split_compound_storage_id(str(cid))
+                cursor.execute(
+                    """
+                    UPDATE compounds
+                    SET primary_compound_id = ?, compound_variant = ?
+                    WHERE compound_id = ?
+                    """,
+                    (prim, var, cid),
+                )
+            self.conn.commit()
     
     def create_metadata_columns(self, column_names: List[str], create_indexes: bool = False) -> None:
         """
@@ -236,9 +280,23 @@ class DataStore:
                     column_values[safe_col] = None
             
             # Build INSERT statement
-            columns = ["compound_id", "metadata_json", "data_point_count"]
-            values = [compound.compound_id, metadata_json, len(compound.data_points)]
-            placeholders = ["?", "?", "?"]
+            prim = compound.primary_compound_id or compound.compound_id
+            var = compound.variant_label
+            columns = [
+                "compound_id",
+                "metadata_json",
+                "data_point_count",
+                "primary_compound_id",
+                "compound_variant",
+            ]
+            values = [
+                compound.compound_id,
+                metadata_json,
+                len(compound.data_points),
+                prim,
+                var,
+            ]
+            placeholders = ["?", "?", "?", "?", "?"]
             
             # Add metadata columns
             for safe_col, value in column_values.items():
@@ -252,6 +310,11 @@ class DataStore:
                 VALUES ({', '.join(placeholders)})
             """
             cursor.execute(query, values)
+
+            cursor.execute(
+                "DELETE FROM data_points WHERE compound_id = ?",
+                (compound.compound_id,),
+            )
             
             # Insert data points
             if compound.data_points:
@@ -300,7 +363,13 @@ class DataStore:
         added = 0
         
         # Prepare column names for bulk insert
-        base_columns = ["compound_id", "metadata_json", "data_point_count"]
+        base_columns = [
+            "compound_id",
+            "metadata_json",
+            "data_point_count",
+            "primary_compound_id",
+            "compound_variant",
+        ]
         safe_metadata_cols = [self._sanitize_column_name(col) for col in metadata_columns]
         all_columns = base_columns + safe_metadata_cols
         placeholders = ["?"] * len(all_columns)
@@ -329,12 +398,15 @@ class DataStore:
                 for compound in batch:
                     # Prepare metadata JSON
                     metadata_json = json.dumps(compound.metadata, ensure_ascii=False)
-                    
+                    prim = compound.primary_compound_id or compound.compound_id
+                    var = compound.variant_label
                     # Prepare compound row values
                     row_values = [
                         compound.compound_id,
                         metadata_json,
-                        len(compound.data_points)
+                        len(compound.data_points),
+                        prim,
+                        var,
                     ]
                     
                     # Add metadata column values
@@ -346,8 +418,14 @@ class DataStore:
                             row_values.append(None)
                     
                     compound_values.append(tuple(row_values))
-                    
-                    # Collect all data points for bulk insert
+
+                for compound in batch:
+                    cursor.execute(
+                        "DELETE FROM data_points WHERE compound_id = ?",
+                        (compound.compound_id,),
+                    )
+
+                for compound in batch:
                     for dp in compound.data_points:
                         for count_name, count_value in dp.counts.items():
                             all_data_point_values.append((
@@ -429,15 +507,99 @@ class DataStore:
                 for time, counts in sorted(data_points_dict.items())
             ]
             
+            keys = row.keys()
+            primary_db = (
+                row["primary_compound_id"] if "primary_compound_id" in keys else None
+            )
+            variant_db = (
+                row["compound_variant"] if "compound_variant" in keys else None
+            )
+            prim = (
+                str(primary_db).strip()
+                if primary_db is not None and str(primary_db).strip()
+                else compound_id
+            )
+            var: Optional[str] = None
+            if variant_db is not None and str(variant_db).strip():
+                var = str(variant_db).strip()
+
             return Compound(
                 compound_id=compound_id,
+                primary_compound_id=prim,
+                variant_label=var,
                 metadata=metadata,
-                data_points=data_points
+                data_points=data_points,
             )
             
         except Exception as e:
             logger.error(f"Error getting compound {compound_id}: {e}", exc_info=True)
             return None
+
+    def get_distinct_primary_compound_ids(self) -> List[str]:
+        """
+        Return sorted unique primary compound IDs (for grouping variants in the UI).
+
+        Returns:
+            List of primary IDs; falls back to ``compound_id`` when primary is unset.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                SELECT DISTINCT primary_compound_id FROM compounds
+                WHERE primary_compound_id IS NOT NULL AND TRIM(primary_compound_id) != ''
+                ORDER BY primary_compound_id
+                """
+            )
+            rows = [r[0] for r in cursor.fetchall() if r[0]]
+            if rows:
+                return rows
+            cursor.execute(
+                """
+                SELECT DISTINCT compound_id FROM compounds
+                ORDER BY compound_id
+                """
+            )
+            return [r[0] for r in cursor.fetchall() if r[0]]
+        except Exception as e:
+            logger.error("Error listing primary compound IDs: %s", e, exc_info=True)
+            return []
+
+    def get_compounds_for_primary(self, primary_compound_id: str) -> List[Compound]:
+        """
+        Load all stored rows that share the same primary compound ID (e.g. linear + cyclized).
+
+        Args:
+            primary_compound_id: Value from ``primary_compound_id`` / compound list.
+
+        Returns:
+            Compounds ordered by variant label then storage id.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                SELECT compound_id FROM compounds
+                WHERE primary_compound_id = ?
+                ORDER BY COALESCE(compound_variant, ''), compound_id
+                """,
+                (primary_compound_id,),
+            )
+            ids = [r[0] for r in cursor.fetchall()]
+            out: List[Compound] = []
+            for cid in ids:
+                loaded = self.get_compound(cid)
+                if loaded is not None:
+                    out.append(loaded)
+            return out
+        except Exception as e:
+            logger.error(
+                "Error loading compounds for primary %s: %s",
+                primary_compound_id,
+                e,
+                exc_info=True,
+            )
+            return []
     
     def search_compounds(
         self,

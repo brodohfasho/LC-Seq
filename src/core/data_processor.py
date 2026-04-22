@@ -13,6 +13,7 @@ from datetime import datetime
 
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.models.compound import Compound
+from src.models.compound_identity import build_compound_storage_id
 from src.models.chromatographic_data_point import ChromatographicDataPoint
 from src.core.data_store import DataStore
 from src.core.data_processing_result import DataProcessingResult, ProcessingError
@@ -396,14 +397,42 @@ class DataProcessor:
                 )
                 return None
             
-            compound_id = str(compound_id).strip()
-            
+            primary_id = str(compound_id).strip()
+            variant_label: Optional[str] = None
+            if config.compound_variant_column:
+                vcol = config.compound_variant_column
+                if vcol not in row.index:
+                    result.add_error(
+                        row_number=row_number,
+                        compound_id=primary_id,
+                        error_type="missing_variant_column",
+                        error_message=(
+                            f"Variant column '{vcol}' is not present in this spreadsheet row"
+                        ),
+                    )
+                    return None
+                var_raw = row.get(vcol)
+                if pd.isna(var_raw) or not str(var_raw).strip():
+                    result.add_error(
+                        row_number=row_number,
+                        compound_id=primary_id,
+                        error_type="missing_variant",
+                        error_message=(
+                            f"Variant column '{vcol}' is empty; each row needs a version label "
+                            f"(e.g. linear / cyclized) when a variant column is configured"
+                        ),
+                    )
+                    return None
+                variant_label = str(var_raw).strip()
+
+            storage_id = build_compound_storage_id(primary_id, variant_label)
+
             # Extract chromatographic data string
             chrom_data_str = row.get(config.chromatographic_data_column)
             if pd.isna(chrom_data_str) or not str(chrom_data_str).strip():
                 result.add_error(
                     row_number=row_number,
-                    compound_id=compound_id,
+                    compound_id=primary_id,
                     error_type="missing_chromatographic_data",
                     error_message="Chromatographic data is empty or missing"
                 )
@@ -421,7 +450,7 @@ class DataProcessor:
             except ValueError as e:
                 result.add_error(
                     row_number=row_number,
-                    compound_id=compound_id,
+                    compound_id=storage_id,
                     error_type="parsing_error",
                     error_message=f"Failed to parse chromatographic data: {str(e)}"
                 )
@@ -438,7 +467,7 @@ class DataProcessor:
                     if time_value is None:
                         result.add_error(
                             row_number=row_number,
-                            compound_id=compound_id,
+                            compound_id=storage_id,
                             error_type="invalid_time",
                             error_message=f"Non-numeric time value: {time_str}"
                         )
@@ -447,7 +476,7 @@ class DataProcessor:
                     if time_value < 0:
                         result.add_error(
                             row_number=row_number,
-                            compound_id=compound_id,
+                            compound_id=storage_id,
                             error_type="invalid_time",
                             error_message=f"Negative time value: {time_value}"
                         )
@@ -462,7 +491,7 @@ class DataProcessor:
                         if count_value is None:
                             result.add_error(
                                 row_number=row_number,
-                                compound_id=compound_id,
+                                compound_id=storage_id,
                                 error_type="invalid_count",
                                 error_message=f"Non-numeric count value for {count_name}: {count_str}"
                             )
@@ -470,7 +499,12 @@ class DataProcessor:
                         
                         if count_value < 0:
                             # Allow negative but log warning
-                            logger.warning(f"Negative count value for {compound_id}, {count_name}: {count_value}")
+                            logger.warning(
+                                "Negative count value for %s, %s: %s",
+                                storage_id,
+                                count_name,
+                                count_value,
+                            )
                             count_value = 0  # Set to 0 instead of skipping
                         
                         counts[count_name] = count_value
@@ -486,7 +520,7 @@ class DataProcessor:
                 except Exception as e:
                     result.add_error(
                         row_number=row_number,
-                        compound_id=compound_id,
+                        compound_id=storage_id,
                         error_type="data_point_error",
                         error_message=f"Error creating data point: {str(e)}"
                     )
@@ -495,7 +529,7 @@ class DataProcessor:
             if not data_points:
                 result.add_error(
                     row_number=row_number,
-                    compound_id=compound_id,
+                    compound_id=storage_id,
                     error_type="no_valid_data_points",
                     error_message="No valid data points extracted"
                 )
@@ -514,9 +548,11 @@ class DataProcessor:
             
             # Create compound
             compound = Compound(
-                compound_id=compound_id,
+                compound_id=storage_id,
+                primary_compound_id=primary_id,
+                variant_label=variant_label,
                 metadata=metadata,
-                data_points=data_points
+                data_points=data_points,
             )
             
             return compound

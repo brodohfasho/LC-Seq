@@ -358,5 +358,17 @@ class ConfigManager:
         # Check columns are different
         if config.compound_id_column == config.chromatographic_data_column:
             return False, "Compound ID and Chromatographic Data columns must be different"
+
+        if config.compound_variant_column:
+            vcol = config.compound_variant_column
+            if vcol not in available_columns:
+                return False, (
+                    f"Compound variant column '{vcol}' not found in spreadsheet. "
+                    f"Available columns: {', '.join(available_columns)}"
+                )
+            if vcol == config.compound_id_column:
+                return False, "Variant column must differ from Compound ID column"
+            if vcol == config.chromatographic_data_column:
+                return False, "Variant column must differ from Chromatographic Data column"
         
         return True, None

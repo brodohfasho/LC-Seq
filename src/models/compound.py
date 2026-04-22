@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
 from src.models.chromatographic_data_point import ChromatographicDataPoint
+from src.models.compound_identity import split_compound_storage_id
 
 
 @dataclass
@@ -15,14 +16,18 @@ class Compound:
     Represents a compound with ID, metadata columns, and chromatographic data.
     
     Attributes:
-        compound_id: Unique identifier for the compound
+        compound_id: Unique storage key (primary, or primary + variant separator + variant)
         metadata: Dictionary of additional metadata columns from spreadsheet
         data_points: List of chromatographic data points (time, count pairs)
+        primary_compound_id: Shared identity for coplotting variants (defaults from compound_id)
+        variant_label: Optional variant label (e.g. linear / cyclized) when configured
     """
     
     compound_id: str
     metadata: Dict[str, any] = field(default_factory=dict)
     data_points: List[ChromatographicDataPoint] = field(default_factory=list)
+    primary_compound_id: Optional[str] = None
+    variant_label: Optional[str] = None
     
     def __post_init__(self) -> None:
         """
@@ -33,6 +38,12 @@ class Compound:
         """
         if not self.compound_id or not str(self.compound_id).strip():
             raise ValueError("Compound ID must be a non-empty string")
+
+        if self.primary_compound_id is None or not str(self.primary_compound_id).strip():
+            prim, var = split_compound_storage_id(self.compound_id)
+            object.__setattr__(self, "primary_compound_id", prim)
+            if self.variant_label is None:
+                object.__setattr__(self, "variant_label", var)
         
         # Validate data points are sorted by time
         if self.data_points:
@@ -108,7 +119,9 @@ class Compound:
         return {
             "compound_id": self.compound_id,
             "metadata": self.metadata.copy(),
-            "data_points": [dp.to_dict() for dp in self.data_points]
+            "data_points": [dp.to_dict() for dp in self.data_points],
+            "primary_compound_id": self.primary_compound_id,
+            "variant_label": self.variant_label,
         }
     
     @classmethod
@@ -136,5 +149,7 @@ class Compound:
             data_points=[
                 ChromatographicDataPoint.from_dict(dp) 
                 for dp in data.get("data_points", [])
-            ]
+            ],
+            primary_compound_id=data.get("primary_compound_id"),
+            variant_label=data.get("variant_label"),
         )

@@ -71,9 +71,7 @@ class DatabaseManageDialog(BaseWindow):
         warn = (
             "Bulk export builds a full SQLite copy of your spreadsheet under "
             f"{database_library.get_databases_dir()}.\n\n"
-            "These files can be very large (often tens of MB or more for rich chromatograms). "
-            "Use this when you need fast repeated access or future indexed search — not for casual viewing.\n\n"
-            "The default workflow is on-demand parsing inside the Chromatogram Visualizer."
+            "These files can be very large (use caution - not advised for full libraries). "
         )
         ctk.CTkLabel(
             parent,
