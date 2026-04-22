@@ -99,7 +99,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
             sashwidth=6,
             showhandle=False,
             bd=0,
-            highlightthickness=0,
             bg="#4a4a4a",
         )
         self._content_panes.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
