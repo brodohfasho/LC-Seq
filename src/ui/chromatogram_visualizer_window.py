@@ -1,50 +1,42 @@
 # src/ui/chromatogram_visualizer_window.py
 """
-Chromatogram visualizer: Count vs Time plotting (Phase 10) and metadata search (Phase 11).
+Chromatogram visualizer: plot on top, compound table and controls below (Phase 10–11).
 """
 
 import logging
 import tkinter as tk
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import customtkinter as ctk
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 
 from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
 from src.core.data_processor import DataProcessor
 from src.core.data_store import DataStore
-from src.core.metadata_search import (
-    append_results_text_filter,
-    build_where_clause,
-    sanitize_sql_column,
-    validate_conditions,
-)
 from src.core.spreadsheet_loader import SpreadsheetLoader
 from src.models.compound import Compound
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
-from src.ui.query_builder_panel import QueryBuilderPanel
-from src.ui.virtual_metadata_results import VirtualMetadataResultList
+from src.ui.chromatogram_dialogs import CompoundPickerDialog, MetadataSearchDialog
 
 logger = logging.getLogger(__name__)
 
-_MAX_LIST_DISPLAY = 5000
 _MAX_PARSE_CACHE = 32
-_COMPACT_TOGGLE_HEIGHT = 54
+_MAX_PROCEED_KEYS = 200
+_MAX_META_TABLE_COLS = 4
 
 
 class ChromatogramVisualizerWindow(BaseWindow):
     """
-    Window for viewing chromatograms: Count vs Time with zoom/pan and series toggles.
+    Chromatogram on top (full width); compound table, picker/search dialogs, and series toggles below.
 
-    Uses a bulk SQLite database when one is active; otherwise parses spreadsheet rows
-    on demand for the selected compound.
+    Uses a bulk SQLite database when one is active; otherwise parses spreadsheet rows on demand.
     """
 
     def __init__(
@@ -54,13 +46,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
         config_manager: ConfigManager,
         loader: SpreadsheetLoader,
     ) -> None:
-        """
-        Args:
-            parent: Main application window
-            app_state: Current application state
-            config_manager: Used to load SpreadsheetConfig (count names)
-            loader: Loaded spreadsheet data (required for on-demand parsing)
-        """
         super().__init__(parent, title="Chromatogram Visualizer")
         self.bind("<Destroy>", self._clear_main_reference)
 
@@ -78,43 +63,13 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._compound_cache: "OrderedDict[str, Compound]" = OrderedDict()
         self._primary_variant_cache: "OrderedDict[str, List[Compound]]" = OrderedDict()
         self._processor = DataProcessor()
-        self._active_search_where: Optional[str] = None
-        self._active_search_params: List[Any] = []
-        self._result_filter_debounce: Optional[str] = None
-        self._query_panel: Optional[QueryBuilderPanel] = None
-        self._virtual_results: Optional[VirtualMetadataResultList] = None
-        self._search_status: Optional[ctk.CTkLabel] = None
-        self._result_filter_var: Optional[tk.StringVar] = None
-        self._browse_column_frame: Optional[ctk.CTkFrame] = None
-        self._search_column_frame: Optional[ctk.CTkFrame] = None
-        self._nav_list_btn: Optional[ctk.CTkButton] = None
-        self._nav_search_btn: Optional[ctk.CTkButton] = None
         self._searchable_metadata_columns: List[str] = []
+        self._table_compounds_by_iid: Dict[str, Compound] = {}
 
-        self.geometry("1600x980")
-        self.center_window(1600, 980)
-        self.minsize(1200, 700)
-
+        self.minsize(900, 600)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-
-        self._content_panes = tk.PanedWindow(
-            self,
-            orient=tk.HORIZONTAL,
-            sashwidth=6,
-            showhandle=False,
-            bd=0,
-            bg="#4a4a4a",
-        )
-        self._content_panes.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-
-        self._left_panel = ctk.CTkFrame(self._content_panes)
-        self._middle_panel = ctk.CTkFrame(self._content_panes)
-        self._right_panel = ctk.CTkFrame(self._content_panes)
-        self._content_panes.add(self._left_panel, minsize=220, stretch="always")
-        self._content_panes.add(self._middle_panel, minsize=240, stretch="always")
-        self._content_panes.add(self._right_panel, minsize=420, stretch="always")
-        self.after(120, self._set_initial_pane_sizes)
+        self.grid_rowconfigure(1, weight=3)
+        self.grid_rowconfigure(3, weight=2)
 
         cfg = config_manager.load_default_config()
         if not cfg or not cfg.count_names:
@@ -140,6 +95,10 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 messagebox.showerror("Database error", str(exc), parent=self)
                 self.after(50, self.on_close)
                 return
+            all_meta = list(self._config.selected_metadata_columns or [])
+            self._searchable_metadata_columns, _miss = self._data_store.filter_metadata_columns_for_search(
+                all_meta
+            )
             if self._uses_variants:
                 self._all_ids = self._data_store.get_distinct_primary_compound_ids()
             else:
@@ -171,9 +130,11 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 )
 
         self._build_header()
-        self._build_controls_column()
-        self._build_compound_list_column()
-        self._build_plot_column()
+        self._build_plot_area()
+        self._build_bottom_controls()
+        self._build_compound_table()
+
+        self.after(200, self._apply_maximized_state)
 
         logger.info(
             "Chromatogram visualizer opened (%s compounds, on_demand=%s)",
@@ -181,8 +142,17 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._on_demand_mode,
         )
 
+    def _apply_maximized_state(self) -> None:
+        """Fill the screen (Windows ``zoomed`` / Linux zoomed attribute)."""
+        try:
+            self.state("zoomed")
+        except tk.TclError:
+            try:
+                self.attributes("-zoomed", True)
+            except tk.TclError:
+                self.geometry(f"{self.winfo_screenwidth() - 80}x{self.winfo_screenheight() - 120}+40+40")
+
     def _clear_main_reference(self, event: tk.Event) -> None:
-        """Drop reference on main screen when this window is destroyed."""
         if event.widget != self:
             return
         main = self.parent
@@ -190,13 +160,11 @@ class ChromatogramVisualizerWindow(BaseWindow):
             main._chromatogram_window = None
 
     def _resolve_database_path(self) -> Optional[str]:
-        """Return active bulk database path only if the file exists."""
         if self.app_state.database_path and Path(self.app_state.database_path).is_file():
             return self.app_state.database_path
         return None
 
     def _compound_ids_from_dataframe(self, df: pd.DataFrame) -> List[str]:
-        """Unique primary compound IDs in first-seen spreadsheet order."""
         col = self._config.compound_id_column
         out: List[str] = []
         seen: set[str] = set()
@@ -211,548 +179,349 @@ class ChromatogramVisualizerWindow(BaseWindow):
         return out
 
     def _build_header(self) -> None:
-        """Top bar with title and Back."""
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 6))
+        header.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 6))
         header.grid_columnconfigure(0, weight=1)
 
-        mode = (
-            "On-demand parsing (no bulk database)"
-            if self._on_demand_mode
-            else "Bulk SQLite database"
-        )
-        title = ctk.CTkLabel(
+        mode = "On-demand (spreadsheet)" if self._on_demand_mode else "Bulk SQLite database"
+        ctk.CTkLabel(
             header,
             text=f"Chromatogram Visualizer — {mode}",
-            font=ctk.CTkFont(size=18, weight="bold"),
-        )
-        title.grid(row=0, column=0, sticky="w")
+            font=ctk.CTkFont(size=17, weight="bold"),
+        ).grid(row=0, column=0, sticky="w")
 
-        back_btn = ctk.CTkButton(
-            header,
-            text="Back to main",
+        btn_fr = ctk.CTkFrame(header, fg_color="transparent")
+        btn_fr.grid(row=0, column=1, sticky="e")
+
+        ctk.CTkButton(
+            btn_fr,
+            text="Minimize",
+            width=88,
+            fg_color=("gray75", "gray35"),
+            command=self.iconify,
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(btn_fr, text="Back to main", width=110, command=self.on_close).pack(side="left")
+
+    def _build_plot_area(self) -> None:
+        plot_fr = ctk.CTkFrame(self, fg_color="transparent")
+        plot_fr.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 6))
+        plot_fr.grid_rowconfigure(0, weight=1)
+        plot_fr.grid_columnconfigure(0, weight=1)
+
+        self._plot_host = tk.Frame(plot_fr, bg="#2b2b2b")
+        self._plot_host.grid(row=0, column=0, sticky="nsew")
+
+        self._figure = Figure(figsize=(10, 4.5), dpi=100)
+        self._figure.patch.set_facecolor("#2b2b2b")
+        self._axes = self._figure.add_subplot(111)
+        self._style_axes_empty()
+
+        self._canvas = FigureCanvasTkAgg(self._figure, master=self._plot_host)
+        self._canvas.draw()
+        self._canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self._toolbar = NavigationToolbar2Tk(self._canvas, self._plot_host)
+        self._toolbar.update()
+
+        hint = (
+            "Open Compound list, add rows to the table, then Plot selected. "
+            "Use the toolbar for pan and zoom."
+            if self._on_demand_mode
+            else "Open Compound list or Search, load the table, then Plot selected. Toolbar: pan / zoom."
+        )
+        ctk.CTkLabel(
+            plot_fr,
+            text=hint,
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+        ).grid(row=1, column=0, padx=4, pady=(4, 0), sticky="w")
+
+    def _build_bottom_controls(self) -> None:
+        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
+        bottom.grid_columnconfigure(1, weight=1)
+
+        row0 = ctk.CTkFrame(bottom, fg_color="transparent")
+        row0.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        ctk.CTkButton(
+            row0,
+            text="Compound list…",
+            width=130,
+            command=self._open_compound_picker,
+        ).pack(side="left", padx=(0, 6))
+        if not self._on_demand_mode:
+            ctk.CTkButton(
+                row0,
+                text="Search…",
+                width=100,
+                command=self._open_metadata_search,
+            ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            row0,
+            text="Clear table",
+            width=100,
+            fg_color="gray40",
+            command=self._on_clear_table,
+        ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(
+            row0,
+            text="Plot selected",
             width=120,
-            command=self.on_close,
-        )
-        back_btn.grid(row=0, column=1, sticky="e")
+            fg_color="#238636",
+            hover_color="#2ea043",
+            command=self._on_plot_selected_from_table,
+        ).pack(side="left", padx=(0, 12))
 
-    def _build_controls_column(self) -> None:
-        """Left column: actions + count/isoform toggles."""
-        left = self._left_panel
-        left.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(left, text="Controls", font=ctk.CTkFont(size=13, weight="bold")).grid(
-            row=0, column=0, padx=8, pady=(8, 6), sticky="w"
-        )
-
-        r = 1
         if self._on_demand_mode:
-            self._process_row_btn = ctk.CTkButton(
-                left,
-                text="Process data",
-                font=ctk.CTkFont(size=13, weight="bold"),
-                command=self._on_process_data_clicked,
-            )
-            self._process_row_btn.grid(row=r, column=0, padx=8, pady=(4, 4), sticky="ew")
-            r += 1
-            self._clear_cache_btn = ctk.CTkButton(
-                left,
-                text="Clear memory cache",
-                fg_color="gray40",
-                hover_color="gray25",
+            ctk.CTkButton(
+                row0,
+                text="Clear parse cache",
+                width=120,
+                fg_color="gray35",
                 command=self._on_clear_memory_cache,
-            )
-            self._clear_cache_btn.grid(row=r, column=0, padx=8, pady=(0, 8), sticky="ew")
-            r += 1
-
-        count_heading = "Count series"
-        if self._uses_variants and len(self._config.count_names) > 1:
-            count_heading = "Count series (each × variant when plotted)"
-        ctk.CTkLabel(left, text=count_heading, font=ctk.CTkFont(size=13, weight="bold")).grid(
-            row=r, column=0, padx=8, pady=(12, 4), sticky="w"
-        )
-        r += 1
-
-        # Keep count toggles compact so compound search/list remains visible.
-        series_frame = ctk.CTkScrollableFrame(left, height=_COMPACT_TOGGLE_HEIGHT)
-        series_frame.grid(row=r, column=0, padx=8, pady=(0, 8), sticky="ew")
+            ).pack(side="left", padx=(0, 6))
 
         assert self._config is not None
+        ctk.CTkLabel(row0, text="Count series:", font=ctk.CTkFont(size=12, weight="bold")).pack(
+            side="left", padx=(12, 4)
+        )
         for name in self._config.count_names:
             var = tk.IntVar(value=1)
             self._count_check_vars[name] = var
-            cb = ctk.CTkCheckBox(
-                series_frame,
+            ctk.CTkCheckBox(
+                row0,
                 text=name,
                 variable=var,
                 command=self._redraw_plot,
-            )
-            cb.pack(anchor="w", padx=4, pady=2)
-        r += 1
+            ).pack(side="left", padx=4)
 
         if self._uses_variants:
-            ctk.CTkLabel(
-                left,
-                text="Isoforms / variants",
-                font=ctk.CTkFont(size=13, weight="bold"),
-            ).grid(row=r, column=0, padx=8, pady=(8, 4), sticky="w")
-            r += 1
-            # Keep isoform toggles compact; users can scroll for additional variants.
-            self._variant_series_frame = ctk.CTkScrollableFrame(
-                left, height=_COMPACT_TOGGLE_HEIGHT
+            vf = ctk.CTkFrame(bottom, fg_color="transparent")
+            vf.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 2))
+            ctk.CTkLabel(vf, text="Isoforms / variants:", font=ctk.CTkFont(size=12, weight="bold")).pack(
+                side="left", padx=(0, 6)
             )
-            self._variant_series_frame.grid(row=r, column=0, padx=8, pady=(0, 8), sticky="ew")
+            self._variant_series_frame = vf
 
-    def _build_compound_list_column(self) -> None:
-        """Middle column: compound list; optional Search tab only when a bulk DB is active."""
-        middle = self._middle_panel
-        middle.grid_columnconfigure(0, weight=1)
+    def _build_compound_table(self) -> None:
+        wrap = ctk.CTkFrame(self)
+        wrap.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 10))
+        wrap.grid_rowconfigure(0, weight=1)
+        wrap.grid_columnconfigure(0, weight=1)
 
-        # On-demand mode has no SQL search — a single tab labeled "Browse" looked like a broken
-        # button (re-selecting the current tab does nothing). Embed the list directly.
+        ctk.CTkLabel(
+            wrap,
+            text="Loaded compounds (select rows, then Plot selected)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        tbl_fr = tk.Frame(wrap, bg="#1e1e1e")
+        tbl_fr.grid(row=1, column=0, sticky="nsew")
+        tbl_fr.grid_rowconfigure(0, weight=1)
+        tbl_fr.grid_columnconfigure(0, weight=1)
+
+        cols = self._table_column_names()
+        self._tree = ttk.Treeview(
+            tbl_fr,
+            columns=cols,
+            show="headings",
+            selectmode=tk.EXTENDED,
+            height=10,
+        )
+        for c in cols:
+            self._tree.heading(c, text=c.replace("_", " ").title())
+            self._tree.column(c, width=120, stretch=True)
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        ysb = ttk.Scrollbar(tbl_fr, orient="vertical", command=self._tree.yview)
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb = ttk.Scrollbar(tbl_fr, orient="horizontal", command=self._tree.xview)
+        xsb.grid(row=1, column=0, sticky="ew")
+        self._tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+
+        self._apply_treeview_dark_style()
+
+        self._table_status = ctk.CTkLabel(wrap, text="No compounds in the table.", text_color="gray")
+        self._table_status.grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+    def _apply_treeview_dark_style(self) -> None:
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "Treeview",
+            background="#2b2b2b",
+            foreground="#e6e6e6",
+            fieldbackground="#2b2b2b",
+            rowheight=24,
+        )
+        style.configure("Treeview.Heading", background="#3d3d3d", foreground="#ffffff")
+        style.map("Treeview", background=[("selected", "#1f538d")])
+
+    def _table_column_names(self) -> List[str]:
+        assert self._config is not None
         if self._on_demand_mode:
-            middle.grid_rowconfigure(0, weight=1)
-            self._browse_column_frame = None
-            self._search_column_frame = None
-            self._nav_list_btn = None
-            self._nav_search_btn = None
-            self._build_browse_compound_ui(middle)
-            return
-
-        # CTkTabview inside a PanedWindow often gets zero-height content on Windows;
-        # use explicit nav buttons + two frames instead.
-        middle.grid_rowconfigure(0, weight=0)
-        middle.grid_rowconfigure(1, weight=1)
-
-        nav = ctk.CTkFrame(middle, fg_color="transparent")
-        nav.grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 0))
-
-        self._browse_column_frame = ctk.CTkFrame(middle, fg_color="transparent")
-        self._search_column_frame = ctk.CTkFrame(middle, fg_color="transparent")
-        self._browse_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        self._search_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-        self._search_column_frame.grid_remove()
-
-        self._nav_list_btn = ctk.CTkButton(
-            nav,
-            text="Compound list",
-            width=130,
-            command=lambda: self._set_middle_compound_view("list"),
-        )
-        self._nav_search_btn = ctk.CTkButton(
-            nav,
-            text="Search",
-            width=100,
-            command=lambda: self._set_middle_compound_view("search"),
-        )
-        self._nav_list_btn.pack(side="left", padx=(0, 6))
-        self._nav_search_btn.pack(side="left")
-
-        self._build_browse_compound_ui(self._browse_column_frame)
-        self._build_search_tab(self._search_column_frame)
-        self._set_middle_compound_view("list")
-
-    def _set_middle_compound_view(self, mode: str) -> None:
-        """Toggle compound list vs SQL search (database mode only)."""
-        if self._browse_column_frame is None or self._search_column_frame is None:
-            return
-        if self._nav_list_btn is None or self._nav_search_btn is None:
-            return
-        selected = ("#1f538d", "#14375e")
-        idle = ("gray70", "gray35")
-        if mode == "search":
-            self._browse_column_frame.grid_remove()
-            self._search_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-            self._nav_list_btn.configure(fg_color=idle)
-            self._nav_search_btn.configure(fg_color=selected)
+            meta = list(self._config.selected_metadata_columns or [])[:_MAX_META_TABLE_COLS]
         else:
-            self._search_column_frame.grid_remove()
-            self._browse_column_frame.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
-            self._nav_list_btn.configure(fg_color=selected)
-            self._nav_search_btn.configure(fg_color=idle)
-
-    def _build_browse_compound_ui(self, parent: ctk.CTkFrame) -> None:
-        """Compound list + text filter (spreadsheet or full DB browse)."""
-        parent.grid_rowconfigure(2, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
-
-        list_title = "Compound (primary ID)" if self._uses_variants else "Compound ID"
-        ctk.CTkLabel(
-            parent,
-            text=list_title,
-            font=ctk.CTkFont(size=13, weight="bold"),
-        ).grid(row=0, column=0, padx=8, pady=(8, 4), sticky="w")
-
-        self._filter_var = tk.StringVar(value="")
-        filter_entry = ctk.CTkEntry(
-            parent,
-            placeholder_text="Filter compounds…",
-            textvariable=self._filter_var,
-        )
-        filter_entry.grid(row=1, column=0, padx=8, pady=4, sticky="ew")
-        filter_entry.bind("<KeyRelease>", lambda _e: self._apply_compound_filter())
-
-        list_frame = ctk.CTkFrame(parent)
-        list_frame.grid(row=2, column=0, padx=8, pady=4, sticky="nsew")
-        list_frame.grid_rowconfigure(0, weight=1)
-        list_frame.grid_columnconfigure(0, weight=1)
-
-        self._compound_listbox = tk.Listbox(
-            list_frame,
-            height=30,
-            exportselection=False,
-            activestyle="dotbox",
-        )
-        self._compound_listbox.grid(row=0, column=0, sticky="nsew")
-        sb = tk.Scrollbar(list_frame, orient="vertical", command=self._compound_listbox.yview)
-        sb.grid(row=0, column=1, sticky="ns")
-        self._compound_listbox.configure(yscrollcommand=sb.set)
-        self._compound_listbox.bind("<<ListboxSelect>>", self._on_compound_list_select)
-
-        self._list_status = ctk.CTkLabel(
-            parent, text="", font=ctk.CTkFont(size=11), text_color="gray"
-        )
-        self._list_status.grid(row=3, column=0, padx=8, pady=(4, 6), sticky="w")
-
-        self._apply_compound_filter()
-
-    def _build_search_tab(self, parent: ctk.CTkFrame) -> None:
-        """Metadata query builder and virtual results (bulk database mode only)."""
-        assert self._config is not None
-        assert self._data_store is not None
-        parent.grid_rowconfigure(4, weight=1)
-        parent.grid_columnconfigure(0, weight=1)
-
-        all_meta = list(self._config.selected_metadata_columns or [])
-        present, missing = self._data_store.filter_metadata_columns_for_search(all_meta)
-        self._searchable_metadata_columns = present
-
-        title_row = ctk.CTkFrame(parent, fg_color="transparent")
-        title_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
-        title_row.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            title_row,
-            text="Search compounds (SQLite)",
-            font=ctk.CTkFont(size=13, weight="bold"),
-        ).grid(row=0, column=0, sticky="w")
-        if missing:
-            miss_show = ", ".join(missing[:12])
-            if len(missing) > 12:
-                miss_show += ", …"
-            ctk.CTkLabel(
-                title_row,
-                text=(
-                    "These metadata columns are not stored in this database file "
-                    "(rebuild the database after changing metadata selection): "
-                    f"{miss_show}"
-                ),
-                text_color="orange",
-                font=ctk.CTkFont(size=11),
-                anchor="w",
-                justify="left",
-                wraplength=520,
-            ).grid(row=1, column=0, sticky="ew", pady=(4, 0))
-
-        self._query_panel = QueryBuilderPanel(
-            parent,
-            metadata_fields=present,
-            on_search=self._on_query_search_clicked,
-            on_clear=self._on_query_clear_clicked,
-        )
-        self._query_panel.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
-
-        self._result_filter_var = tk.StringVar(value="")
-        rf = ctk.CTkEntry(
-            parent,
-            placeholder_text="Filter results (matches ID or any metadata text)…",
-            textvariable=self._result_filter_var,
-        )
-        rf.grid(row=2, column=0, padx=8, pady=(0, 4), sticky="ew")
-        rf.bind("<KeyRelease>", lambda _e: self._schedule_result_filter_refresh())
-
-        actions = ctk.CTkFrame(parent, fg_color="transparent")
-        actions.grid(row=3, column=0, sticky="ew", padx=8, pady=4)
-        ctk.CTkButton(actions, text="Select all results", width=130, command=self._on_search_select_all).pack(
-            side="left", padx=4
-        )
-        ctk.CTkButton(
-            actions, text="Select none", width=90, fg_color="gray40", command=self._on_search_select_none
-        ).pack(side="left", padx=4)
-        ctk.CTkButton(
-            actions,
-            text="Load selected into plot",
-            width=160,
-            fg_color="#238636",
-            hover_color="#2ea043",
-            command=self._on_load_search_selection_into_plot,
-        ).pack(side="left", padx=4)
-
-        cols = self._search_result_column_headers()
-        self._virtual_results = VirtualMetadataResultList(parent, columns=cols, height=220)
-        self._virtual_results.grid(row=4, column=0, sticky="nsew", padx=8, pady=4)
-
-        self._search_status = ctk.CTkLabel(
-            parent, text="Run a search to see matches.", font=ctk.CTkFont(size=11), text_color="gray"
-        )
-        self._search_status.grid(row=5, column=0, padx=8, pady=(0, 8), sticky="w")
-
-    def _search_result_column_headers(self) -> List[str]:
-        """Column headers for the virtual results table."""
-        assert self._config is not None
-        meta = list(self._searchable_metadata_columns or [])
+            meta = list(self._searchable_metadata_columns[:_MAX_META_TABLE_COLS])
         if self._uses_variants:
-            return ["primary_compound_id", "compound_variant", *meta]
+            return ["compound_id", "primary_id", "variant", *meta]
         return ["compound_id", *meta]
 
-    def _compute_search_where(self) -> Tuple[str, List[Any]]:
-        """Build WHERE clause from the query panel plus optional results text filter."""
-        assert self._config is not None
-        assert self._query_panel is not None
-        conditions = self._query_panel.get_conditions()
-        combiners = self._query_panel.get_combiners()
-        while len(combiners) < max(0, len(conditions) - 1):
-            combiners.append("AND")
-        where_sql, params = build_where_clause(conditions, combiners)
-        needle = (self._result_filter_var.get() if self._result_filter_var else "").strip()
-        meta_safe = [sanitize_sql_column(c) for c in self._searchable_metadata_columns]
-        or_cols = ["compound_id", *meta_safe]
-        where_sql, params = append_results_text_filter(where_sql, list(params), needle, or_cols)
-        return where_sql, params
+    def _row_values(self, c: Compound) -> tuple:
+        cols = self._table_column_names()
+        meta_keys = [x for x in cols if x not in ("compound_id", "primary_id", "variant")]
+        parts: List[str] = [c.compound_id]
+        if self._uses_variants:
+            parts.append(c.primary_compound_id or "")
+            parts.append(c.variant_label or "")
+        for mk in meta_keys:
+            v = c.metadata.get(mk, "")
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                parts.append("")
+            else:
+                parts.append(str(v)[:80])
+        return tuple(parts)
 
-    def _on_query_search_clicked(self) -> None:
-        """Validate, execute search, populate virtual list."""
-        assert self._config is not None
-        assert self._data_store is not None
-        assert self._query_panel is not None
-        assert self._virtual_results is not None
-        assert self._search_status is not None
-
-        conditions = self._query_panel.get_conditions()
-        allowed = self._searchable_metadata_columns or []
-        errs = validate_conditions(conditions, allowed)
-        if errs:
-            messagebox.showerror("Search", "\n".join(errs), parent=self)
-            return
-        try:
-            where_sql, params = self._compute_search_where()
-        except ValueError as exc:
-            messagebox.showerror("Search", str(exc), parent=self)
-            return
-
-        self._active_search_where = where_sql
-        self._active_search_params = list(params)
-        total = self._data_store.count_compounds_where(where_sql, params)
-        if total == 0:
-            self._search_status.configure(text="No matches for this query.")
-            self._virtual_results.clear_results()
-            return
-
-        display_cols = list(self._searchable_metadata_columns or [])
-
-        def fetch_page(offset: int, limit: int) -> List[dict]:
-            rows, _t = self._data_store.search_compounds_page(
-                display_cols,
-                where_sql,
-                tuple(params),
-                limit,
-                offset,
-            )
-            return rows
-
-        self._virtual_results.set_columns(self._search_result_column_headers())
-        self._virtual_results.set_query(total, fetch_page)
-        self._search_status.configure(text=f"{total} match(es). Scroll to load more rows.")
-
-    def _on_query_clear_clicked(self) -> None:
-        """Reset search results pane (query panel clears itself)."""
-        self._active_search_where = None
-        self._active_search_params = []
-        if self._virtual_results is not None:
-            self._virtual_results.clear_results()
-        if self._search_status is not None:
-            self._search_status.configure(text="Run a search to see matches.")
-
-    def _schedule_result_filter_refresh(self) -> None:
-        """Debounce secondary filter while typing."""
-        if self._active_search_where is None:
-            return
-        if self._result_filter_debounce is not None:
-            try:
-                self.after_cancel(self._result_filter_debounce)
-            except Exception:
-                pass
-        self._result_filter_debounce = self.after(400, self._apply_result_filter_refresh)
-
-    def _apply_result_filter_refresh(self) -> None:
-        self._result_filter_debounce = None
-        if self._active_search_where is None or self._data_store is None:
-            return
-        if self._query_panel is None or self._virtual_results is None or self._search_status is None:
-            return
-        conditions = self._query_panel.get_conditions()
-        allowed = self._searchable_metadata_columns or []
-        errs_rf = validate_conditions(conditions, allowed)
-        if errs_rf:
-            return
-        try:
-            where_sql, params = self._compute_search_where()
-        except ValueError:
-            return
-        self._active_search_where = where_sql
-        self._active_search_params = list(params)
-        total = self._data_store.count_compounds_where(where_sql, params)
-        display_cols = list(self._searchable_metadata_columns or [])
-
-        def fetch_page(offset: int, limit: int) -> List[dict]:
-            rows, _t = self._data_store.search_compounds_page(
-                display_cols,
-                where_sql,
-                tuple(params),
-                limit,
-                offset,
-            )
-            return rows
-
-        self._virtual_results.set_query(total, fetch_page)
-        self._search_status.configure(text=f"{total} match(es) after result filter.")
-
-    def _on_search_select_all(self) -> None:
-        """Select every compound_id returned by the active query (capped)."""
-        if self._data_store is None or self._active_search_where is None:
-            messagebox.showinfo("Search", "Run a search first.", parent=self)
-            return
-        assert self._virtual_results is not None
-        total = self._data_store.count_compounds_where(
-            self._active_search_where, self._active_search_params
+    def _open_compound_picker(self) -> None:
+        heading = "Primary compound IDs" if self._uses_variants else "Compound IDs"
+        CompoundPickerDialog(
+            self,
+            title="Compound list",
+            list_heading=heading,
+            all_ids=self._all_ids,
+            on_done=self._on_compound_picker_done,
         )
-        cap = VirtualMetadataResultList.max_select_all()
-        if total > cap:
+
+    def _on_compound_picker_done(self, keys: Optional[List[str]]) -> None:
+        if not keys:
+            return
+        if len(keys) > _MAX_PROCEED_KEYS:
+            keys = keys[:_MAX_PROCEED_KEYS]
             messagebox.showwarning(
-                "Search",
-                f"Your query matches {total} rows, which exceeds the select-all limit "
-                f"of {cap}. Narrow the query before using Select all results.",
+                "Compound list",
+                f"Only the first {_MAX_PROCEED_KEYS} selected IDs were loaded.",
                 parent=self,
             )
+        compounds = self._load_compounds_for_keys(keys)
+        if not compounds:
+            messagebox.showerror("Compound list", "Could not load selected compound(s).", parent=self)
             return
-        ids = self._data_store.list_compound_ids_where(
-            self._active_search_where, self._active_search_params
+        self._append_compounds_to_table(compounds, replace=False)
+
+    def _open_metadata_search(self) -> None:
+        if self._data_store is None or self._config is None:
+            return
+        MetadataSearchDialog(
+            self,
+            config=self._config,
+            data_store=self._data_store,
+            searchable_metadata_columns=self._searchable_metadata_columns,
+            on_done=self._on_metadata_search_done,
         )
-        self._virtual_results.select_all_ids(ids)
-        if self._search_status is not None:
-            self._search_status.configure(text=f"Selected all {len(ids)} result(s).")
 
-    def _on_search_select_none(self) -> None:
-        if self._virtual_results is not None:
-            self._virtual_results.select_none()
-        if self._search_status is not None:
-            self._search_status.configure(text="Selection cleared.")
-
-    def _on_load_search_selection_into_plot(self) -> None:
-        """Load checked search hits into the chromatogram plot."""
-        if self._data_store is None:
+    def _on_metadata_search_done(self, ids: Optional[List[str]]) -> None:
+        if not ids or self._data_store is None:
             return
-        assert self._virtual_results is not None
-        ids = self._virtual_results.get_selected_compound_ids()
-        if not ids:
-            messagebox.showinfo("Plot", "Select one or more results (checkboxes) first.", parent=self)
-            return
-        if len(ids) > 200:
-            ids = ids[:200]
-            messagebox.showwarning(
-                "Plot",
-                "Too many compounds selected; only the first 200 will be loaded.",
-                parent=self,
-            )
-
         loaded: List[Compound] = []
         for cid in ids:
             c = self._data_store.get_compound(cid)
             if c is not None:
                 loaded.append(c)
         if not loaded:
-            messagebox.showerror("Plot", "Could not load selected compound(s).", parent=self)
+            messagebox.showerror("Search", "No compounds could be loaded for this query.", parent=self)
             return
-        self._current_compounds = loaded
+        self._append_compounds_to_table(loaded, replace=True)
+
+    def _load_compounds_for_keys(self, keys: List[str]) -> List[Compound]:
+        out: List[Compound] = []
+        if self._on_demand_mode:
+            df = self._loader.current_data
+            assert self._config is not None and df is not None
+            col = self._config.compound_id_column
+            for key in keys:
+                if self._uses_variants:
+                    found = self._parse_all_rows_for_primary(key)
+                    out.extend(found)
+                else:
+                    mask = df[col].astype(str).str.strip() == key
+                    idx_positions = [i for i, v in enumerate(mask.tolist()) if v]
+                    if not idx_positions:
+                        continue
+                    row = df.iloc[int(idx_positions[0])]
+                    compound, res = self._processor.parse_dataframe_row_to_compound(
+                        row, self._config, int(idx_positions[0]) + 2
+                    )
+                    if compound is not None:
+                        self._cache_put(key, compound)
+                        out.append(compound)
+            return out
+
+        assert self._data_store is not None
+        for key in keys:
+            if self._uses_variants:
+                out.extend(self._data_store.get_compounds_for_primary(key))
+            else:
+                c = self._data_store.get_compound(key)
+                if c is not None:
+                    out.append(c)
+        return out
+
+    def _append_compounds_to_table(self, compounds: List[Compound], *, replace: bool) -> None:
+        if replace:
+            for iid in list(self._tree.get_children()):
+                self._tree.delete(iid)
+            self._table_compounds_by_iid.clear()
+
+        added = 0
+        for c in compounds:
+            iid = str(c.compound_id)
+            if iid in self._table_compounds_by_iid:
+                continue
+            self._table_compounds_by_iid[iid] = c
+            self._tree.insert("", "end", iid=iid, values=self._row_values(c))
+            added += 1
+
+        n = len(self._table_compounds_by_iid)
+        action = "Replaced table with" if replace else "Added"
+        self._table_status.configure(text=f"{action} {added} row(s); {n} compound(s) in table.")
+
+    def _on_clear_table(self) -> None:
+        for iid in list(self._tree.get_children()):
+            self._tree.delete(iid)
+        self._table_compounds_by_iid.clear()
+        self._current_compounds = []
         self._refresh_variant_toggles()
-        self._redraw_plot()
+        self._style_axes_empty()
+        self._canvas.draw()
+        self._table_status.configure(text="Table cleared.")
 
-    def _on_process_data_clicked(self) -> None:
-        """Parse selected spreadsheet row(s) into Compound(s) (on-demand)."""
-        if not self._on_demand_mode:
-            return
-        sel = self._compound_listbox.curselection()
+    def _on_plot_selected_from_table(self) -> None:
+        sel = self._tree.selection()
         if not sel:
-            messagebox.showinfo("Process data", "Select a compound first.", parent=self)
+            messagebox.showinfo("Plot", "Select one or more rows in the table first.", parent=self)
             return
-        primary_id = self._compound_listbox.get(sel[0])
-        df = self._loader.current_data
-        assert self._config is not None and df is not None
-
-        if self._uses_variants:
-            compounds = self._parse_all_rows_for_primary(primary_id)
-            if not compounds:
-                messagebox.showerror(
-                    "Process data",
-                    f"No rows parsed for primary: {primary_id}",
-                    parent=self,
-                )
-                self._current_compounds = []
-                self._redraw_plot()
-                return
-            self._cache_put_primary(primary_id, compounds)
-            self._current_compounds = compounds
-            self._refresh_variant_toggles()
-            self._redraw_plot()
+        compounds: List[Compound] = []
+        for iid in sel:
+            c = self._table_compounds_by_iid.get(str(iid))
+            if c is not None:
+                compounds.append(c)
+        if not compounds:
+            messagebox.showerror("Plot", "Could not resolve selected rows.", parent=self)
             return
-
-        col = self._config.compound_id_column
-        mask = df[col].astype(str).str.strip() == primary_id
-        idx_positions = [i for i, v in enumerate(mask.tolist()) if v]
-        if not idx_positions:
-            messagebox.showerror(
-                "Process data",
-                f"No row found for compound ID: {primary_id}",
-                parent=self,
-            )
-            return
-        iloc_pos = int(idx_positions[0])
-        row = df.iloc[iloc_pos]
-        row_number = iloc_pos + 2
-
-        compound, result = self._processor.parse_dataframe_row_to_compound(
-            row, self._config, row_number
-        )
-        if compound is None:
-            errs = result.errors[:5]
-            detail = "\n".join(f"Row {e.row_number}: {e.error_message}" for e in errs) if errs else "Unknown error"
-            messagebox.showerror("Process data", f"Could not parse compound.\n\n{detail}", parent=self)
-            self._current_compounds = []
-            self._redraw_plot()
-            return
-
-        self._cache_put(primary_id, compound)
-        self._current_compounds = [compound]
+        self._current_compounds = compounds
         self._refresh_variant_toggles()
         self._redraw_plot()
 
     def _cache_put(self, compound_id: str, compound: Compound) -> None:
-        """Insert into LRU-ordered cache with size cap."""
         if compound_id in self._compound_cache:
             self._compound_cache.move_to_end(compound_id)
         self._compound_cache[compound_id] = compound
         while len(self._compound_cache) > _MAX_PARSE_CACHE:
             self._compound_cache.popitem(last=False)
 
-    def _cache_put_primary(self, primary_id: str, compounds: List[Compound]) -> None:
-        """LRU cache for all variants of one primary (on-demand mode)."""
-        if primary_id in self._primary_variant_cache:
-            self._primary_variant_cache.move_to_end(primary_id)
-        self._primary_variant_cache[primary_id] = compounds
-        while len(self._primary_variant_cache) > _MAX_PARSE_CACHE:
-            self._primary_variant_cache.popitem(last=False)
-
     def _parse_all_rows_for_primary(self, primary_id: str) -> List[Compound]:
-        """Parse every spreadsheet row whose primary compound ID matches."""
         df = self._loader.current_data
         assert self._config is not None and df is not None
         col = self._config.compound_id_column
@@ -767,82 +536,58 @@ class ChromatogramVisualizerWindow(BaseWindow):
             if compound is not None:
                 found.append(compound)
         found.sort(key=lambda c: (c.variant_label or "", c.compound_id))
+        if found:
+            self._cache_put_primary(primary_id, found)
         return found
+
+    def _cache_put_primary(self, primary_id: str, compounds: List[Compound]) -> None:
+        if primary_id in self._primary_variant_cache:
+            self._primary_variant_cache.move_to_end(primary_id)
+        self._primary_variant_cache[primary_id] = compounds
+        while len(self._primary_variant_cache) > _MAX_PARSE_CACHE:
+            self._primary_variant_cache.popitem(last=False)
 
     def _on_clear_memory_cache(self) -> None:
         self._compound_cache.clear()
         self._primary_variant_cache.clear()
-        self._current_compounds = []
-        self._redraw_plot()
-        messagebox.showinfo("Memory cache", "Cleared parsed compounds from memory.", parent=self)
+        messagebox.showinfo("Cache", "Cleared on-demand parse cache.", parent=self)
 
-    def _build_plot_column(self) -> None:
-        """Right column: matplotlib figure + navigation toolbar."""
-        right = self._right_panel
-        right.grid_rowconfigure(0, weight=1)
-        right.grid_columnconfigure(0, weight=1)
+    def _selected_count_names(self) -> List[str]:
+        names: List[str] = []
+        for name, var in self._count_check_vars.items():
+            if var.get():
+                names.append(name)
+        return names
 
-        self._plot_host = tk.Frame(right, bg="#2b2b2b")
-        self._plot_host.grid(row=0, column=0, sticky="nsew")
+    def _selected_variant_labels(self) -> List[str]:
+        labels: List[str] = []
+        for label, var in self._variant_check_vars.items():
+            if var.get():
+                labels.append(label)
+        return labels
 
-        self._figure = Figure(figsize=(7, 5), dpi=100)
-        self._figure.patch.set_facecolor("#2b2b2b")
-        self._axes = self._figure.add_subplot(111)
-        self._style_axes_empty()
+    def _refresh_variant_toggles(self) -> None:
+        if not self._uses_variants or not hasattr(self, "_variant_series_frame"):
+            return
+        vf = self._variant_series_frame
+        for w in list(vf.winfo_children())[1:]:
+            w.destroy()
 
-        self._canvas = FigureCanvasTkAgg(self._figure, master=self._plot_host)
-        self._canvas.draw()
-        self._canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-
-        self._toolbar = NavigationToolbar2Tk(self._canvas, self._plot_host)
-        self._toolbar.update()
-
-        if self._on_demand_mode:
-            if self._uses_variants:
-                hint_text = (
-                    "Select a primary compound, click Process data to load all variants, "
-                    "then toggle count series (each combines with every variant). "
-                    "Use the toolbar for pan and zoom."
-                )
-            else:
-                hint_text = (
-                    "Select a compound, click Process data, then choose count series. "
-                    "Use the toolbar for pan and zoom."
-                )
-        else:
-            if self._uses_variants:
-                hint_text = (
-                    "Select a primary compound to coplot all variants. "
-                    "Toggle count series — legend shows variant × count. Use the toolbar for pan and zoom."
-                )
-            else:
-                hint_text = (
-                    "Use the toolbar for pan and zoom. "
-                    "Select a compound and count series to plot."
-                )
-        hint = ctk.CTkLabel(
-            right,
-            text=hint_text,
-            font=ctk.CTkFont(size=11),
-            text_color="gray",
-        )
-        hint.grid(row=1, column=0, padx=8, pady=(4, 8), sticky="w")
-
-    def _set_initial_pane_sizes(self) -> None:
-        """Initialize pane widths to ~17.5% / 17.5% / 65%."""
-        try:
-            total = max(self._content_panes.winfo_width(), self.winfo_width() - 24)
-            if total <= 0:
-                return
-            left_w = max(220, int(total * 0.175))
-            middle_w = max(240, int(total * 0.175))
-            self._content_panes.sash_place(0, left_w, 0)
-            self._content_panes.sash_place(1, left_w + middle_w, 0)
-        except Exception as exc:
-            logger.debug("Could not set initial pane sizes: %s", exc)
+        labels = sorted({(c.variant_label or "(none)") for c in self._current_compounds})
+        prev = {k for k, v in self._variant_check_vars.items() if v.get()}
+        self._variant_check_vars = {}
+        for label in labels:
+            enabled = 1 if (not prev or label in prev) else 0
+            var = tk.IntVar(value=enabled)
+            self._variant_check_vars[label] = var
+            ctk.CTkCheckBox(
+                vf,
+                text=label,
+                variable=var,
+                command=self._redraw_plot,
+            ).pack(side="left", padx=4)
 
     def _style_axes_empty(self) -> None:
-        """Draw placeholder axes styling (dark background)."""
         ax = self._axes
         ax.clear()
         ax.set_facecolor("#1e1e1e")
@@ -852,15 +597,10 @@ class ChromatogramVisualizerWindow(BaseWindow):
         ax.title.set_color("white")
         for spine in ax.spines.values():
             spine.set_color("gray")
-        msg = (
-            "Select a compound,\nthen click Process data"
-            if self._on_demand_mode
-            else "Select a compound"
-        )
         ax.text(
             0.5,
             0.5,
-            msg,
+            "Add compounds via Compound list or Search,\nselect table rows, then Plot selected.",
             transform=ax.transAxes,
             ha="center",
             va="center",
@@ -870,115 +610,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         ax.set_xticks([])
         ax.set_yticks([])
 
-    def _apply_compound_filter(self) -> None:
-        """Populate listbox with filtered compound IDs (capped)."""
-        q = self._filter_var.get().strip().lower()
-        if q:
-            filtered = [i for i in self._all_ids if q in i.lower()]
-        else:
-            filtered = list(self._all_ids)
-
-        truncated = False
-        if len(filtered) > _MAX_LIST_DISPLAY:
-            filtered = filtered[:_MAX_LIST_DISPLAY]
-            truncated = True
-
-        self._compound_listbox.delete(0, tk.END)
-        for cid in filtered:
-            self._compound_listbox.insert(tk.END, cid)
-
-        msg = f"{len(filtered)} shown"
-        if truncated:
-            msg += f" (first {_MAX_LIST_DISPLAY} matches; refine filter)"
-        elif q and not filtered:
-            msg = "No matches"
-        self._list_status.configure(text=msg)
-
-    def _on_compound_list_select(self, _event: Any = None) -> None:
-        """Load compound(s) from DB or cache and refresh plot."""
-        sel = self._compound_listbox.curselection()
-        if not sel:
-            return
-        list_key = self._compound_listbox.get(sel[0])
-
-        if self._on_demand_mode:
-            if self._uses_variants:
-                if list_key in self._primary_variant_cache:
-                    self._primary_variant_cache.move_to_end(list_key)
-                    self._current_compounds = list(self._primary_variant_cache[list_key])
-                else:
-                    self._current_compounds = []
-            else:
-                if list_key in self._compound_cache:
-                    self._compound_cache.move_to_end(list_key)
-                    c = self._compound_cache.get(list_key)
-                    self._current_compounds = [c] if c is not None else []
-                else:
-                    self._current_compounds = []
-            self._refresh_variant_toggles()
-            self._redraw_plot()
-            return
-
-        if self._data_store is None:
-            return
-        if self._uses_variants:
-            self._current_compounds = self._data_store.get_compounds_for_primary(list_key)
-            if not self._current_compounds:
-                logger.warning("No compounds for primary: %s", list_key)
-            self._refresh_variant_toggles()
-            self._redraw_plot()
-            return
-
-        compound = self._data_store.get_compound(list_key)
-        if compound is None:
-            logger.warning("Compound not found: %s", list_key)
-            self._current_compounds = []
-            self._redraw_plot()
-            return
-        self._current_compounds = [compound]
-        self._refresh_variant_toggles()
-        self._redraw_plot()
-
-    def _selected_count_names(self) -> List[str]:
-        """Count names the user enabled."""
-        names: List[str] = []
-        for name, var in self._count_check_vars.items():
-            if var.get():
-                names.append(name)
-        return names
-
-    def _selected_variant_labels(self) -> List[str]:
-        """Variant labels the user enabled (normalized with '(none)' placeholder)."""
-        labels: List[str] = []
-        for label, var in self._variant_check_vars.items():
-            if var.get():
-                labels.append(label)
-        return labels
-
-    def _refresh_variant_toggles(self) -> None:
-        """Populate variant checkboxes from currently loaded compounds; preserve prior toggles."""
-        if not self._uses_variants or not hasattr(self, "_variant_series_frame"):
-            return
-
-        labels = sorted({(c.variant_label or "(none)") for c in self._current_compounds})
-        prev = {k for k, v in self._variant_check_vars.items() if v.get()}
-        for widget in self._variant_series_frame.winfo_children():
-            widget.destroy()
-
-        self._variant_check_vars = {}
-        for label in labels:
-            enabled = 1 if (not prev or label in prev) else 0
-            var = tk.IntVar(value=enabled)
-            self._variant_check_vars[label] = var
-            ctk.CTkCheckBox(
-                self._variant_series_frame,
-                text=label,
-                variable=var,
-                command=self._redraw_plot,
-            ).pack(anchor="w", padx=4, pady=2)
-
     def _redraw_plot(self) -> None:
-        """Redraw chromatogram for current compound(s) and selected series."""
         ax = self._axes
         ax.clear()
         ax.set_facecolor("#1e1e1e")
@@ -1011,7 +643,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
             return
 
         selected_variants = set(self._selected_variant_labels())
-        if self._uses_variants and not selected_variants:
+        if self._uses_variants and self._variant_check_vars and not selected_variants:
             ax.text(
                 0.5,
                 0.5,
@@ -1076,7 +708,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._canvas.draw()
 
     def on_close(self) -> None:
-        """Close database and window."""
         if self._data_store is not None:
             try:
                 self._data_store.close()
