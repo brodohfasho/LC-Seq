@@ -58,7 +58,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._uses_variants: bool = False
         self._current_compounds: List[Compound] = []
         self._count_check_vars: dict[str, tk.IntVar] = {}
-        self._variant_check_vars: dict[str, tk.IntVar] = {}
         self._on_demand_mode = False
         self._compound_cache: "OrderedDict[str, Compound]" = OrderedDict()
         self._primary_variant_cache: "OrderedDict[str, List[Compound]]" = OrderedDict()
@@ -295,14 +294,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 command=self._redraw_plot,
             ).pack(side="left", padx=4)
 
-        if self._uses_variants:
-            vf = ctk.CTkFrame(bottom, fg_color="transparent")
-            vf.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 2))
-            ctk.CTkLabel(vf, text="Isoforms / variants:", font=ctk.CTkFont(size=12, weight="bold")).pack(
-                side="left", padx=(0, 6)
-            )
-            self._variant_series_frame = vf
-
     def _build_compound_table(self) -> None:
         wrap = ctk.CTkFrame(self)
         wrap.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 10))
@@ -329,7 +320,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
             height=10,
         )
         for c in cols:
-            self._tree.heading(c, text=c.replace("_", " ").title())
+            heading = "Compound ID" if c == "library_id" else c.replace("_", " ").title()
+            self._tree.heading(c, text=heading)
             self._tree.column(c, width=120, stretch=True)
         self._tree.grid(row=0, column=0, sticky="nsew")
         ysb = ttk.Scrollbar(tbl_fr, orient="vertical", command=self._tree.yview)
@@ -366,16 +358,19 @@ class ChromatogramVisualizerWindow(BaseWindow):
         else:
             meta = list(self._searchable_metadata_columns[:_MAX_META_TABLE_COLS])
         if self._uses_variants:
-            return ["compound_id", "primary_id", "variant", *meta]
+            return ["library_id", "variant", *meta]
         return ["compound_id", *meta]
 
     def _row_values(self, c: Compound) -> tuple:
         cols = self._table_column_names()
-        meta_keys = [x for x in cols if x not in ("compound_id", "primary_id", "variant")]
-        parts: List[str] = [c.compound_id]
+        meta_keys = [x for x in cols if x not in ("compound_id", "library_id", "variant")]
         if self._uses_variants:
-            parts.append(c.primary_compound_id or "")
-            parts.append(c.variant_label or "")
+            parts: List[str] = [
+                str(c.primary_compound_id or "").strip(),
+                str(c.variant_label or "").strip(),
+            ]
+        else:
+            parts = [str(c.compound_id).strip()]
         for mk in meta_keys:
             v = c.metadata.get(mk, "")
             if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -492,7 +487,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._tree.delete(iid)
         self._table_compounds_by_iid.clear()
         self._current_compounds = []
-        self._refresh_variant_toggles()
         self._style_axes_empty()
         self._canvas.draw()
         self._table_status.configure(text="Table cleared.")
@@ -511,7 +505,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
             messagebox.showerror("Plot", "Could not resolve selected rows.", parent=self)
             return
         self._current_compounds = compounds
-        self._refresh_variant_toggles()
         self._redraw_plot()
 
     def _cache_put(self, compound_id: str, compound: Compound) -> None:
@@ -558,34 +551,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
             if var.get():
                 names.append(name)
         return names
-
-    def _selected_variant_labels(self) -> List[str]:
-        labels: List[str] = []
-        for label, var in self._variant_check_vars.items():
-            if var.get():
-                labels.append(label)
-        return labels
-
-    def _refresh_variant_toggles(self) -> None:
-        if not self._uses_variants or not hasattr(self, "_variant_series_frame"):
-            return
-        vf = self._variant_series_frame
-        for w in list(vf.winfo_children())[1:]:
-            w.destroy()
-
-        labels = sorted({(c.variant_label or "(none)") for c in self._current_compounds})
-        prev = {k for k, v in self._variant_check_vars.items() if v.get()}
-        self._variant_check_vars = {}
-        for label in labels:
-            enabled = 1 if (not prev or label in prev) else 0
-            var = tk.IntVar(value=enabled)
-            self._variant_check_vars[label] = var
-            ctk.CTkCheckBox(
-                vf,
-                text=label,
-                variable=var,
-                command=self._redraw_plot,
-            ).pack(side="left", padx=4)
 
     def _style_axes_empty(self) -> None:
         ax = self._axes
@@ -642,21 +607,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._canvas.draw()
             return
 
-        selected_variants = set(self._selected_variant_labels())
-        if self._uses_variants and self._variant_check_vars and not selected_variants:
-            ax.text(
-                0.5,
-                0.5,
-                "Enable at least one isoform/variant",
-                transform=ax.transAxes,
-                ha="center",
-                va="center",
-                color="orange",
-                fontsize=12,
-            )
-            self._canvas.draw()
-            return
-
         colors = ("#58a6ff", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff", "#ff7b72")
         plotted = 0
         idx = 0
@@ -665,8 +615,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 continue
             available = set(compound.get_count_names())
             vlabel = compound.variant_label or "(none)"
-            if self._uses_variants and vlabel not in selected_variants:
-                continue
             for count_name in names:
                 if count_name not in available:
                     continue
