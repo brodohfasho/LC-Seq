@@ -9,9 +9,12 @@ chromatographic data analysis application.
 import sys
 from pathlib import Path
 
-# Add project root to path for imports
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+# Repo root must be on sys.path before any ``src.*`` import when running from source.
+# PyInstaller sets this up automatically when frozen.
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.core.app_paths import resolve_user_path
 
 import customtkinter as ctk
 
@@ -44,8 +47,11 @@ def main():
         
         # Load saved settings
         settings = config_manager.load_settings()
+        log_file = settings.log_file
+        if log_file:
+            log_file = str(resolve_user_path(log_file))
         if settings.log_level:
-            setup_logging(log_level=settings.log_level, log_file=settings.log_file)
+            setup_logging(log_level=settings.log_level, log_file=log_file)
         
         # Create and run main screen
         app = MainScreen(app_state, config_manager)

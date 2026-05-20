@@ -11,12 +11,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
+from src.core.app_paths import get_application_root
+
 logger = logging.getLogger(__name__)
 
 
 def get_project_root() -> Path:
-    """Return repository root (directory containing ``src``)."""
-    return Path(__file__).resolve().parent.parent.parent
+    """Return application root (repo root in dev, folder containing ``.exe`` when frozen)."""
+    return get_application_root()
 
 
 def get_databases_dir() -> Path:
