@@ -15,7 +15,7 @@ from src.models.spreadsheet_config import SpreadsheetConfig
 from src.models.compound import Compound
 from src.models.compound_identity import build_compound_storage_id
 from src.models.chromatographic_data_point import ChromatographicDataPoint
-from src.core.data_store import DataStore
+from src.core.data_store import DataStore, DB_KIND_FULL
 from src.core.data_processing_result import DataProcessingResult, ProcessingError
 from src.core import database_library
 from src.utils.data_parser import DataParser
@@ -147,6 +147,7 @@ class DataProcessor:
                 db_path = database_library.allocate_new_database_path(file_path_obj.stem)
             
             data_store = DataStore(db_path=db_path, use_memory=use_memory)
+            data_store.set_database_kind(DB_KIND_FULL)
             result.database_path = str(db_path)
             
             # Create metadata columns in database (but defer index creation for performance)
@@ -364,7 +365,91 @@ class DataProcessor:
         parser = DataParser(config.delimiters)
         compound = self._process_row(row, config, parser, row_number, result)
         return compound, result
-    
+
+    def extract_index_row_from_series(
+        self,
+        row: pd.Series,
+        config: SpreadsheetConfig,
+        row_number: int,
+        result: DataProcessingResult,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extract compound identity, metadata, and raw chromatogram cell text for index
+        database rows without parsing delimited time series.
+        """
+        try:
+            compound_id_cell = row.get(config.compound_id_column)
+            if pd.isna(compound_id_cell) or not str(compound_id_cell).strip():
+                result.add_error(
+                    row_number=row_number,
+                    error_type="missing_compound_id",
+                    error_message="Compound ID is empty or missing",
+                )
+                return None
+
+            primary_id = str(compound_id_cell).strip()
+            variant_label: Optional[str] = None
+            if config.compound_variant_column:
+                vcol = config.compound_variant_column
+                if vcol not in row.index:
+                    result.add_error(
+                        row_number=row_number,
+                        compound_id=primary_id,
+                        error_type="missing_variant_column",
+                        error_message=(
+                            f"Variant column '{vcol}' is not present in this spreadsheet row"
+                        ),
+                    )
+                    return None
+                var_raw = row.get(vcol)
+                if pd.isna(var_raw) or not str(var_raw).strip():
+                    result.add_error(
+                        row_number=row_number,
+                        compound_id=primary_id,
+                        error_type="missing_variant",
+                        error_message=(
+                            f"Variant column '{vcol}' is empty when variant mode is configured"
+                        ),
+                    )
+                    return None
+                variant_label = str(var_raw).strip()
+
+            storage_id = build_compound_storage_id(primary_id, variant_label)
+
+            chrom_data_str = row.get(config.chromatographic_data_column)
+            if pd.isna(chrom_data_str) or not str(chrom_data_str).strip():
+                result.add_error(
+                    row_number=row_number,
+                    compound_id=primary_id,
+                    error_type="missing_chromatographic_data",
+                    error_message="Chromatographic data is empty or missing",
+                )
+                return None
+
+            raw_chrom = str(chrom_data_str).strip()
+
+            metadata: Dict[str, Any] = {}
+            for col_name in config.selected_metadata_columns:
+                if col_name in row.index:
+                    value = row[col_name]
+                    if not pd.isna(value):
+                        metadata[col_name] = value
+
+            return {
+                "compound_id": storage_id,
+                "primary_compound_id": primary_id,
+                "compound_variant": variant_label,
+                "metadata": metadata,
+                "raw_chromatographic_data": raw_chrom,
+            }
+        except Exception as e:
+            result.add_error(
+                row_number=row_number,
+                error_type="processing_error",
+                error_message=f"Unexpected error: {str(e)}",
+            )
+            return None
+
     def _process_row(
         self,
         row: pd.Series,

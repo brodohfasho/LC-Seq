@@ -17,6 +17,10 @@ from src.models.chromatographic_data_point import ChromatographicDataPoint
 
 logger = logging.getLogger(__name__)
 
+LCSEQ_META_DB_KIND = "db_kind"
+DB_KIND_FULL = "full"
+DB_KIND_INDEX = "index"
+
 
 class DataStore:
     """
@@ -69,6 +73,7 @@ class DataStore:
             
             self._create_schema()
             self._migrate_compound_identity_columns()
+            self._migrate_lcseq_meta_and_raw_chromatogram()
             logger.info(f"Initialized database at {self.db_path}")
         except Exception as e:
             logger.error(f"Error initializing database: {e}", exc_info=True)
@@ -115,6 +120,172 @@ class DataStore:
         
         self.conn.commit()
         logger.debug("Database schema created")
+
+    def _migrate_lcseq_meta_and_raw_chromatogram(self) -> None:
+        """Add application metadata table and optional raw chromatogram text column."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lcseq_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        cursor.execute("PRAGMA table_info(compounds)")
+        cols = {row[1] for row in cursor.fetchall()}
+        if "raw_chromatographic_data" not in cols:
+            cursor.execute(
+                "ALTER TABLE compounds ADD COLUMN raw_chromatographic_data TEXT"
+            )
+            logger.info("Migrated compounds table: added raw_chromatographic_data")
+        self.conn.commit()
+
+    def set_database_kind(self, kind: str) -> None:
+        """
+        Persist whether this file is a full parsed export or an index (metadata + raw text).
+
+        Args:
+            kind: ``DB_KIND_FULL`` or ``DB_KIND_INDEX``.
+        """
+        if kind not in (DB_KIND_FULL, DB_KIND_INDEX):
+            raise ValueError(f"Invalid database kind: {kind!r}")
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO lcseq_meta (key, value)
+            VALUES (?, ?)
+            """,
+            (LCSEQ_META_DB_KIND, kind),
+        )
+        self.conn.commit()
+
+    def get_database_kind(self) -> str:
+        """
+        Return ``DB_KIND_INDEX`` or ``DB_KIND_FULL``.
+
+        Legacy databases without ``lcseq_meta`` are treated as full exports.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT value FROM lcseq_meta WHERE key = ?",
+                (LCSEQ_META_DB_KIND,),
+            )
+            row = cursor.fetchone()
+            if row and row[0] in (DB_KIND_FULL, DB_KIND_INDEX):
+                return str(row[0])
+        except sqlite3.OperationalError as exc:
+            logger.debug("get_database_kind: %s", exc)
+        return DB_KIND_FULL
+
+    def is_index_database(self) -> bool:
+        """True if chromatograms are stored as raw text and parsed on demand."""
+        return self.get_database_kind() == DB_KIND_INDEX
+
+    @staticmethod
+    def peek_database_kind(db_path: Path) -> str:
+        """
+        Open a database file briefly and return ``DB_KIND_FULL`` or ``DB_KIND_INDEX``.
+
+        Args:
+            db_path: Path to the SQLite file.
+
+        Returns:
+            Database kind constant (legacy files without metadata default to full).
+        """
+        p = Path(db_path)
+        if not p.is_file():
+            return DB_KIND_FULL
+        store = DataStore(db_path=p, use_memory=False)
+        try:
+            return store.get_database_kind()
+        finally:
+            store.close()
+
+    def get_raw_chromatogram(self, compound_id: str) -> Optional[str]:
+        """
+        Return stored raw chromatographic cell text for index databases.
+
+        Args:
+            compound_id: Storage compound id.
+
+        Returns:
+            Stripped string or None if missing / empty.
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                SELECT raw_chromatographic_data FROM compounds
+                WHERE compound_id = ?
+                """,
+                (compound_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            raw_cell = row["raw_chromatographic_data"]
+            if raw_cell is None:
+                return None
+            s = str(raw_cell).strip()
+            return s if s else None
+        except Exception as e:
+            logger.error("get_raw_chromatogram: %s", e, exc_info=True)
+            return None
+
+    def add_index_compounds_batch(
+        self,
+        rows: List[Dict[str, Any]],
+        metadata_columns: List[str],
+    ) -> int:
+        """
+        Insert or replace compound rows for an index database (no data_points rows).
+
+        Each dict must contain: compound_id, primary_compound_id, compound_variant (optional),
+        metadata (dict), raw_chromatographic_data (str).
+        """
+        if not rows:
+            return 0
+        safe_meta = [self._sanitize_column_name(c) for c in metadata_columns]
+        base_cols = [
+            "compound_id",
+            "metadata_json",
+            "data_point_count",
+            "primary_compound_id",
+            "compound_variant",
+            "raw_chromatographic_data",
+        ]
+        all_columns = base_cols + safe_meta
+        placeholders = ", ".join(["?"] * len(all_columns))
+        query = f"INSERT OR REPLACE INTO compounds ({', '.join(all_columns)}) VALUES ({placeholders})"
+
+        cursor = self.conn.cursor()
+        tuples: List[Tuple[Any, ...]] = []
+        for r in rows:
+            meta = r.get("metadata") or {}
+            meta_json = json.dumps(meta, ensure_ascii=False)
+            prim = r.get("primary_compound_id") or r["compound_id"]
+            var = r.get("compound_variant")
+            raw = r.get("raw_chromatographic_data") or ""
+            vals: List[Any] = [
+                r["compound_id"],
+                meta_json,
+                0,
+                prim,
+                var,
+                str(raw),
+            ]
+            for col in metadata_columns:
+                value = meta.get(col)
+                if value is not None and not (isinstance(value, float) and pd.isna(value)):
+                    vals.append(str(value))
+                else:
+                    vals.append(None)
+            tuples.append(tuple(vals))
+        cursor.executemany(query, tuples)
+        self.conn.commit()
+        return len(rows)
 
     def _migrate_compound_identity_columns(self) -> None:
         """Add primary/variant columns to legacy databases and backfill primary IDs."""
@@ -289,6 +460,7 @@ class DataStore:
                 "data_point_count",
                 "primary_compound_id",
                 "compound_variant",
+                "raw_chromatographic_data",
             ]
             values = [
                 compound.compound_id,
@@ -296,8 +468,9 @@ class DataStore:
                 len(compound.data_points),
                 prim,
                 var,
+                None,
             ]
-            placeholders = ["?", "?", "?", "?", "?"]
+            placeholders = ["?", "?", "?", "?", "?", "?"]
             
             # Add metadata columns
             for safe_col, value in column_values.items():
@@ -370,6 +543,7 @@ class DataStore:
             "data_point_count",
             "primary_compound_id",
             "compound_variant",
+            "raw_chromatographic_data",
         ]
         safe_metadata_cols = [self._sanitize_column_name(col) for col in metadata_columns]
         all_columns = base_columns + safe_metadata_cols
@@ -408,6 +582,7 @@ class DataStore:
                         len(compound.data_points),
                         prim,
                         var,
+                        None,
                     ]
                     
                     # Add metadata column values

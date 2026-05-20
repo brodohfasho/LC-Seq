@@ -3,6 +3,9 @@
 Unit tests for application state management.
 """
 
+import os
+import tempfile
+
 import pytest
 
 from src.core.app_state import AppState
@@ -34,11 +37,17 @@ class TestAppState:
         state.set_spreadsheet_configured(True)
         assert state.can_enter_visualizer() is False
         
-        # Make config valid (bulk DB / data_processed not required for visualizer)
+        # Config valid but no database file yet
         state.set_config_valid(True)
-        assert state.can_enter_visualizer() is True
-        state.set_data_processed(True, r"C:\fake\db.sqlite")
-        assert state.can_enter_visualizer() is True
+        assert state.can_enter_visualizer() is False
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            state.set_data_processed(True, path)
+            assert state.can_enter_visualizer() is True
+        finally:
+            os.unlink(path)
 
     def test_clear_active_database(self):
         """Clearing active DB pointer does not require spreadsheet reload."""
@@ -50,6 +59,7 @@ class TestAppState:
         state.clear_active_database()
         assert state.data_processed is False
         assert state.database_path is None
+        assert state.database_kind is None
 
     def test_set_spreadsheet_loaded(self):
         """Test setting spreadsheet loaded state."""
@@ -100,10 +110,10 @@ class TestAppState:
         message = state.get_status_message()
         assert "incomplete" in message.lower() or "complete" in message.lower()
         
-        # Ready for on-demand visualizer (no bulk DB required)
+        # Ready to build/load DB
         state.set_config_valid(True)
         message = state.get_status_message()
-        assert "visualizer" in message.lower() or "on-demand" in message.lower()
+        assert "database" in message.lower() and "visualizer" in message.lower()
     
     def test_state_change_callback(self):
         """Test state change callbacks."""

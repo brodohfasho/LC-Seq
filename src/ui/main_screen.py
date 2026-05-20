@@ -13,11 +13,14 @@ from typing import Optional
 
 from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
+from src.core import database_library
+from src.core.data_store import DB_KIND_FULL, DB_KIND_INDEX, DataStore
 from src.core.spreadsheet_loader import SpreadsheetLoader
 from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
 from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
 from src.ui.process_data_dialog import ProcessDataDialog
 from src.ui.database_manage_dialog import DatabaseManageDialog
+from src.ui.index_database_dialog import IndexDatabaseDialog
 from src.ui.chromatogram_visualizer_window import ChromatogramVisualizerWindow
 from src.core.data_processing_result import DataProcessingResult
 
@@ -78,10 +81,8 @@ class MainScreen(ctk.CTk):
         
         # Configure grid weights for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_rowconfigure(3, weight=1)
-        self.grid_rowconfigure(4, weight=1)
+        for r in (3, 4, 5, 6):
+            self.grid_rowconfigure(r, weight=1)
         
         # Create UI components
         self._create_widgets()
@@ -123,7 +124,23 @@ class MainScreen(ctk.CTk):
             text="LC-Seq",
             font=ctk.CTkFont(size=36, weight="bold")
         )
-        title_label.grid(row=0, column=0, pady=(40, 20), sticky="n")
+        title_label.grid(row=0, column=0, pady=(36, 8), sticky="n")
+
+        self._database_status_button = ctk.CTkButton(
+            self,
+            text="Database: none loaded",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=34,
+            corner_radius=8,
+            fg_color=("gray90", "gray22"),
+            hover_color=("gray82", "gray30"),
+            border_width=1,
+            border_color=("gray75", "gray40"),
+            text_color="gray",
+            anchor="center",
+            command=self._on_database_status_clicked,
+        )
+        self._database_status_button.grid(row=1, column=0, padx=40, pady=(0, 12), sticky="ew")
         
         # Subtitle
         subtitle_label = ctk.CTkLabel(
@@ -131,7 +148,7 @@ class MainScreen(ctk.CTk):
             text="Chromatographic Data Analysis",
             font=ctk.CTkFont(size=18)
         )
-        subtitle_label.grid(row=1, column=0, pady=(0, 30), sticky="n")
+        subtitle_label.grid(row=2, column=0, pady=(0, 24), sticky="n")
         
         # Primary button: Enter Visualizer
         self.visualizer_button = ctk.CTkButton(
@@ -142,7 +159,7 @@ class MainScreen(ctk.CTk):
             command=self._on_enter_visualizer,
             state="disabled"
         )
-        self.visualizer_button.grid(row=2, column=0, padx=40, pady=20, sticky="ew")
+        self.visualizer_button.grid(row=3, column=0, padx=40, pady=20, sticky="ew")
         
         # Load Spreadsheet button
         self.load_button = ctk.CTkButton(
@@ -152,7 +169,7 @@ class MainScreen(ctk.CTk):
             height=50,
             command=self._on_load_spreadsheet
         )
-        self.load_button.grid(row=3, column=0, padx=40, pady=10, sticky="ew")
+        self.load_button.grid(row=4, column=0, padx=40, pady=10, sticky="ew")
         
         # Configure Spreadsheet button
         self.configure_button = ctk.CTkButton(
@@ -163,7 +180,7 @@ class MainScreen(ctk.CTk):
             command=self._on_configure_spreadsheet,
             state="disabled"
         )
-        self.configure_button.grid(row=4, column=0, padx=40, pady=10, sticky="ew")
+        self.configure_button.grid(row=5, column=0, padx=40, pady=10, sticky="ew")
         
         self.database_manage_button = ctk.CTkButton(
             self,
@@ -173,7 +190,7 @@ class MainScreen(ctk.CTk):
             command=self._on_database_manage,
             state="disabled",
         )
-        self.database_manage_button.grid(row=5, column=0, padx=40, pady=10, sticky="ew")
+        self.database_manage_button.grid(row=6, column=0, padx=40, pady=10, sticky="ew")
         
         # Status message label
         self.status_label = ctk.CTkLabel(
@@ -183,7 +200,7 @@ class MainScreen(ctk.CTk):
             wraplength=600,
             justify="center"
         )
-        self.status_label.grid(row=6, column=0, padx=40, pady=(30, 20), sticky="n")
+        self.status_label.grid(row=7, column=0, padx=40, pady=(30, 20), sticky="n")
     
     def _on_state_change(self) -> None:
         """Handle application state change."""
@@ -212,11 +229,113 @@ class MainScreen(ctk.CTk):
         # Update status message
         status_message = self.app_state.get_status_message()
         self.status_label.configure(text=status_message)
+
+        if (
+            self.app_state.data_processed
+            and self.app_state.database_path
+            and Path(self.app_state.database_path).is_file()
+        ):
+            kt = self.app_state.database_kind or "full"
+            display = "Index" if kt == "index" else "Full"
+            fname = Path(self.app_state.database_path).name
+            self._database_status_button.configure(
+                text=f"Database: {display} — {fname}",
+                text_color=("#1a7f37", "#3fb950"),
+                border_color=("#b7dfc4", "#238636"),
+            )
+        else:
+            self._database_status_button.configure(
+                text="Database: none loaded",
+                text_color="gray",
+                border_color=("gray75", "gray40"),
+            )
         
         logger.debug(
             "UI state updated. Can enter visualizer: %s, Can manage DB: %s",
             can_enter,
             can_manage_db,
+        )
+
+    def _active_database_resolved(self) -> bool:
+        """True when an active database path is set and the file exists."""
+        return (
+            bool(self.app_state.data_processed)
+            and bool(self.app_state.database_path)
+            and Path(self.app_state.database_path).is_file()
+        )
+
+    def _resolve_quick_database_path(self) -> Optional[str]:
+        """
+        Prefer the last active database from settings if the file still exists;
+        otherwise the first ``.db`` in the managed folder (same ordering as Load Database).
+        """
+        settings = self.config_manager.load_settings()
+        last = settings.last_active_database_path
+        if last and Path(last).is_file():
+            return str(Path(last).resolve())
+        paths = database_library.list_managed_databases()
+        if paths:
+            return str(Path(paths[0]).resolve())
+        return None
+
+    def _remember_database_path(self, path: str) -> None:
+        """Persist the database path for quick reload on the main screen."""
+        settings = self.config_manager.load_settings()
+        settings.set_last_active_database_path(path)
+        self.config_manager.save_settings(settings)
+
+    def _on_database_status_clicked(self) -> None:
+        """Open database management when one is active, or load last/default DB when none."""
+        if self._active_database_resolved():
+            self._on_database_manage()
+            return
+        can_manage_db = (
+            self.app_state.spreadsheet_loaded
+            and self.app_state.spreadsheet_configured
+            and self.app_state.config_valid
+        )
+        if not can_manage_db:
+            messagebox.showinfo(
+                "Database",
+                "Load and configure a spreadsheet first. Then click here again to load your "
+                "last database, or use 'Create / Load database'.",
+                parent=self,
+            )
+            return
+        path = self._resolve_quick_database_path()
+        if path:
+            self._on_quick_load_database()
+        else:
+            messagebox.showinfo(
+                "Database",
+                "No saved or managed database file was found. Use 'Create / Load database' to "
+                "build or register one.",
+                parent=self,
+            )
+
+    def _on_quick_load_database(self) -> None:
+        """Attach the saved or default managed database without opening the manage dialog."""
+        path = self._resolve_quick_database_path()
+        if not path or not Path(path).is_file():
+            messagebox.showwarning(
+                "Load database",
+                "No saved or managed database file was found. Use 'Create / Load database'.",
+                parent=self,
+            )
+            return
+        try:
+            kind = DataStore.peek_database_kind(Path(path))
+        except OSError as exc:
+            logger.warning("Could not read database kind: %s", exc)
+            kind = DB_KIND_FULL
+        type_word = "index" if kind == DB_KIND_INDEX else "full"
+        self._remember_database_path(path)
+        self.app_state.set_data_processed(True, path, type_word)
+        self._update_ui_state()
+        messagebox.showinfo(
+            "Database loaded",
+            f"Loaded {type_word} database.\n\n{path}",
+            parent=self,
         )
     
     def _apply_spreadsheet_loaded(
@@ -306,6 +425,16 @@ class MainScreen(ctk.CTk):
             self.config_manager,
             self.spreadsheet_loader,
         )
+
+    def _notify_chromatogram_visualizer_config_changed(self) -> None:
+        """Keep an open visualizer in sync with a newly saved spreadsheet configuration."""
+        win = self._chromatogram_window
+        if win is None:
+            return
+        try:
+            win.refresh_after_configuration_changed()
+        except tk.TclError:
+            self._chromatogram_window = None
     
     def _on_load_spreadsheet(self) -> None:
         """Handle Load Spreadsheet button click."""
@@ -378,6 +507,7 @@ class MainScreen(ctk.CTk):
             self.app_state.set_config_valid(config.is_complete())
             
             logger.info(f"Configuration saved and validated. Complete: {config.is_complete()}")
+            self._notify_chromatogram_visualizer_config_changed()
 
         def on_default_preset_applied(config) -> None:
             """Sync app state after Load preset → Default (file already on disk)."""
@@ -387,6 +517,7 @@ class MainScreen(ctk.CTk):
                 "Default preset applied from configure dialog. Complete: %s",
                 config.is_complete(),
             )
+            self._notify_chromatogram_visualizer_config_changed()
         
         # Open configuration dialog - store reference to prevent garbage collection
         self.config_dialog = ConfigureSpreadsheetDialog(
@@ -416,8 +547,12 @@ class MainScreen(ctk.CTk):
         def begin_bulk() -> None:
             self._run_bulk_create_database_flow()
 
-        def on_database_loaded(path: str) -> None:
-            self.app_state.set_data_processed(True, path)
+        def begin_index() -> None:
+            self._run_index_database_build_flow()
+
+        def on_database_loaded(path: str, db_kind: str) -> None:
+            self._remember_database_path(path)
+            self.app_state.set_data_processed(True, path, db_kind)
             self._update_ui_state()
 
         def on_active_cleared() -> None:
@@ -427,11 +562,54 @@ class MainScreen(ctk.CTk):
         self.database_manage_dialog = DatabaseManageDialog(
             self,
             on_begin_bulk_create=begin_bulk,
+            on_begin_index_create=begin_index,
             on_database_loaded=on_database_loaded,
             on_active_database_cleared=on_active_cleared,
         )
         self.wait_window(self.database_manage_dialog)
         self.database_manage_dialog = None
+
+    def _run_index_database_build_flow(self) -> None:
+        """Build metadata + raw-chromatogram SQLite for search and on-demand plotting."""
+        if not self.app_state.spreadsheet_loaded or not self.app_state.spreadsheet_path:
+            return
+        df = self.spreadsheet_loader.current_data
+        if df is None:
+            messagebox.showerror(
+                "Spreadsheet",
+                "No spreadsheet data in memory. Load the spreadsheet again, then retry.",
+                parent=self,
+            )
+            return
+        config = self.config_manager.load_default_config()
+        if not config or not config.is_complete():
+            messagebox.showerror(
+                "Configuration Error",
+                "No valid configuration found. Please configure the spreadsheet first.",
+                parent=self,
+            )
+            return
+
+        def on_index_success(result: DataProcessingResult) -> None:
+            if result.cancelled or not result.database_path:
+                return
+            self._remember_database_path(result.database_path)
+            self.app_state.set_data_processed(True, result.database_path, "index")
+            self._update_ui_state()
+            messagebox.showinfo(
+                "Index database",
+                f"Index database created.\n{result.database_path}\n\n"
+                "Open the Chromatogram Visualizer to search and plot.",
+                parent=self,
+            )
+
+        index_dialog = IndexDatabaseDialog(
+            self,
+            dataframe=df,
+            config=config,
+            on_success=on_index_success,
+        )
+        self.wait_window(index_dialog)
 
     def _run_bulk_create_database_flow(self) -> None:
         """Run full SQLite build (ProcessDataDialog) after user confirms in manage dialog."""
@@ -447,7 +625,9 @@ class MainScreen(ctk.CTk):
             return
 
         def on_processing_success(result: DataProcessingResult) -> None:
-            self.app_state.set_data_processed(True, result.database_path)
+            if result.database_path:
+                self._remember_database_path(result.database_path)
+            self.app_state.set_data_processed(True, result.database_path, "full")
             logger.info(
                 "Bulk database created: %s compounds -> %s",
                 result.successful_compounds,

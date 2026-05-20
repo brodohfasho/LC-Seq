@@ -32,6 +32,22 @@ def _sanitize_stem(stem: str) -> str:
     return (s[:80] if s else "spreadsheet")
 
 
+def _unique_db_path_in_dir(directory: Path, base_name: str) -> Path:
+    """
+    Return ``directory / f"{base_name}.db"`` if that path is unused; otherwise
+    ``f"{base_name}_2.db"``, ``f"{base_name}_3.db"``, …
+    """
+    candidate = directory / f"{base_name}.db"
+    if not candidate.is_file():
+        return candidate
+    n = 2
+    while True:
+        alt = directory / f"{base_name}_{n}.db"
+        if not alt.is_file():
+            return alt
+        n += 1
+
+
 def sanitize_database_stem(stem: str) -> str:
     """
     Sanitize user- or spreadsheet-derived text for use in a database file name.
@@ -45,6 +61,22 @@ def sanitize_database_stem(stem: str) -> str:
     return _sanitize_stem(stem)
 
 
+def allocate_new_index_database_path(spreadsheet_stem: str) -> Path:
+    """
+    Reserve a new unique index-database ``.db`` path (metadata + raw chromatogram text).
+
+    Args:
+        spreadsheet_stem: Prefix for the file name.
+
+    Returns:
+        Absolute path (file not created until the builder opens it).
+    """
+    safe = _sanitize_stem(spreadsheet_stem)
+    date_part = datetime.now().strftime("%Y%m%d")
+    base = f"{safe}_index_{date_part}"
+    return _unique_db_path_in_dir(get_databases_dir(), base)
+
+
 def allocate_new_database_path(spreadsheet_stem: str) -> Path:
     """
     Reserve a new unique ``.db`` path under the managed output folder.
@@ -56,8 +88,9 @@ def allocate_new_database_path(spreadsheet_stem: str) -> Path:
         Absolute path for the new database file (file not created yet).
     """
     safe = _sanitize_stem(spreadsheet_stem)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return get_databases_dir() / f"{safe}_{ts}.db"
+    date_part = datetime.now().strftime("%Y%m%d")
+    base = f"{safe}_{date_part}"
+    return _unique_db_path_in_dir(get_databases_dir(), base)
 
 
 def list_managed_databases() -> List[str]:

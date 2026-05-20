@@ -4,8 +4,11 @@ Application state management for LC-Seq.
 """
 
 import logging
+from pathlib import Path
 from typing import Optional, Callable
 from dataclasses import dataclass, field
+
+from src.core.data_store import DB_KIND_INDEX, DataStore
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,7 @@ class AppState:
         config_valid: Whether the current configuration is valid
         data_processed: Whether data has been processed into database
         database_path: Path to the processed database file
+        database_kind: "full" or "index" when a database is active; None otherwise.
     """
     
     spreadsheet_loaded: bool = False
@@ -30,6 +34,7 @@ class AppState:
     config_valid: bool = False
     data_processed: bool = False
     database_path: Optional[str] = None
+    database_kind: Optional[str] = None
     
     # List of callbacks to notify when state changes
     _state_change_callbacks: list[Callable] = field(default_factory=list, repr=False)
@@ -39,15 +44,18 @@ class AppState:
         Check if user can enter the visualizer.
 
         Returns:
-            True if spreadsheet is loaded, configuration is complete and valid.
-            Bulk database processing is optional; on-demand parsing is used when
-            no database path is active.
+            True if spreadsheet is configured, configuration is valid, and an active
+            SQLite database path (full or index) is set and resolvable.
         """
-        return (
+        if not (
             self.spreadsheet_loaded
             and self.spreadsheet_configured
             and self.config_valid
-        )
+        ):
+            return False
+        if not self.data_processed or not self.database_path:
+            return False
+        return Path(self.database_path).is_file()
     
     def register_state_change_callback(self, callback: Callable) -> None:
         """
@@ -113,17 +121,43 @@ class AppState:
         logger.info(f"Config valid state: {self.config_valid}")
         self._notify_state_change()
     
-    def set_data_processed(self, processed: bool = True, database_path: Optional[str] = None) -> None:
+    def set_data_processed(
+        self,
+        processed: bool = True,
+        database_path: Optional[str] = None,
+        database_kind: Optional[str] = None,
+    ) -> None:
         """
         Set data processed state.
-        
+
         Args:
             processed: Whether data has been processed
             database_path: Path to the database file
+            database_kind: "full" or "index"; if omitted and database_path is set,
+                the kind is detected by opening the file briefly.
         """
         self.data_processed = processed
         self.database_path = database_path
-        logger.info(f"Data processed state: {self.data_processed}, database: {database_path}")
+        if not processed:
+            self.database_kind = None
+        elif database_path and Path(database_path).is_file():
+            if database_kind in ("full", "index"):
+                self.database_kind = database_kind
+            else:
+                try:
+                    k = DataStore.peek_database_kind(Path(database_path))
+                    self.database_kind = "index" if k == DB_KIND_INDEX else "full"
+                except OSError as exc:
+                    logger.warning("Could not peek database kind: %s", exc)
+                    self.database_kind = "full"
+        else:
+            self.database_kind = None
+        logger.info(
+            "Data processed state: %s, database: %s, kind: %s",
+            self.data_processed,
+            database_path,
+            self.database_kind,
+        )
         self._notify_state_change()
 
     def clear_active_database(self) -> None:
@@ -138,6 +172,7 @@ class AppState:
         self.config_valid = False
         self.data_processed = False
         self.database_path = None
+        self.database_kind = None
         logger.info("Application state reset")
         self._notify_state_change()
     
@@ -159,11 +194,11 @@ class AppState:
         
         if self.data_processed and self.database_path:
             return (
-                "Bulk database is active. Open the visualizer to explore data, or use "
+                "Database is active. Open the Chromatogram Visualizer to search and plot, or use "
                 "'Create / Load database' to switch or build another file."
             )
 
         return (
-            "Configuration complete. Open the Chromatogram Visualizer to parse and plot "
-            "compounds on demand. Use 'Create / Load database' only if you want a full SQLite export."
+            "Configuration complete. Use 'Create / Load database' to build or load an index or "
+            "full SQLite file, then open the Chromatogram Visualizer."
         )

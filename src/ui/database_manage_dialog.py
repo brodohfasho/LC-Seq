@@ -1,18 +1,19 @@
 # src/ui/database_manage_dialog.py
 """
-Create / load / delete managed bulk SQLite databases (output/databases).
+Create / load managed SQLite databases (output/databases).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 import customtkinter as ctk
 from tkinter import messagebox
 
 from src.core import database_library
+from src.core.data_store import DB_KIND_FULL, DB_KIND_INDEX, DataStore
 from src.ui.base_window import BaseWindow
 
 logger = logging.getLogger(__name__)
@@ -20,41 +21,43 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManageDialog(BaseWindow):
     """
-    Modal dialog: optional bulk database create (delegates to ProcessDataDialog flow),
-    load from managed folder, delete, or clear active DB reference.
+    Modal dialog: create a full or index database, load from the managed folder,
+    delete a file, or clear the active DB reference.
     """
 
     def __init__(
         self,
         parent: ctk.CTk,
         on_begin_bulk_create: Callable[[], None],
-        on_database_loaded: Callable[[str], None],
+        on_begin_index_create: Callable[[], None],
+        on_database_loaded: Callable[[str, str], None],
         on_active_database_cleared: Callable[[], None],
     ) -> None:
         """
         Args:
             parent: Main window
-            on_begin_bulk_create: Called after user confirms bulk export; host should
-                ``wait_window(ProcessDataDialog)`` (this dialog is destroyed first).
-            on_database_loaded: Called with absolute path when user loads a managed DB.
+            on_begin_bulk_create: After user confirms full database build; host runs bulk flow.
+            on_begin_index_create: After user confirms index build; host runs index flow.
+            on_database_loaded: Called with (absolute path, "full" or "index").
             on_active_database_cleared: Called when user clears the active DB pointer.
         """
         super().__init__(parent, title="Create / Load database")
 
         self._on_begin_bulk_create = on_begin_bulk_create
+        self._on_begin_index_create = on_begin_index_create
         self._on_database_loaded = on_database_loaded
         self._on_active_database_cleared = on_active_database_cleared
 
-        self.geometry("560x480")
-        self.center_window(560, 480)
+        self.geometry("580x540")
+        self.center_window(580, 540)
 
         self._tabview = ctk.CTkTabview(self)
         self._tabview.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        create_tab = self._tabview.add("Create database")
-        load_tab = self._tabview.add("Load database")
+        create_tab = self._tabview.add("Create Database")
+        load_tab = self._tabview.add("Load Database")
 
         self._build_create_tab(create_tab)
         self._build_load_tab(load_tab)
@@ -68,38 +71,76 @@ class DatabaseManageDialog(BaseWindow):
     def _build_create_tab(self, parent: ctk.CTkFrame) -> None:
         parent.grid_columnconfigure(0, weight=1)
 
-        warn = (
-            "Bulk export builds a full SQLite copy of your spreadsheet under "
-            f"{database_library.get_databases_dir()}.\n\n"
-            "These files can be very large (use caution - not advised for full libraries). "
+        intro = (
+            "Choose how to create a SQLite file under the managed folder "
+            f"({database_library.get_databases_dir()}).\n\n"
+            "• Full database — every time point is written to the database. Best for fast plotting "
+            "and filtering on fully materialized data; files can grow very large.\n\n"
+            "• Index database — stores searchable metadata plus the raw chromatogram text from "
+            "your sheet. Smaller on disk; chromatograms are parsed when you plot. Same Search "
+            "tools as a full database."
         )
         ctk.CTkLabel(
             parent,
-            text=warn,
+            text=intro,
             font=ctk.CTkFont(size=12),
-            wraplength=500,
+            wraplength=520,
             justify="left",
             anchor="w",
-        ).grid(row=0, column=0, padx=12, pady=(16, 12), sticky="ew")
+        ).grid(row=0, column=0, padx=12, pady=(16, 16), sticky="ew")
 
         ctk.CTkButton(
             parent,
-            text="Start bulk export…",
+            text="Build Full Database",
             font=ctk.CTkFont(size=14, weight="bold"),
-            height=40,
-            command=self._on_create_clicked,
-        ).grid(row=1, column=0, padx=12, pady=12, sticky="ew")
+            height=42,
+            command=self._on_full_create_clicked,
+        ).grid(row=1, column=0, padx=12, pady=(0, 10), sticky="ew")
 
-    def _on_create_clicked(self) -> None:
-        if not messagebox.askyesno(
-            "Create large database file?",
-            "This will create a potentially large SQLite file under output/databases. "
-            "Continue with bulk export?",
-            parent=self,
-        ):
+        ctk.CTkButton(
+            parent,
+            text="Build Index Database",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            height=42,
+            fg_color="#238636",
+            hover_color="#2ea043",
+            command=self._on_index_create_clicked,
+        ).grid(row=2, column=0, padx=12, pady=(0, 16), sticky="ew")
+
+    def _on_full_create_clicked(self) -> None:
+        msg = (
+            "Build a Full database?\n\n"
+            "A Full database expands every compound’s chromatogram into individual time/count "
+            "rows in SQLite. That makes plotting and repeated access very fast, but the file "
+            "can be extremely large (often much larger than your spreadsheet), especially for "
+            "big libraries or long traces.\n\n"
+            "Only continue if you need maximum query performance on fully parsed data and have "
+            "enough disk space.\n\n"
+            "Proceed with Full database creation?"
+        )
+        if not messagebox.askyesno("Build Full Database", msg, parent=self):
             return
         host = self.master
         cb = self._on_begin_bulk_create
+        self.destroy()
+        if host is not None:
+            host.after(50, cb)
+
+    def _on_index_create_clicked(self) -> None:
+        msg = (
+            "Build an Index database?\n\n"
+            "An Index database stores the same searchable metadata columns as a Full database, "
+            "plus the raw chromatogram cell text. It does not store every time point separately, "
+            "so the file stays much smaller and builds faster.\n\n"
+            "When you plot in the Chromatogram Visualizer, LC-Seq parses the raw text on demand "
+            "(same rules as your saved spreadsheet configuration). Search and compound lists work "
+            "the same as with a Full database.\n\n"
+            "Proceed with Index database creation?"
+        )
+        if not messagebox.askyesno("Build Index Database", msg, parent=self):
+            return
+        host = self.master
+        cb = self._on_begin_index_create
         self.destroy()
         if host is not None:
             host.after(50, cb)
@@ -163,7 +204,7 @@ class DatabaseManageDialog(BaseWindow):
             text=f"{len(paths)} file(s) in {database_library.get_databases_dir()}"
         )
 
-    def _selected_path(self) -> Optional[str]:
+    def _selected_path(self) -> str | None:
         label = self._db_combo.get()
         if not label or label.startswith("("):
             return None
@@ -174,11 +215,16 @@ class DatabaseManageDialog(BaseWindow):
         if not path or not Path(path).is_file():
             messagebox.showwarning("Load database", "Select a valid database file.", parent=self)
             return
-        self._on_database_loaded(path)
+        try:
+            kind = DataStore.peek_database_kind(Path(path))
+        except OSError as exc:
+            logger.warning("Could not read database kind: %s", exc)
+            kind = DB_KIND_FULL
+        type_word = "index" if kind == DB_KIND_INDEX else "full"
+        self._on_database_loaded(path, type_word)
         messagebox.showinfo(
             "Database loaded",
-            f"The application will use:\n{path}\n\n"
-            "Open the Chromatogram Visualizer to query this database.",
+            f"Successfully loaded {type_word} database.\n\n{path}",
             parent=self,
         )
         self.destroy()
@@ -202,8 +248,8 @@ class DatabaseManageDialog(BaseWindow):
         self._on_active_database_cleared()
         messagebox.showinfo(
             "Active database",
-            "Cleared the active database reference. The visualizer will use on-demand "
-            "parsing until you load or create another database.",
+            "Cleared the active database reference. Load or build a database before "
+            "opening the Chromatogram Visualizer.",
             parent=self,
         )
         self.destroy()

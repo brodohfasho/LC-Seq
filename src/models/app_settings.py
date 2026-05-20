@@ -18,6 +18,7 @@ class AppSettings:
     Attributes:
         last_loaded_file: Path to the last loaded spreadsheet file
         last_loaded_sheet: Excel sheet name last used (None for CSV or first sheet)
+        last_active_database_path: Last SQLite file set active (full or index)
         window_width: Default window width in pixels
         window_height: Default window height in pixels
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -27,6 +28,7 @@ class AppSettings:
     
     last_loaded_file: Optional[str] = None
     last_loaded_sheet: Optional[str] = None
+    last_active_database_path: Optional[str] = None
     window_width: int = 1200
     window_height: int = 800
     log_level: str = "INFO"
@@ -70,6 +72,13 @@ class AppSettings:
             self.last_loaded_file = str(Path(file_path).resolve())
         else:
             self.last_loaded_file = None
+
+    def set_last_active_database_path(self, file_path: Optional[str]) -> None:
+        """Remember the last full or index database file the user activated."""
+        if file_path:
+            self.last_active_database_path = str(Path(file_path).resolve())
+        else:
+            self.last_active_database_path = None
     
     def set_default_config(self, config: SpreadsheetConfig) -> None:
         """
@@ -90,6 +99,7 @@ class AppSettings:
         result = {
             "last_loaded_file": self.last_loaded_file,
             "last_loaded_sheet": self.last_loaded_sheet,
+            "last_active_database_path": self.last_active_database_path,
             "window_width": self.window_width,
             "window_height": self.window_height,
             "log_level": self.log_level,
@@ -115,6 +125,7 @@ class AppSettings:
         settings = cls(
             last_loaded_file=data.get("last_loaded_file"),
             last_loaded_sheet=data.get("last_loaded_sheet"),
+            last_active_database_path=data.get("last_active_database_path"),
             window_width=data.get("window_width", 1200),
             window_height=data.get("window_height", 800),
             log_level=data.get("log_level", "INFO"),

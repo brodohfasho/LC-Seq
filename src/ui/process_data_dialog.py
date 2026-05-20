@@ -63,7 +63,7 @@ def _format_processing_parameters_summary(
     lines.append(f"Output database folder: {db_dir}")
     lines.append(
         f"Database file prefix: {safe_prefix} "
-        f"(final name is <prefix>_YYYYMMDD_HHMMSS.db when export starts)"
+        f"(final name is <prefix>_YYYYMMDD.db when export starts; _2, _3, … if that name exists)"
     )
     lines.append(
         f"Engine defaults: chunk size {DataProcessor.DEFAULT_CHUNK_SIZE:,}, "
