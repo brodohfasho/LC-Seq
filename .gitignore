@@ -48,6 +48,9 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Release artifacts (built zips for GitHub)
+release/*.zip
+
 # Application specific
 config/settings.json
 config/*.json

@@ -2,11 +2,19 @@
 
 Desktop application for loading chromatographic data from spreadsheets, building a searchable SQLite database, and exploring compounds in an interactive chromatogram viewer (overlay plots, metadata search, export).
 
-**Platform:** Windows (primary). Python 3.8+.
+**Platform:** Windows (primary). Python 3.8+ for development.
 
 ---
 
-## Quick start
+## Install (Windows executable)
+
+**Recommended for most users:** download **`LC-Seq-v1.0.0-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases), extract, and run `LC-Seq.exe`. No Python install required.
+
+Step-by-step instructions: **[docs/INSTALL.md](docs/INSTALL.md)**.
+
+---
+
+## Quick start (from source)
 
 ```bash
 git clone https://github.com/brodohfasho/LC-Seq.git
@@ -14,8 +22,10 @@ cd LC-Seq
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
-python src/main.py
+python -m src.main
 ```
+
+(Or `python src/main.py` from the repo root.)
 
 On Linux/macOS, use `source venv/bin/activate` instead of `venv\Scripts\activate`.
 
@@ -63,7 +73,7 @@ Planned and in-progress work is tracked in [ROADMAP.md](ROADMAP.md). Post-releas
 
 ## Contact
 
-**Grant Koch** — questions, bugs, or feature requests:
+**Grant Koch** grantkoch2319@gmail.com — questions, bugs, or feature requests:
 
 - Open a [GitHub Issue](https://github.com/brodohfasho/LC-Seq/issues) on this repository (preferred).
 
@@ -74,6 +84,10 @@ Planned and in-progress work is tracked in [ROADMAP.md](ROADMAP.md). Post-releas
 MIT — see [LICENSE](LICENSE).
 
 ---
+
+## Building the executable (maintainers)
+
+See [docs/BUILD.md](docs/BUILD.md) and [docs/RELEASE.md](docs/RELEASE.md). Package a release zip with `.\scripts\package_release.ps1` after `.\scripts\build_windows.ps1`.
 
 ## Development (optional)
 

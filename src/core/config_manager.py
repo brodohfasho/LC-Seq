@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Optional, List, Dict
 
+from src.core.app_paths import get_application_root
 from src.models.app_settings import AppSettings
 from src.models.spreadsheet_config import SpreadsheetConfig
 
@@ -36,7 +37,7 @@ class ConfigManager:
             config_dir: Directory for configuration files. If None, uses default 'config' directory.
         """
         if config_dir is None:
-            config_dir = Path(__file__).parent.parent.parent / "config"
+            config_dir = get_application_root() / "config"
         
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)

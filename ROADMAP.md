@@ -419,18 +419,19 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 **Goal:** Package and ship v1 alongside the paper—not blocked on Phase 15.
 
 ### 14.1 Executable Creation
-- [ ] Research Python packaging tools (PyInstaller, cx_Freeze)
-- [ ] Create executable build configuration
-- [ ] Test executable on clean Windows system
-- [ ] Verify all dependencies are included
-- [ ] Test file size and startup time
+- [x] Packaging tool: **PyInstaller** (one-folder `dist/LC-Seq/`, windowed `LC-Seq.exe`)
+- [x] Build config: `lc_seq.spec`, `scripts/build_windows.ps1`, [docs/BUILD.md](docs/BUILD.md)
+- [x] Frozen paths: `src/core/app_paths.py` — `config/`, `output/`, `logs/` beside the `.exe`
+- [x] Test executable on target Windows system (verified: fast launch, dependencies OK)
+- [x] Verify dependencies in packaged build (matplotlib, CTk, pandas, DB workflow)
+- [x] File size / startup: ~118 MB folder; startup fast (note in release when publishing)
 
 ### 14.2 Distribution
-- [ ] Create GitHub release structure
-- [ ] Prepare source code distribution
-- [ ] Create installation instructions
-- [ ] Test download and setup process
-- [ ] Prepare release notes
+- [x] GitHub release structure: tag `vX.Y.Z`, asset `release/LC-Seq-vX.Y.Z-windows.zip` ([docs/RELEASE.md](docs/RELEASE.md))
+- [x] Source distribution: tagged `main`, `requirements.txt`, README, LICENSE, docs on release commit
+- [x] Installation instructions: [docs/INSTALL.md](docs/INSTALL.md); README **Install (Windows executable)** section
+- [ ] Test download and setup process (maintainer: fresh extract from zip per RELEASE.md §5)
+- [x] Release notes: [CHANGELOG.md](CHANGELOG.md) v1.0.0; copy into GitHub Release body when publishing
 
 ### 14.3 Release smoke test
 - [ ] Install and launch on a clean Windows machine (or VM)
@@ -496,7 +497,7 @@ These features are planned for future development but are not part of the minimu
 
 **Phase**: Phase 12 complete — release path is Phases 13–14  
 **Last Updated**: 2026-05-19  
-**Next Steps**: Phase 13.3 (optional polish) → Phase 14 (deployment) → ship v1 → Phase 15 when convenient
+**Next Steps**: Phase 14.2 download test → Phase 14.3 (publish GitHub Release) → ship v1
 
 **Key Design Decisions**:
 - **Primary workflow**: Spreadsheet + valid configuration → enter visualizer → **parse/plot on demand** per compound (no bulk SQLite required).
