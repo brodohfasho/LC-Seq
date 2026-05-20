@@ -1,114 +1,84 @@
-# LC-Seq: Chromatographic Data Analysis Application
+# LC-Seq
 
-LC-Seq is a desktop application for analyzing chromatographic data from spreadsheets. It provides tools to load, configure, parse, and visualize time-series chromatographic data with flexible delimiter handling and interactive plotting.
+Desktop application for loading chromatographic data from spreadsheets, building a searchable SQLite database, and exploring compounds in an interactive chromatogram viewer (overlay plots, metadata search, export).
 
-## Features
+**Platform:** Windows (primary). Python 3.8+.
 
-- **Spreadsheet Loading**: Support for Excel (.xlsx, .xls) and CSV files
-- **Flexible Data Parsing**: Configurable delimiter sequences for parsing chromatographic data
-- **Interactive Visualization**: Plot Count vs Time data with zoom, pan, and multi-series support
-- **Compound Search**: Search compounds by any column field with partial matching
-- **Configuration Persistence**: Save and reuse spreadsheet configurations
-- **Multi-Compound Plotting**: Overlay multiple compounds on the same plot
+---
 
-## Requirements
-
-- Python 3.8 or higher
-- Windows (initial release; cross-platform support planned)
-
-## Installation
-
-### 1. Clone the Repository
+## Quick start
 
 ```bash
 git clone https://github.com/brodohfasho/LC-Seq.git
 cd LC-Seq
-```
-
-### 2. Set Up Virtual Environment
-
-**Windows:**
-```bash
 python -m venv venv
 venv\Scripts\activate
-```
-
-**Linux/Mac:**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 3. Install Dependencies
-
-```bash
 pip install -r requirements.txt
-```
-
-## Usage
-
-### Running the Application
-
-```bash
 python src/main.py
 ```
 
-### Workflow
+On Linux/macOS, use `source venv/bin/activate` instead of `venv\Scripts\activate`.
 
-1. **Load Spreadsheet**: Click "Load Spreadsheet" and select your Excel or CSV file
-2. **Configure Spreadsheet**: 
-   - Select the Compound ID column
-   - Select the Chromatographic Data column
-   - Configure delimiters and test parsing
-   - Select Time and Count columns from parsed data
-   - Name your count series
-3. **Visualize**: Enter the Chromatogram Visualizer to plot and search your data
+---
 
-## Project Structure
+## What it does
 
-```
-LC-Seq/
-├── src/                # Source code
-│   ├── core/          # Core application logic
-│   ├── models/        # Data models
-│   ├── ui/            # User interface components
-│   └── utils/         # Utility functions
-├── tests/             # Test files
-├── config/            # Configuration files
-├── data/              # Sample data (gitignored)
-├── docs/              # Documentation
-├── requirements.txt   # Python dependencies
-└── README.md          # This file
-```
+LC-Seq is built for large compound-by-compound chromatogram tables (e.g. DNA-encoded library screens). You point the app at a spreadsheet, define how each row’s chromatogram string is parsed, materialize a local database, then search and plot selected compounds without re-reading the whole sheet each time.
 
-## Development
+---
 
-### Running Tests
+## Basic workflow
+
+1. **Load Spreadsheet** — CSV or Excel file.
+2. **Configure Spreadsheet** — compound ID column, chromatogram text column, delimiters, time/count fields, and metadata columns to index. Save the configuration for reuse.
+3. **Create / Load database** — under `output/databases/`:
+   - **Index database** — metadata + raw chromatogram text; smaller files; parses on plot.
+   - **Full database** — all time/count points stored; larger files; fastest repeat plotting.
+4. **Enter Chromatogram Visualizer** — compound list or metadata **Search**, load rows into the table, select rows to plot overlays, toggle count series, click traces to focus, **Export plot** (PNG/PDF/SVG).
+
+The status line on the main window reflects load/configure/database state.
+
+---
+
+## Data file requirements
+
+| Item | Requirement |
+|------|-------------|
+| **Formats** | `.csv`, `.xlsx`, `.xls` |
+| **Layout** | One row per compound (or per variant if you configure a variant column). |
+| **Compound ID** | Single column with a unique identifier per row (or per primary+variant pair). |
+| **Chromatogram data** | One column containing encoded time/count series as text, split by delimiters you define in Configure (order matters). |
+| **Metadata** | Optional additional columns; choose which to index for search. |
+| **Variants** | Optional variant column (e.g. linear vs cyclized) for multiple rows sharing one library ID. |
+
+Delimiter and column mapping are data-specific—use **Configure Spreadsheet** preview to confirm parsing before building a database. Very large sheets are supported via chunked processing for full database builds.
+
+---
+
+## Future development
+
+Planned and in-progress work is tracked in [ROADMAP.md](ROADMAP.md). Post-release ideas (multi-panel views, additional export options, etc.) are listed under **Future Enhancements** there.
+
+---
+
+## Contact
+
+**Grant Koch** — questions, bugs, or feature requests:
+
+- Open a [GitHub Issue](https://github.com/brodohfasho/LC-Seq/issues) on this repository (preferred).
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+## Development (optional)
 
 ```bash
 pytest
 ```
 
-### Code Formatting
-
-```bash
-black src/ tests/
-```
-
-### Linting
-
-```bash
-flake8 src/ tests/
-```
-
-## License
-
-See LICENSE file for details.
-
-## Contributing
-
-This is currently a personal project. Contributions and suggestions are welcome!
-
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for detailed development phases and progress.
+See [ROADMAP.md](ROADMAP.md) for phase history. Config file formats: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Dependency notes: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
