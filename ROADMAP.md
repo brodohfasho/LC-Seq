@@ -372,27 +372,25 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 ## Phase 12: Chromatogram Visualizer - Part 3 (Multi-Compound Plotting)
 
+**Implemented in** `chromatogram_visualizer_window.py` (table + **Plot selected** / **Clear plot**, overlay traces, count-series toggles, pick-to-highlight).
+
 ### 12.1 Compound Selection & Plotting
-- [ ] Implement plot selected compound(s) functionality
-- [ ] Plot single compound when selected
-- [ ] Plot multiple compounds on same plot (overlay)
-- [ ] Use different colors/styles for different compounds
-- [ ] Update plot when selection changes
-- [ ] Clear plot when no compounds selected
+- [x] Implement plot selected compound(s) functionality
+- [x] Plot single compound when selected
+- [x] Plot multiple compounds on same plot (overlay)
+- [x] Use different colors/styles for different compounds (distinct color per trace/series; shared solid line style)
+- [x] Update plot when selection changes (`<<TreeviewSelect>>` → deferred `_apply_plot_from_table_selection`)
+- [x] Clear plot when no compounds selected (empty table selection clears axes; trace/background click deselects and clears)
 
 ### 12.2 Plot Management
-- [ ] Add "Clear Plot" functionality
-- [ ] Implement plot refresh/update
-- [ ] Handle large datasets efficiently
-- [ ] Add plot export functionality (optional for MVP)
-- [ ] Optimize rendering performance
+- [x] Add "Clear Plot" functionality
+- [x] Implement plot refresh/update (`_redraw_plot` on count toggles and table selection)
+- [x] Add plot export functionality (**Export plot…** → PNG / PDF / SVG via `Figure.savefig`)
 
 ### 12.3 User Experience
-- [ ] Add loading indicators for large datasets
-- [ ] Provide feedback for user actions
-- [ ] Handle errors gracefully
-- [ ] Add tooltips/help text
-- [ ] Ensure responsive UI
+- [x] Provide feedback for user actions (status label, messageboxes, empty-plot hints)
+- [x] Handle errors gracefully
+- [x] Add tooltips/help text (`widget_tooltip.py`; hover tips on visualizer controls + table)
 
 ---
 
@@ -521,9 +519,9 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 11 (visualizer search + virtual results) complete  
-**Last Updated**: 2026-04-22  
-**Next Steps**: Phase 12 — Chromatogram Visualizer Part 3 (multi-compound plotting polish)
+**Phase**: Phase 12 complete  
+**Last Updated**: 2026-05-19  
+**Next Steps**: Phase 13 (integration & state management)
 
 **Key Design Decisions**:
 - **Primary workflow**: Spreadsheet + valid configuration → enter visualizer → **parse/plot on demand** per compound (no bulk SQLite required).

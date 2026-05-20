@@ -17,7 +17,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.text import Text
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
@@ -29,6 +29,7 @@ from src.models.compound_identity import split_compound_storage_id
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
 from src.ui.chromatogram_dialogs import CompoundPickerDialog, MetadataSearchDialog
+from src.ui.widget_tooltip import attach_tooltip
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._legend_text_meta: Dict[int, Tuple[str, str]] = {}
         self._plot_pick_table_iid: Optional[str] = None
         self._plot_pick_count_name: Optional[str] = None
+        self._suppress_table_selection_plot = False
+        self._selection_plot_after_id: Optional[str] = None
 
         self.minsize(900, 600)
         self.grid_columnconfigure(0, weight=1)
@@ -251,20 +254,24 @@ class ChromatogramVisualizerWindow(BaseWindow):
         for w in self._count_series_frame.winfo_children():
             w.destroy()
         self._count_check_vars.clear()
-        ctk.CTkLabel(
+        lbl_counts = ctk.CTkLabel(
             self._count_series_frame,
             text="Count series:",
             font=ctk.CTkFont(size=12, weight="bold"),
-        ).pack(side="left", padx=(12, 4))
+        )
+        lbl_counts.pack(side="left", padx=(12, 4))
+        attach_tooltip(lbl_counts, "Toggle which count channels are drawn for the current plot.")
         for name in self._config.count_names:
             var = tk.IntVar(value=1)
             self._count_check_vars[name] = var
-            ctk.CTkCheckBox(
+            cb = ctk.CTkCheckBox(
                 self._count_series_frame,
                 text=name,
                 variable=var,
                 command=self._redraw_plot,
-            ).pack(side="left", padx=4)
+            )
+            cb.pack(side="left", padx=4)
+            attach_tooltip(cb, f"Show or hide the “{name}” trace on the plot.")
 
     def _clear_parse_caches_silently(self) -> None:
         self._compound_cache.clear()
@@ -402,7 +409,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
             logger.info("Configuration refresh: remapped %s row(s), dropped %s", n, lost)
         else:
             self._table_status.configure(
-                text=f"Configuration updated: {n} compound(s) in table. Select rows and plot again.",
+                text=f"Configuration updated: {n} compound(s) in table. Select rows to plot again.",
             )
             logger.info("Configuration refresh: %s compound(s) in table", n)
 
@@ -446,8 +453,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._canvas.mpl_connect("button_press_event", self._on_plot_background_click)
 
         hint = (
-            "Open Compound list or Search, load the table, then Plot selected. "
-            "Click a trace to highlight it and its table row (click again to clear). "
+            "Open Compound list or Search, load the table, then select rows to plot. "
+            "Click a trace to focus its table row (click again to clear selection and plot). "
             "Use the toolbar for pan and zoom."
         )
         ctk.CTkLabel(
@@ -464,40 +471,79 @@ class ChromatogramVisualizerWindow(BaseWindow):
 
         row0 = ctk.CTkFrame(bottom, fg_color="transparent")
         row0.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        ctk.CTkButton(
+
+        btn_list = ctk.CTkButton(
             row0,
             text="Compound list…",
             width=130,
             command=self._open_compound_picker,
-        ).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(
+        )
+        btn_list.pack(side="left", padx=(0, 6))
+        attach_tooltip(
+            btn_list,
+            "Open a searchable list of compound IDs and add chosen rows to the table.",
+        )
+
+        btn_search = ctk.CTkButton(
             row0,
             text="Search…",
             width=100,
             command=self._open_metadata_search,
-        ).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(
+        )
+        btn_search.pack(side="left", padx=(0, 6))
+        attach_tooltip(
+            btn_search,
+            "Build a metadata query, run it against the database, and load matches into the table.",
+        )
+
+        btn_clear_table = ctk.CTkButton(
             row0,
             text="Clear table",
             width=100,
             fg_color="gray40",
             command=self._on_clear_table,
-        ).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(
+        )
+        btn_clear_table.pack(side="left", padx=(0, 6))
+        attach_tooltip(btn_clear_table, "Remove every row from the table and clear the plot.")
+
+        btn_clear_plot = ctk.CTkButton(
             row0,
             text="Clear plot",
             width=100,
             fg_color="gray40",
             command=self._on_clear_plot_only,
-        ).pack(side="left", padx=(0, 6))
-        ctk.CTkButton(
+        )
+        btn_clear_plot.pack(side="left", padx=(0, 6))
+        attach_tooltip(
+            btn_clear_plot,
+            "Clear plotted traces only. Table rows stay loaded; select rows again to replot.",
+        )
+
+        btn_plot = ctk.CTkButton(
             row0,
             text="Plot selected",
             width=120,
             fg_color="#238636",
             hover_color="#2ea043",
             command=self._on_plot_selected_from_table,
-        ).pack(side="left", padx=(0, 12))
+        )
+        btn_plot.pack(side="left", padx=(0, 6))
+        attach_tooltip(
+            btn_plot,
+            "Plot the selected table rows. Selection changes usually update the plot automatically.",
+        )
+
+        btn_export = ctk.CTkButton(
+            row0,
+            text="Export plot…",
+            width=110,
+            command=self._on_export_plot,
+        )
+        btn_export.pack(side="left", padx=(0, 12))
+        attach_tooltip(
+            btn_export,
+            "Save the current plot to PNG, PDF, or SVG. At least one trace must be visible.",
+        )
 
         self._count_series_frame = ctk.CTkFrame(row0, fg_color="transparent")
         self._count_series_frame.pack(side="left", fill="x", expand=True)
@@ -512,7 +558,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
 
         ctk.CTkLabel(
             wrap,
-            text="Loaded compounds (select rows, then Plot selected)",
+            text="Loaded compounds (select rows to plot)",
             font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
@@ -539,6 +585,13 @@ class ChromatogramVisualizerWindow(BaseWindow):
 
         self._apply_treeview_dark_style()
         self._autosize_tree_columns()
+        self._tree.bind("<<TreeviewSelect>>", self._on_table_selection_changed)
+        attach_tooltip(
+            self._tree,
+            "Select one or more rows to plot overlays. "
+            "Ctrl+click toggles a row; Shift+click selects a range. "
+            "Click a plot trace to focus its row.",
+        )
 
         self._table_status = ctk.CTkLabel(wrap, text="No compounds in the table.", text_color="gray")
         self._table_status.grid(row=2, column=0, sticky="w", pady=(4, 0))
@@ -677,18 +730,61 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._autosize_tree_columns()
 
     def _on_clear_table(self) -> None:
+        self._cancel_deferred_selection_plot()
+        self._clear_tree_selection_without_plot()
         self._clear_plot_pick_focus_state()
         for iid in list(self._tree.get_children()):
             self._tree.delete(iid)
         self._table_compounds_by_iid.clear()
-        self._current_compounds = []
+        self._clear_plot_display()
         self._autosize_tree_columns()
-        self._style_axes_empty()
-        self._canvas.draw()
         self._table_status.configure(text="Table cleared.")
 
     def _on_clear_plot_only(self) -> None:
         """Clear only the plotted traces; keep loaded table rows untouched."""
+        self._clear_plot_display()
+
+    def _cancel_deferred_selection_plot(self) -> None:
+        if self._selection_plot_after_id is not None:
+            try:
+                self.after_cancel(self._selection_plot_after_id)
+            except ValueError:
+                pass
+            self._selection_plot_after_id = None
+
+    def _with_suppressed_table_selection_plot(self, callback: Any, *args: Any) -> Any:
+        """Run a tree selection mutation without triggering auto-plot."""
+        self._suppress_table_selection_plot = True
+        try:
+            return callback(*args)
+        finally:
+            self._suppress_table_selection_plot = False
+
+    def _clear_tree_selection_without_plot(self) -> None:
+        """Deselect all table rows without scheduling a selection-driven redraw."""
+        selected = self._tree.selection()
+        if not selected:
+            return
+
+        def _remove_all() -> None:
+            for iid in selected:
+                self._tree.selection_remove(iid)
+
+        self._with_suppressed_table_selection_plot(_remove_all)
+
+    def _on_table_selection_changed(self, _event: Optional[tk.Event] = None) -> None:
+        """Redraw or clear the plot when the user changes table row selection."""
+        if self._suppress_table_selection_plot:
+            return
+        self._cancel_deferred_selection_plot()
+        self._selection_plot_after_id = self.after_idle(self._deferred_apply_plot_from_table_selection)
+
+    def _deferred_apply_plot_from_table_selection(self) -> None:
+        self._selection_plot_after_id = None
+        self._apply_plot_from_table_selection(show_messages=False)
+
+    def _clear_plot_display(self) -> None:
+        """Remove all traces from the axes and reset plotted compound state."""
         self._pick_meta.clear()
         self._legend_text_meta.clear()
         self._clear_plot_pick_focus_state()
@@ -696,13 +792,9 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._style_axes_empty()
         self._canvas.draw()
 
-    def _on_plot_selected_from_table(self) -> None:
-        sel = self._tree.selection()
-        if not sel:
-            messagebox.showinfo("Plot", "Select one or more rows in the table first.", parent=self)
-            return
+    def _compounds_for_tree_selection(self) -> List[Compound]:
         compounds: List[Compound] = []
-        for iid in sel:
+        for iid in self._tree.selection():
             c = self._table_compounds_by_iid.get(str(iid))
             if c is None:
                 continue
@@ -710,11 +802,75 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 c = self._hydrate_index_compound(c)
             if c is not None:
                 compounds.append(c)
+        return compounds
+
+    def _apply_plot_from_table_selection(self, *, show_messages: bool) -> None:
+        sel = self._tree.selection()
+        if not sel:
+            self._clear_plot_display()
+            return
+        compounds = self._compounds_for_tree_selection()
         if not compounds:
-            messagebox.showerror("Plot", "Could not resolve selected rows.", parent=self)
+            if show_messages:
+                messagebox.showerror("Plot", "Could not resolve selected rows.", parent=self)
+            self._clear_plot_display()
             return
         self._current_compounds = compounds
         self._redraw_plot()
+
+    def _on_plot_selected_from_table(self) -> None:
+        if not self._tree.selection():
+            messagebox.showinfo("Plot", "Select one or more rows in the table first.", parent=self)
+            return
+        self._apply_plot_from_table_selection(show_messages=True)
+
+    def _plot_has_exportable_content(self) -> bool:
+        """True when the axes show at least one data trace (not the empty-state hint)."""
+        return bool(self._axes.get_lines())
+
+    def _on_export_plot(self) -> None:
+        """Save the current matplotlib figure to PNG, PDF, or SVG."""
+        if not self._plot_has_exportable_content():
+            messagebox.showinfo(
+                "Export plot",
+                "There is nothing to export. Select table rows to plot traces first.",
+                parent=self,
+            )
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export plot",
+            defaultextension=".png",
+            filetypes=[
+                ("PNG image", "*.png"),
+                ("PDF document", "*.pdf"),
+                ("SVG vector image", "*.svg"),
+            ],
+        )
+        if not path:
+            return
+
+        out = Path(path)
+        try:
+            self._figure.savefig(
+                out,
+                dpi=150,
+                bbox_inches="tight",
+                facecolor=self._figure.get_facecolor(),
+                edgecolor="none",
+            )
+        except OSError as exc:
+            logger.exception("Plot export failed: %s", out)
+            messagebox.showerror(
+                "Export plot",
+                f"Could not save the plot:\n{exc}",
+                parent=self,
+            )
+            return
+
+        messagebox.showinfo("Export plot", f"Plot saved to:\n{out}", parent=self)
+        logger.info("Exported chromatogram plot to %s", out)
 
     def _selected_count_names(self) -> List[str]:
         names: List[str] = []
@@ -736,7 +892,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         ax.text(
             0.5,
             0.5,
-            "Add compounds via Compound list or Search,\nselect table rows, then Plot selected.",
+            "Add compounds via Compound list or Search,\nthen select table rows to plot.",
             transform=ax.transAxes,
             ha="center",
             va="center",
@@ -761,8 +917,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
         if self._plot_pick_table_iid == iid and self._plot_pick_count_name == count_name:
             self._plot_pick_table_iid = None
             self._plot_pick_count_name = None
-            for sel in self._tree.selection():
-                self._tree.selection_remove(sel)
+            self._clear_tree_selection_without_plot()
+            self._clear_plot_display()
         else:
             self._plot_pick_table_iid = iid
             self._plot_pick_count_name = count_name
@@ -783,10 +939,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
         if not self._plot_pick_table_iid and not self._plot_pick_count_name:
             return
         self._clear_plot_pick_focus_state()
-        for sel in self._tree.selection():
-            self._tree.selection_remove(sel)
-        self._apply_plot_line_focus_styling()
-        self._canvas.draw_idle()
+        self._clear_tree_selection_without_plot()
+        self._clear_plot_display()
 
     def _focus_table_row_for_plot_pick(self, iid: str) -> None:
         if iid not in self._table_compounds_by_iid:
