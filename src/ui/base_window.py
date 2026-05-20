@@ -17,13 +17,23 @@ class BaseWindow(ctk.CTkToplevel):
     All application windows should inherit from this class for consistency.
     """
     
-    def __init__(self, parent: Optional[ctk.CTk] = None, title: str = "LC-Seq", **kwargs):
+    def __init__(
+        self,
+        parent: Optional[ctk.CTk] = None,
+        title: str = "LC-Seq",
+        *,
+        transient_parent: bool = True,
+        **kwargs,
+    ):
         """
         Initialize base window.
         
         Args:
             parent: Parent window (main application window)
             title: Window title
+            transient_parent: When True (default), ``wm transient`` ties this window to the
+                parent. On Windows that often yields a minimal title bar (close only). Set False
+                for large tool windows that need the normal minimize/maximize controls.
             **kwargs: Additional arguments passed to CTkToplevel
         """
         super().__init__(parent, **kwargs)
@@ -34,9 +44,10 @@ class BaseWindow(ctk.CTkToplevel):
         # Set window properties
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
-        # Make window modal (grab focus)
+        # Modal grab; optional transient (see transient_parent docstring).
         if parent:
-            self.transient(parent)
+            if transient_parent:
+                self.transient(parent)
             self.grab_set()
         
         logger.debug(f"Created base window: {title}")

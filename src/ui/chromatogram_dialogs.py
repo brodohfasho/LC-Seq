@@ -216,6 +216,14 @@ class MetadataSearchDialog(ctk.CTkToplevel):
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
         btn_row.grid(row=2, column=0, padx=12, pady=(4, 12), sticky="ew")
+        ctk.CTkButton(
+            btn_row,
+            text="Load all compounds…",
+            width=160,
+            fg_color="#6c4a9c",
+            hover_color="#5a3d84",
+            command=self._on_load_all_clicked,
+        ).pack(side="left", padx=(0, 4))
         ctk.CTkButton(btn_row, text="Cancel", width=100, fg_color="gray40", command=self._cancel).pack(
             side="right", padx=4
         )
@@ -234,6 +242,54 @@ class MetadataSearchDialog(ctk.CTkToplevel):
         or_cols = ["compound_id", *meta_safe]
         return append_results_text_filter(where_sql, list(params), needle, or_cols)
 
+    def _on_load_all_clicked(self) -> None:
+        """
+        Offer to load every compound row from the database, with explicit UI warnings.
+        """
+        cap = _MAX_SEARCH_LOAD
+        warn = (
+            "This will load every compound row from the current database into the "
+            "chromatogram table (ignoring the query and the optional filter field).\n\n"
+            "• Large libraries can make the app slow or unresponsive while rows are added.\n"
+            f"• At most {cap} compounds are loaded in one step; if there are more, only "
+            f"the first {cap} are used (sorted by compound ID).\n"
+            "• Some rows may be skipped if chromatogram data cannot be loaded "
+            "(especially in index database mode).\n\n"
+            "Continue?"
+        )
+        if not messagebox.askokcancel("Load all compounds", warn, parent=self):
+            return
+        self._execute_search_load("1 = 1", [], context_title="Load all compounds")
+
+    def _execute_search_load(
+        self,
+        where_sql: str,
+        params: List[Any],
+        *,
+        context_title: str,
+    ) -> None:
+        """
+        Count matches, warn on large result sets, then close and return compound IDs.
+        """
+        total = self._data_store.count_compounds_where(where_sql, params)
+        if total == 0:
+            self._msg.configure(text="No matches.", text_color="orange")
+            return
+        if total > _MAX_SEARCH_LOAD:
+            messagebox.showwarning(
+                context_title,
+                f"This query matches {total} compounds. Only the first {_MAX_SEARCH_LOAD} "
+                "will be loaded into the table. Narrow your search if needed.",
+                parent=self,
+            )
+        self._msg.configure(text=f"Loading {min(total, _MAX_SEARCH_LOAD)} of {total}…", text_color="gray")
+        self.update_idletasks()
+
+        ids = self._data_store.list_compound_ids_where(where_sql, params)[:_MAX_SEARCH_LOAD]
+        self.grab_release()
+        self.destroy()
+        self._on_done(ids)
+
     def _run_search(self) -> None:
         conditions = self._query_panel.get_conditions()
         allowed = self._searchable or []
@@ -247,24 +303,7 @@ class MetadataSearchDialog(ctk.CTkToplevel):
             messagebox.showerror("Search", str(exc), parent=self)
             return
 
-        total = self._data_store.count_compounds_where(where_sql, params)
-        if total == 0:
-            self._msg.configure(text="No matches.", text_color="orange")
-            return
-        if total > _MAX_SEARCH_LOAD:
-            messagebox.showwarning(
-                "Search",
-                f"This query matches {total} compounds. Only the first {_MAX_SEARCH_LOAD} "
-                "will be loaded into the table. Narrow your search if needed.",
-                parent=self,
-            )
-        self._msg.configure(text=f"Loading {min(total, _MAX_SEARCH_LOAD)} of {total}…", text_color="gray")
-        self.update_idletasks()
-
-        ids = self._data_store.list_compound_ids_where(where_sql, params)[:_MAX_SEARCH_LOAD]
-        self.grab_release()
-        self.destroy()
-        self._on_done(ids)
+        self._execute_search_load(where_sql, params, context_title="Search")
 
     def _cancel(self) -> None:
         self.grab_release()
