@@ -1,6 +1,6 @@
 # LC-Seq Development Roadmap
 
-This roadmap outlines the development phases for the LC-Seq chromatographic data analysis application. Follow this roadmap procedurally, completing each phase before moving to the next.
+This roadmap outlines the development phases for the LC-Seq chromatographic data analysis application. Phases 1–12 are feature development (complete). **Phases 13–14** are the release path (documentation and deployment). **Phase 15** is optional post-launch testing and hardening—do after the paper release when time permits.
 
 ## Project Overview
 
@@ -394,101 +394,76 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 ---
 
-## Phase 13: Integration & State Management
+## Phase 13: Documentation & Polish
 
-### 13.1 End-to-End Flow
-- [ ] Test complete workflow: Load → Configure → Visualize
-- [ ] Ensure state transitions work correctly
-- [ ] Verify configuration persistence across sessions
-- [ ] Test with various spreadsheet formats
-- [ ] Test with different data structures
+### 13.1 User Documentation
+- [x] User-facing docs consolidated in **README.md** (no separate manual; GitHub repo is the main resource)
+- [x] Document workflow and features (succinct scientist-focused README)
+- [x] Add tooltips and help text in UI (chromatogram visualizer; README covers rest)
+- [x] Example spreadsheets — provided by maintainer outside the repo (not in scope)
+- [x] Document file format requirements (README **Data file requirements**)
 
-### 13.2 Error Handling
-- [ ] Add comprehensive error handling throughout
-- [ ] Display user-friendly error messages
-- [ ] Log errors for debugging
-- [ ] Handle edge cases (empty files, malformed data)
-- [ ] Add recovery mechanisms
+### 13.2 Code Documentation
+- [x] Ensure all modules have docstrings (`src/` modules include module docstrings)
+- [x] Document configuration file format ([docs/CONFIGURATION.md](docs/CONFIGURATION.md); `config/default_config.json.example` aligned with `SpreadsheetConfig`)
 
-### 13.3 Data Validation
-- [ ] Validate data at each stage
-- [ ] Provide clear validation error messages
-- [ ] Allow user to correct issues
-- [ ] Prevent invalid state transitions
+### 13.3 README & Setup
+- [x] Update README with installation instructions
+- [x] Document dependencies and setup (Quick start + link to `docs/DEPENDENCIES.md`)
+- [x] Add usage examples (workflow section)
 
 ---
 
-## Phase 14: Testing
+## Phase 14: Deployment Preparation
 
-### 14.1 Unit Tests
-- [ ] Write tests for data parsing logic
-- [ ] Write tests for configuration management
-- [ ] Write tests for search functionality
-- [ ] Write tests for data models
-- [ ] Achieve good test coverage
+**Goal:** Package and ship v1 alongside the paper—not blocked on Phase 15.
 
-### 14.2 Integration Tests
-- [ ] Test spreadsheet loading with various formats
-- [ ] Test configuration workflow
-- [ ] Test visualization with sample data
-- [ ] Test search functionality
-- [ ] Test state management
-
-### 14.3 User Acceptance Testing
-- [ ] Test with real user data
-- [ ] Verify all requirements are met
-- [ ] Test edge cases and error scenarios
-- [ ] Gather feedback and iterate
-
----
-
-## Phase 15: Documentation & Polish
-
-### 15.1 User Documentation
-- [ ] Create user guide/manual
-- [ ] Document workflow and features
-- [ ] Add tooltips and help text in UI
-- [ ] Create example spreadsheets
-- [ ] Document file format requirements
-
-### 15.2 Code Documentation
-- [ ] Ensure all modules have docstrings
-- [ ] Document complex algorithms
-- [ ] Add inline comments where needed
-- [ ] Create API documentation
-- [ ] Document configuration file format
-
-### 15.3 README & Setup
-- [ ] Update README with installation instructions
-- [ ] Document dependencies and setup
-- [ ] Add usage examples
-- [ ] Include screenshots/demos
-- [ ] Document known issues/limitations
-
----
-
-## Phase 16: Deployment Preparation
-
-### 16.1 Executable Creation
+### 14.1 Executable Creation
 - [ ] Research Python packaging tools (PyInstaller, cx_Freeze)
 - [ ] Create executable build configuration
 - [ ] Test executable on clean Windows system
 - [ ] Verify all dependencies are included
 - [ ] Test file size and startup time
 
-### 16.2 Distribution
+### 14.2 Distribution
 - [ ] Create GitHub release structure
 - [ ] Prepare source code distribution
 - [ ] Create installation instructions
 - [ ] Test download and setup process
 - [ ] Prepare release notes
 
-### 16.3 Final Testing
-- [ ] Test on fresh Windows installation
-- [ ] Verify all features work in executable
-- [ ] Test with various user scenarios
-- [ ] Fix any deployment-specific issues
-- [ ] Prepare for initial release
+### 14.3 Release smoke test
+- [ ] Install and launch on a clean Windows machine (or VM)
+- [ ] Run one representative workflow end-to-end in the built executable
+- [ ] Fix any packaging-only issues (missing DLL, wrong paths, etc.)
+- [ ] Publish release notes and tagged GitHub release
+
+---
+
+## Phase 15: Post-Launch Testing & Hardening (optional)
+
+**Goal:** Deeper quality work **after** v1 and the paper—when you want more confidence, coverage, or polish. Not required to ship. The app is already usable from day-to-day work; treat this as a backlog.
+
+### 15.1 Workflows & state
+- [ ] Regression pass: Load → Configure → Create/Load database → Visualize → Search → Plot → Export
+- [ ] State transitions (new spreadsheet, switch DB, clear active DB, restart app, config persistence)
+- [ ] Additional spreadsheet formats / sheet layouts / variant columns (beyond what you already use)
+
+### 15.2 Edge cases & validation
+- [ ] Empty, corrupt, or locked files; malformed chromatogram rows
+- [ ] Invalid or incomplete configuration; recovery without restarting the app
+- [ ] Missing or deleted database file while UI is open
+- [ ] Tighten validation messages anywhere still vague or technical
+
+### 15.3 Automated tests
+- [ ] Expand unit tests (parsing, config, metadata search, data models)
+- [ ] Add integration tests for load/configure/visualize/search paths
+- [ ] Improve coverage for `AppState` and database workflows
+
+### 15.4 Broader acceptance
+- [ ] Structured test matrix with collaborator or lab data
+- [ ] Log review after induced failures (ensure errors are debuggable)
+- [ ] Collect feedback and iterate
 
 ---
 
@@ -519,9 +494,9 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 12 complete  
+**Phase**: Phase 12 complete — release path is Phases 13–14  
 **Last Updated**: 2026-05-19  
-**Next Steps**: Phase 13 (integration & state management)
+**Next Steps**: Phase 13.3 (optional polish) → Phase 14 (deployment) → ship v1 → Phase 15 when convenient
 
 **Key Design Decisions**:
 - **Primary workflow**: Spreadsheet + valid configuration → enter visualizer → **parse/plot on demand** per compound (no bulk SQLite required).
