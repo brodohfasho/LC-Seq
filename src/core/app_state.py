@@ -47,6 +47,16 @@ class AppState:
             True if spreadsheet is configured, configuration is valid, and an active
             SQLite database path (full or index) is set and resolvable.
         """
+        return self.can_access_library_data()
+
+    def can_access_library_data(self) -> bool:
+        """
+        Check if user can open Library Data or the Chromatogram Visualizer.
+
+        Returns:
+            True when spreadsheet is configured, config is valid, and the active
+            database file exists.
+        """
         if not (
             self.spreadsheet_loaded
             and self.spreadsheet_configured
@@ -194,7 +204,7 @@ class AppState:
         
         if self.data_processed and self.database_path:
             return (
-                "Database is active. Open the Chromatogram Visualizer to search and plot, or use "
+                "Database is active. Open Chromatogram Visualizer or Library Data, or use "
                 "'Create / Load database' to switch or build another file."
             )
 

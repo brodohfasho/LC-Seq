@@ -44,7 +44,8 @@ LC-Seq is built for large compound-by-compound chromatogram tables (e.g. DNA-enc
 3. **Create / Load database** — under `output/databases/`:
    - **Index database** — metadata + raw chromatogram text; smaller files; parses on plot.
    - **Full database** — all time/count points stored; larger files; fastest repeat plotting.
-4. **Enter Chromatogram Visualizer** — compound list or metadata **Search**, load rows into the table, select rows to plot overlays, toggle count series, click traces to focus, **Export plot** (PNG/PDF/SVG).
+4. **Chromatogram Visualizer** — compound list or metadata **Search**, load rows, plot overlays, export plots (PNG/PDF/SVG).
+5. **Library Data** — dashboard of library-wide metrics (total count per compound; average sequencing count per fraction = total ÷ 96, with library mean ± SD for each).
 
 The status line on the main window reflects load/configure/database state.
 

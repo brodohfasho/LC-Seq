@@ -23,6 +23,7 @@ class BaseWindow(ctk.CTkToplevel):
         title: str = "LC-Seq",
         *,
         transient_parent: bool = True,
+        modal: bool = True,
         **kwargs,
     ):
         """
@@ -34,6 +35,8 @@ class BaseWindow(ctk.CTkToplevel):
             transient_parent: When True (default), ``wm transient`` ties this window to the
                 parent. On Windows that often yields a minimal title bar (close only). Set False
                 for large tool windows that need the normal minimize/maximize controls.
+            modal: When True (default), grab input focus (modal dialog). Set False for
+                non-modal tool windows that should be minimizable alongside the main window.
             **kwargs: Additional arguments passed to CTkToplevel
         """
         super().__init__(parent, **kwargs)
@@ -44,11 +47,11 @@ class BaseWindow(ctk.CTkToplevel):
         # Set window properties
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         
-        # Modal grab; optional transient (see transient_parent docstring).
         if parent:
             if transient_parent:
                 self.transient(parent)
-            self.grab_set()
+            if modal:
+                self.grab_set()
         
         logger.debug(f"Created base window: {title}")
     

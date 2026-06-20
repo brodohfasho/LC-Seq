@@ -1,6 +1,6 @@
 # LC-Seq Development Roadmap
 
-This roadmap outlines the development phases for the LC-Seq chromatographic data analysis application. Phases 1–12 are feature development (complete). **Phases 13–14** are the release path (documentation and deployment). **Phase 15** is optional post-launch testing and hardening—do after the paper release when time permits.
+This roadmap outlines the development phases for the LC-Seq chromatographic data analysis application. Phases 1–12 are feature development (complete). **Phases 13–14** are the release path (documentation and deployment). **Phase 15** adds **Library Data** (built-in dataset analytics). **Phase 16** is optional post-launch testing and hardening.
 
 ## Project Overview
 
@@ -14,7 +14,7 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 3. **Primary:** Open Chromatogram Visualizer and **parse/plot on demand** per compound from the loaded sheet
 4. **Optional:** Create or load a **bulk SQLite** database under `output/databases/` for repeated indexed access or future full-sheet search (Phase 11)
 5. Query database (visual query builder — Phase 11, when bulk DB is in use)
-6. Visualize data (count vs time; optional overlay features in future phases)
+6. Visualize data (count vs time) in **Chromatogram Visualizer**, or library-wide metrics in **Library Data** (Phase 15)
 
 ---
 
@@ -416,7 +416,7 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 ## Phase 14: Deployment Preparation
 
-**Goal:** Package and ship v1 alongside the paper—not blocked on Phase 15.
+**Goal:** Package and ship v1 alongside the paper.
 
 ### 14.1 Executable Creation
 - [x] Packaging tool: **PyInstaller** (one-folder `dist/LC-Seq/`, windowed `LC-Seq.exe`)
@@ -430,38 +430,85 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 - [x] GitHub release structure: tag `vX.Y.Z`, asset `release/LC-Seq-vX.Y.Z-windows.zip` ([docs/RELEASE.md](docs/RELEASE.md))
 - [x] Source distribution: tagged `main`, `requirements.txt`, README, LICENSE, docs on release commit
 - [x] Installation instructions: [docs/INSTALL.md](docs/INSTALL.md); README **Install (Windows executable)** section
-- [ ] Test download and setup process (maintainer: fresh extract from zip per RELEASE.md §5)
+- [x] Test download and setup process (release zip extract → `LC-Seq.exe` + `_internal`)
 - [x] Release notes: [CHANGELOG.md](CHANGELOG.md) v1.0.0; copy into GitHub Release body when publishing
 
 ### 14.3 Release smoke test
-- [ ] Install and launch on a clean Windows machine (or VM)
-- [ ] Run one representative workflow end-to-end in the built executable
-- [ ] Fix any packaging-only issues (missing DLL, wrong paths, etc.)
-- [ ] Publish release notes and tagged GitHub release
+- [x] Install and launch from GitHub release zip (extract, run `LC-Seq.exe`)
+- [x] Representative workflow end-to-end in packaged executable
+- [x] No packaging-only issues (dependencies and paths OK)
+- [x] Published GitHub Release `v1.0.0` with `LC-Seq-v1.0.0-windows.zip` asset
 
 ---
 
-## Phase 15: Post-Launch Testing & Hardening (optional)
+## Phase 15: Library Data (Dataset Analytics Dashboard)
 
-**Goal:** Deeper quality work **after** v1 and the paper—when you want more confidence, coverage, or polish. Not required to ship. The app is already usable from day-to-day work; treat this as a backlog.
+**Goal:** Add a second main interaction point beside the Chromatogram Visualizer—a **Library Data** area for built-in calculations and summary views over the **active library** (loaded spreadsheet + SQLite database), starting with one aggregate statistic and a dashboard layout that can grow over time.
 
-### 15.1 Workflows & state
+**Concept:** After load/configure/database, users today go to the visualizer for per-compound chromatograms. **Library Data** is the home for **library-wide** metrics (one number or small table per metric), not time-series plots. Layout direction: organized **dashboard** of cards/rows—each card has a **title** and the **computed value(s)**. Additional metrics can be added in later sub-phases without reworking the shell.
+
+**Data basis:** Parsed chromatogram strings already follow configured delimiters (e.g. `time;count1:count2,time;count1:count2,...`) with one or more named count channels from **Configure Spreadsheet**. Library metrics operate on the same parsed time/count points as plotting (full DB: stored points; index DB: parse on demand or batch as needed).
+
+### 15.1 Main screen entry
+- [x] Add **Library Data** button on main screen, **side-by-side** with **Chromatogram Visualizer**
+- [x] Gate entry via `AppState.can_access_library_data()` (shared with visualizer)
+- [x] Update status messaging / button enablement for the new path
+- [x] Navigation: `LibraryDataWindow` (top-level); main screen state preserved on close
+
+### 15.2 Library Data shell (dashboard UI)
+- [x] New window: **Library Data** title, scrollable metric cards (`library_data_window.py`)
+- [x] Dashboard pattern: metric cards (title + value(s)); extensible layout
+- [x] Show context: active database name, index/full mode, count channel names
+- [x] Loading / empty states (progress bar; zero-compound message)
+- [x] Error handling (parse skips counted; fatal errors shown)
+
+### 15.3 Metric: total count per entry → mean & SD across library
+**Definition (per count channel configured in spreadsheet config):**
+
+1. For each **library entry** (compound row / variant row in the active database), parse chromatogram data and **sum all count values across all time points** for that channel → one scalar per entry (e.g. total `Count`, total `Deduplicated Count`).
+2. Across **all entries** in the dataset, compute **mean** and **standard deviation** of those per-entry totals for each count channel.
+
+**UI (first metric card):**
+
+- [x] Card **Total count per entry — library mean ± SD** with per-channel rows
+- [x] Display mean ± sample SD and **n** per count channel
+- [x] Footer: entries used / attempted / skipped
+
+**Implementation:**
+
+- [x] `src/core/library_metrics.py` (`compute_total_count_library_stats`)
+- [x] Index DB: parse raw chromatogram per row; full DB: stored data points
+- [x] Background thread + progress bar for large libraries
+- [x] Unit tests (`tests/test_library_metrics.py`)
+
+### 15.4 Documentation & polish (Phase 15)
+- [x] README: Library Data in workflow
+- [x] In-card help text for first metric
+- [x] Refresh button tooltip
+
+**Resolved decisions:** sample SD (`statistics.stdev`); skip unparseable rows; recompute on open/Refresh; top-level window like visualizer.
+
+---
+
+## Phase 16: Post-Launch Testing & Hardening (optional)
+
+### 16.1 Workflows & state
 - [ ] Regression pass: Load → Configure → Create/Load database → Visualize → Search → Plot → Export
 - [ ] State transitions (new spreadsheet, switch DB, clear active DB, restart app, config persistence)
 - [ ] Additional spreadsheet formats / sheet layouts / variant columns (beyond what you already use)
 
-### 15.2 Edge cases & validation
+### 16.2 Edge cases & validation
 - [ ] Empty, corrupt, or locked files; malformed chromatogram rows
 - [ ] Invalid or incomplete configuration; recovery without restarting the app
 - [ ] Missing or deleted database file while UI is open
 - [ ] Tighten validation messages anywhere still vague or technical
 
-### 15.3 Automated tests
+### 16.3 Automated tests
 - [ ] Expand unit tests (parsing, config, metadata search, data models)
 - [ ] Add integration tests for load/configure/visualize/search paths
 - [ ] Improve coverage for `AppState` and database workflows
 
-### 15.4 Broader acceptance
+### 16.4 Broader acceptance
 - [ ] Structured test matrix with collaborator or lab data
 - [ ] Log review after induced failures (ensure errors are debuggable)
 - [ ] Collect feedback and iterate
@@ -479,7 +526,7 @@ These features are planned for future development but are not part of the minimu
 - Cross-platform installer development
 - Additional visualization options
 - Batch processing capabilities
-- Data analysis tools
+- Additional Library Data metrics beyond Phase 15.3 (extend dashboard)
 
 ---
 
@@ -495,9 +542,9 @@ These features are planned for future development but are not part of the minimu
 
 ## Current Status
 
-**Phase**: Phase 12 complete — release path is Phases 13–14  
-**Last Updated**: 2026-05-19  
-**Next Steps**: Phase 14.2 download test → Phase 14.3 (publish GitHub Release) → ship v1
+**Phase**: Phase 15 complete (Library Data dashboard + total-count metric)  
+**Last Updated**: 2026-05-20  
+**Next Steps**: Additional Library Data metrics (future cards) / Phase 16 optional testing
 
 **Key Design Decisions**:
 - **Primary workflow**: Spreadsheet + valid configuration → enter visualizer → **parse/plot on demand** per compound (no bulk SQLite required).

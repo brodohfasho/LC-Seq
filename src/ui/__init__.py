@@ -10,6 +10,7 @@ from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
 from src.ui.process_data_dialog import ProcessDataDialog
 from src.ui.database_manage_dialog import DatabaseManageDialog
 from src.ui.chromatogram_visualizer_window import ChromatogramVisualizerWindow
+from src.ui.library_data_window import LibraryDataWindow
 
 __all__ = [
     "BaseWindow",
@@ -19,4 +20,5 @@ __all__ = [
     "ProcessDataDialog",
     "DatabaseManageDialog",
     "ChromatogramVisualizerWindow",
+    "LibraryDataWindow",
 ]

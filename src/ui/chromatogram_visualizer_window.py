@@ -65,6 +65,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
             parent,
             title="Chromatogram Visualizer",
             transient_parent=False,
+            modal=False,
         )
         self.bind("<Destroy>", self._clear_main_reference)
 
@@ -162,6 +163,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
 
     def _apply_maximized_state(self) -> None:
         """Fill the screen (Windows ``zoomed`` / Linux zoomed attribute)."""
+        if not self.winfo_exists():
+            return
         try:
             self.state("zoomed")
         except tk.TclError:
@@ -519,20 +522,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
             "Clear plotted traces only. Table rows stay loaded; select rows again to replot.",
         )
 
-        btn_plot = ctk.CTkButton(
-            row0,
-            text="Plot selected",
-            width=120,
-            fg_color="#238636",
-            hover_color="#2ea043",
-            command=self._on_plot_selected_from_table,
-        )
-        btn_plot.pack(side="left", padx=(0, 6))
-        attach_tooltip(
-            btn_plot,
-            "Plot the selected table rows. Selection changes usually update the plot automatically.",
-        )
-
         btn_export = ctk.CTkButton(
             row0,
             text="Export plot…",
@@ -781,7 +770,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
 
     def _deferred_apply_plot_from_table_selection(self) -> None:
         self._selection_plot_after_id = None
-        self._apply_plot_from_table_selection(show_messages=False)
+        self._apply_plot_from_table_selection()
 
     def _clear_plot_display(self) -> None:
         """Remove all traces from the axes and reset plotted compound state."""
@@ -804,25 +793,17 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 compounds.append(c)
         return compounds
 
-    def _apply_plot_from_table_selection(self, *, show_messages: bool) -> None:
+    def _apply_plot_from_table_selection(self) -> None:
         sel = self._tree.selection()
         if not sel:
             self._clear_plot_display()
             return
         compounds = self._compounds_for_tree_selection()
         if not compounds:
-            if show_messages:
-                messagebox.showerror("Plot", "Could not resolve selected rows.", parent=self)
             self._clear_plot_display()
             return
         self._current_compounds = compounds
         self._redraw_plot()
-
-    def _on_plot_selected_from_table(self) -> None:
-        if not self._tree.selection():
-            messagebox.showinfo("Plot", "Select one or more rows in the table first.", parent=self)
-            return
-        self._apply_plot_from_table_selection(show_messages=True)
 
     def _plot_has_exportable_content(self) -> bool:
         """True when the axes show at least one data trace (not the empty-state hint)."""

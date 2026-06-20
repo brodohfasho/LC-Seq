@@ -3,26 +3,27 @@
 Main screen UI for LC-Seq application.
 """
 
+from __future__ import annotations
+
 import logging
+import threading
 import tkinter as tk
 from tkinter import messagebox
 from pathlib import Path
 
 import customtkinter as ctk
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
 from src.core import database_library
 from src.core.data_store import DB_KIND_FULL, DB_KIND_INDEX, DataStore
 from src.core.spreadsheet_loader import SpreadsheetLoader
-from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
-from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
-from src.ui.process_data_dialog import ProcessDataDialog
-from src.ui.database_manage_dialog import DatabaseManageDialog
-from src.ui.index_database_dialog import IndexDatabaseDialog
-from src.ui.chromatogram_visualizer_window import ChromatogramVisualizerWindow
-from src.core.data_processing_result import DataProcessingResult
+
+if TYPE_CHECKING:
+    from src.core.data_processing_result import DataProcessingResult
+    from src.ui.chromatogram_visualizer_window import ChromatogramVisualizerWindow
+    from src.ui.library_data_window import LibraryDataWindow
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class MainScreen(ctk.CTk):
     Provides:
     - Load Spreadsheet button
     - Configure Spreadsheet button
-    - Enter Chromatogram Visualizer (after valid configuration)
+    - Enter Chromatogram Visualizer / Library Data (after valid configuration + database)
     - Create / Load database (optional bulk SQLite)
     - Status message display
     """
@@ -53,7 +54,10 @@ class MainScreen(ctk.CTk):
         self.config_manager = config_manager
         self.spreadsheet_loader = SpreadsheetLoader()
         self._chromatogram_window: Optional[ChromatogramVisualizerWindow] = None
-        self.database_manage_dialog: Optional[DatabaseManageDialog] = None
+        self._library_data_window: Optional[LibraryDataWindow] = None
+        self.database_manage_dialog: Optional[Any] = None
+        self._restore_spreadsheet_thread: Optional[threading.Thread] = None
+        self._closing = False
         
         # Register for state changes
         self.app_state.register_state_change_callback(self._on_state_change)
@@ -93,7 +97,7 @@ class MainScreen(ctk.CTk):
         # Initial state update
         self._update_ui_state()
         
-        # Reload last spreadsheet from settings (if path still valid)
+        # Reload last spreadsheet from settings (if path still valid) without blocking UI
         self.after(150, self._restore_last_spreadsheet_if_available)
         
         logger.info("Main screen initialized")
@@ -150,16 +154,29 @@ class MainScreen(ctk.CTk):
         )
         subtitle_label.grid(row=2, column=0, pady=(0, 24), sticky="n")
         
-        # Primary button: Enter Visualizer
+        primary_row = ctk.CTkFrame(self, fg_color="transparent")
+        primary_row.grid(row=3, column=0, padx=40, pady=20, sticky="ew")
+        primary_row.grid_columnconfigure((0, 1), weight=1)
+
         self.visualizer_button = ctk.CTkButton(
-            self,
-            text="Enter Chromatogram Visualizer",
+            primary_row,
+            text="Chromatogram Visualizer",
             font=ctk.CTkFont(size=16, weight="bold"),
             height=60,
             command=self._on_enter_visualizer,
-            state="disabled"
+            state="disabled",
         )
-        self.visualizer_button.grid(row=3, column=0, padx=40, pady=20, sticky="ew")
+        self.visualizer_button.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+
+        self.library_data_button = ctk.CTkButton(
+            primary_row,
+            text="Library Data",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            height=60,
+            command=self._on_enter_library_data,
+            state="disabled",
+        )
+        self.library_data_button.grid(row=0, column=1, padx=(8, 0), sticky="ew")
         
         # Load Spreadsheet button
         self.load_button = ctk.CTkButton(
@@ -209,8 +226,10 @@ class MainScreen(ctk.CTk):
     def _update_ui_state(self) -> None:
         """Update UI elements based on current application state."""
         # Update visualizer button state
-        can_enter = self.app_state.can_enter_visualizer()
-        self.visualizer_button.configure(state="normal" if can_enter else "disabled")
+        can_enter = self.app_state.can_access_library_data()
+        state = "normal" if can_enter else "disabled"
+        self.visualizer_button.configure(state=state)
+        self.library_data_button.configure(state=state)
         
         # Update configure button state
         self.configure_button.configure(
@@ -383,10 +402,38 @@ class MainScreen(ctk.CTk):
         logger.info("Default configuration not valid for this spreadsheet: %s", detail)
         return False, detail
     
-    def _restore_last_spreadsheet_if_available(self) -> None:
-        """If settings contain a last file path that still exists, load it silently."""
-        if self.app_state.spreadsheet_loaded:
+    def _ui_is_active(self) -> bool:
+        if self._closing:
+            return False
+        try:
+            return bool(self.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _schedule_on_main(self, callback, *args) -> None:
+        if not self._ui_is_active():
             return
+
+        def invoke() -> None:
+            if not self._ui_is_active():
+                return
+            try:
+                callback(*args)
+            except tk.TclError:
+                pass
+
+        try:
+            self.after(0, invoke)
+        except tk.TclError:
+            pass
+
+    def _restore_last_spreadsheet_if_available(self) -> None:
+        """If settings contain a last file path that still exists, load it in the background."""
+        if not self._ui_is_active() or self.app_state.spreadsheet_loaded:
+            return
+        if self._restore_spreadsheet_thread is not None and self._restore_spreadsheet_thread.is_alive():
+            return
+
         settings = self.config_manager.load_settings()
         path = settings.last_loaded_file
         if not path:
@@ -395,14 +442,72 @@ class MainScreen(ctk.CTk):
         if not p.is_file():
             logger.info("Last spreadsheet path is not available: %s", path)
             return
+
         sheet = settings.last_loaded_sheet
-        success, err, df = self.spreadsheet_loader.load_file(str(p), sheet_name=sheet)
-        if not success or df is None:
-            logger.info("Could not restore last spreadsheet: %s", err)
+        path_resolved = str(p.resolve())
+        self.status_label.configure(text=f"Restoring last spreadsheet… ({p.name})")
+
+        def worker() -> None:
+            loader = SpreadsheetLoader()
+            success, err, _df = loader.load_file(path_resolved, sheet_name=sheet)
+            self._schedule_on_main(
+                self._finish_spreadsheet_restore,
+                path_resolved,
+                success,
+                err,
+                loader,
+            )
+
+        self._restore_spreadsheet_thread = threading.Thread(target=worker, daemon=True)
+        self._restore_spreadsheet_thread.start()
+
+    def _finish_spreadsheet_restore(
+        self,
+        path_resolved: str,
+        success: bool,
+        err: Optional[str],
+        loader: SpreadsheetLoader,
+    ) -> None:
+        if not self._ui_is_active():
             return
-        self._apply_spreadsheet_loaded(str(p.resolve()))
+        self._restore_spreadsheet_thread = None
+        if not success or loader.current_data is None:
+            logger.info("Could not restore last spreadsheet: %s", err)
+            self._update_ui_state()
+            return
+
+        self.spreadsheet_loader.current_data = loader.current_data
+        self.spreadsheet_loader.current_file_path = loader.current_file_path
+        self.spreadsheet_loader.current_sheet_name = loader.current_sheet_name
+        self._apply_spreadsheet_loaded(path_resolved)
+        self._restore_last_database_if_available()
         self._update_ui_state()
-        logger.info("Restored last spreadsheet from settings: %s", path)
+        logger.info("Restored last spreadsheet from settings: %s", path_resolved)
+
+    def _restore_last_database_if_available(self) -> None:
+        """Reattach the last active database path from settings when the file still exists."""
+        if self.app_state.data_processed:
+            return
+        if not (
+            self.app_state.spreadsheet_loaded
+            and self.app_state.spreadsheet_configured
+            and self.app_state.config_valid
+        ):
+            return
+
+        settings = self.config_manager.load_settings()
+        path = settings.last_active_database_path
+        if not path or not Path(path).is_file():
+            return
+
+        try:
+            kind = DataStore.peek_database_kind(Path(path))
+        except OSError as exc:
+            logger.warning("Could not read database kind during restore: %s", exc)
+            kind = DB_KIND_FULL
+        type_word = "index" if kind == DB_KIND_INDEX else "full"
+        self.app_state.set_data_processed(True, path, type_word)
+        logger.info("Restored last active database from settings: %s", path)
     
     def _on_enter_visualizer(self) -> None:
         """Handle Enter Visualizer button click."""
@@ -419,11 +524,35 @@ class MainScreen(ctk.CTk):
             except tk.TclError:
                 self._chromatogram_window = None
 
+        from src.ui.chromatogram_visualizer_window import ChromatogramVisualizerWindow
+
         self._chromatogram_window = ChromatogramVisualizerWindow(
             self,
             self.app_state,
             self.config_manager,
             self.spreadsheet_loader,
+        )
+
+    def _on_enter_library_data(self) -> None:
+        """Open Library Data dashboard."""
+        if not self.app_state.can_access_library_data():
+            logger.warning("Attempted to open Library Data when not ready")
+            return
+        logger.info("Opening Library Data")
+        if self._library_data_window is not None:
+            try:
+                self._library_data_window.lift()
+                self._library_data_window.focus()
+                return
+            except tk.TclError:
+                self._library_data_window = None
+
+        from src.ui.library_data_window import LibraryDataWindow
+
+        self._library_data_window = LibraryDataWindow(
+            self,
+            self.app_state,
+            self.config_manager,
         )
 
     def _notify_chromatogram_visualizer_config_changed(self) -> None:
@@ -457,6 +586,8 @@ class MainScreen(ctk.CTk):
                 initial_path = str(lp)
                 initial_sheet = dlg_settings.last_loaded_sheet
         
+        from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
+
         # Open load dialog - store reference to prevent garbage collection
         self.load_dialog = LoadSpreadsheetDialog(
             parent=self,
@@ -519,6 +650,8 @@ class MainScreen(ctk.CTk):
             )
             self._notify_chromatogram_visualizer_config_changed()
         
+        from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
+
         # Open configuration dialog - store reference to prevent garbage collection
         self.config_dialog = ConfigureSpreadsheetDialog(
             parent=self,
@@ -559,6 +692,8 @@ class MainScreen(ctk.CTk):
             self.app_state.clear_active_database()
             self._update_ui_state()
 
+        from src.ui.database_manage_dialog import DatabaseManageDialog
+
         self.database_manage_dialog = DatabaseManageDialog(
             self,
             on_begin_bulk_create=begin_bulk,
@@ -589,6 +724,8 @@ class MainScreen(ctk.CTk):
                 parent=self,
             )
             return
+
+        from src.ui.index_database_dialog import IndexDatabaseDialog
 
         def on_index_success(result: DataProcessingResult) -> None:
             if result.cancelled or not result.database_path:
@@ -653,6 +790,8 @@ class MainScreen(ctk.CTk):
                     pass
             previous_close()
 
+        from src.ui.process_data_dialog import ProcessDataDialog
+
         self.protocol("WM_DELETE_WINDOW", main_close_during_process)
         try:
             self.process_dialog = ProcessDataDialog(
@@ -673,6 +812,7 @@ class MainScreen(ctk.CTk):
     
     def on_close(self) -> None:
         """Handle window close event."""
+        self._closing = True
         # Save window size to settings
         width = self.winfo_width()
         height = self.winfo_height()
