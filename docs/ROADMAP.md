@@ -488,6 +488,28 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 **Resolved decisions:** sample SD (`statistics.stdev`); skip unparseable rows; recompute on open/Refresh; top-level window like visualizer.
 
+**Configure Spreadsheet (tab 5):** See Phase 17 below.
+
+---
+
+## Phase 17: LC-Seq Analysis Integration (in progress)
+
+**Status:** Phase 0–1 partial — **peak picking in Chromatogram Visualizer** ready for GUI test.
+
+### Done
+- [x] `SpreadsheetConfig`: `library_cycle_count`, `bb_position_columns`, `null_token`, `analysis_time_unit`
+- [x] Configure Spreadsheet tab **5 — DEL / Pedigree** (2/3/4 cycles, 4 BB slots)
+- [x] Rust backend wrapper + Python fallback (`scipy`)
+- [x] `peak_analysis_service`, export CSV, `PeakAnalysisPanel` in visualizer
+- [x] `pedigree_adapter` (BB column → N→C tuple)
+- [x] Unit tests: peak analysis, pedigree adapter
+
+### Next (after user GUI test)
+- [ ] Lineage analysis window
+- [ ] Library Data pedigree + `render_pruned_tree` with `max_display_tier`
+- [ ] Embedded help
+- [ ] Rust build in installer / `DEVELOPER_SETUP` on analyst machines
+
 ---
 
 ## Phase 16: Post-Launch Testing & Hardening (optional)

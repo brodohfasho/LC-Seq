@@ -527,10 +527,7 @@ class DataProcessor:
             
             # Parse chromatographic data
             try:
-                # Calculate items per point
-                items_per_point = 1 + len(config.count_column_indices)  # time + counts
-                
-                # Parse structured data
+                items_per_point = config.parsed_fields_per_point()
                 parsed_points = parser.parse_structured(chrom_data_str, items_per_point)
             except ValueError as e:
                 result.add_error(

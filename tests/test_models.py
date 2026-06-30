@@ -124,6 +124,29 @@ class TestSpreadsheetConfig:
                 count_names=["Count1", "Count2"]  # Mismatch
             )
 
+    def test_parsed_fields_per_point_from_delimiters(self):
+        """Field width follows delimiter count, not selected count channels."""
+        config = SpreadsheetConfig(
+            compound_id_column="ID",
+            chromatographic_data_column="Chrom",
+            delimiters=[",", ";", ":"],
+            time_column_index=0,
+            count_column_indices=[1],
+            count_names=["Raw"],
+        )
+        assert config.parsed_fields_per_point() == 3
+
+    def test_parsed_fields_per_point_legacy_without_delimiters(self):
+        """Infer width from column indices when delimiters are absent."""
+        config = SpreadsheetConfig(
+            compound_id_column="ID",
+            chromatographic_data_column="Chrom",
+            time_column_index=0,
+            count_column_indices=[2],
+            count_names=["Deduplicated"],
+        )
+        assert config.parsed_fields_per_point() == 3
+
 
 class TestAppSettings:
     """Test cases for AppSettings model."""

@@ -25,6 +25,10 @@ class SpreadsheetConfig:
                                  primary compound (e.g. linear vs cyclized). When set, each
                                  row must have a non-empty value; storage IDs are unique
                                  per (primary, variant).
+        null_token: Token marking unfilled coupling positions in BB columns (pedigree).
+        library_cycle_count: Number of coupling cycles (2, 3, or 4) in this DEL library.
+        bb_position_columns: Up to four spreadsheet columns for BB1..BB4 (C→N coupling order).
+        analysis_time_unit: Default time unit for peak/pedigree analysis UI (seconds/minutes).
     """
     
     compound_id_column: str
@@ -35,6 +39,10 @@ class SpreadsheetConfig:
     count_column_indices: List[int] = field(default_factory=list)
     count_names: List[str] = field(default_factory=list)
     selected_metadata_columns: List[str] = field(default_factory=list)
+    null_token: str = "AgxNull"
+    library_cycle_count: int = 3
+    bb_position_columns: List[str] = field(default_factory=lambda: ["", "", "", ""])
+    analysis_time_unit: str = "seconds"
     
     def __post_init__(self) -> None:
         """
@@ -86,6 +94,49 @@ class SpreadsheetConfig:
                     raise ValueError(
                         "Compound variant column must differ from chromatographic data column"
                     )
+
+        self._validate_pedigree_fields()
+    
+    def _validate_pedigree_fields(self) -> None:
+        """Validate DEL / pedigree configuration when partially set."""
+        if self.library_cycle_count not in (2, 3, 4):
+            raise ValueError("library_cycle_count must be 2, 3, or 4")
+        if len(self.bb_position_columns) != 4:
+            raise ValueError("bb_position_columns must have exactly 4 entries (BB1..BB4 slots)")
+        if self.analysis_time_unit not in ("seconds", "minutes"):
+            raise ValueError("analysis_time_unit must be 'seconds' or 'minutes'")
+        if not self.null_token or not str(self.null_token).strip():
+            raise ValueError("null_token must be a non-empty string")
+
+    def active_bb_position_columns(self) -> List[str]:
+        """BB column names for the configured cycle count (C→N: BB1 = C-term)."""
+        cols = [c.strip() for c in self.bb_position_columns if c and str(c).strip()]
+        n = self.library_cycle_count
+        active = self.bb_position_columns[:n]
+        return [str(c).strip() for c in active if c and str(c).strip()]
+
+    def pedigree_configured(self) -> bool:
+        """True when enough BB columns are mapped for pedigree analysis."""
+        return len(self.active_bb_position_columns()) == self.library_cycle_count
+
+    def parsed_fields_per_point(self) -> int:
+        """
+        Number of parsed fields per chromatogram data point.
+
+        Matches the delimiter test in Configure Spreadsheet (``len(delimiters)``).
+        Raw chromatogram strings retain every field even when only a subset of count
+        columns is selected for export or plotting.
+        """
+        if self.delimiters:
+            return len(self.delimiters)
+        indices: List[int] = []
+        if self.time_column_index is not None:
+            indices.append(self.time_column_index)
+        if self.count_column_indices:
+            indices.extend(self.count_column_indices)
+        if indices:
+            return max(indices) + 1
+        return 1 + len(self.count_column_indices)
     
     def is_complete(self) -> bool:
         """
@@ -119,7 +170,11 @@ class SpreadsheetConfig:
             "time_column_index": self.time_column_index,
             "count_column_indices": self.count_column_indices.copy(),
             "count_names": self.count_names.copy(),
-            "selected_metadata_columns": self.selected_metadata_columns.copy()
+            "selected_metadata_columns": self.selected_metadata_columns.copy(),
+            "null_token": self.null_token,
+            "library_cycle_count": self.library_cycle_count,
+            "bb_position_columns": self.bb_position_columns.copy(),
+            "analysis_time_unit": self.analysis_time_unit,
         }
     
     @classmethod
@@ -146,6 +201,11 @@ class SpreadsheetConfig:
         if raw_variant is not None and str(raw_variant).strip():
             variant_col = str(raw_variant).strip()
 
+        bb_cols = data.get("bb_position_columns", ["", "", "", ""])
+        if len(bb_cols) < 4:
+            bb_cols = list(bb_cols) + [""] * (4 - len(bb_cols))
+        bb_cols = [str(c) if c else "" for c in bb_cols[:4]]
+
         return cls(
             compound_id_column=str(data["compound_id_column"]),
             chromatographic_data_column=str(data["chromatographic_data_column"]),
@@ -154,5 +214,9 @@ class SpreadsheetConfig:
             time_column_index=data.get("time_column_index"),
             count_column_indices=data.get("count_column_indices", []),
             count_names=data.get("count_names", []),
-            selected_metadata_columns=data.get("selected_metadata_columns", [])
+            selected_metadata_columns=data.get("selected_metadata_columns", []),
+            null_token=str(data.get("null_token", "AgxNull")),
+            library_cycle_count=int(data.get("library_cycle_count", 3)),
+            bb_position_columns=bb_cols,
+            analysis_time_unit=str(data.get("analysis_time_unit", "seconds")),
         )

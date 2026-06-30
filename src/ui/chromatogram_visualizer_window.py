@@ -29,7 +29,11 @@ from src.models.compound_identity import split_compound_storage_id
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
 from src.ui.chromatogram_dialogs import CompoundPickerDialog, MetadataSearchDialog
+from src.ui.peak_analysis_panel import PeakAnalysisPanel
 from src.ui.widget_tooltip import attach_tooltip
+from src.models.peak_result import PeakAnalysisBatchResult
+from src.core.time_display import convert_time_series, convert_time_value, time_axis_label
+from src.models.analysis_settings import TimeUnit
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +77,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self.config_manager = config_manager
         self._loader = loader
         self._data_store: Optional[DataStore] = None
+        self._active_db_path: Optional[str] = None
         self._config: Optional[SpreadsheetConfig] = None
         self._all_ids: List[str] = []
         self._uses_variants: bool = False
@@ -92,9 +97,15 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._plot_pick_count_name: Optional[str] = None
         self._suppress_table_selection_plot = False
         self._selection_plot_after_id: Optional[str] = None
+        self._peak_panel: Optional[PeakAnalysisPanel] = None
+        self._peak_panel_visible = False
+        self._peak_analysis_batch: Optional[PeakAnalysisBatchResult] = None
+        self._show_peak_baseline = False
+        self._plot_color_by_compound_id: Dict[str, str] = {}
 
         self.minsize(900, 600)
         self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=0)
         self.grid_rowconfigure(1, weight=3)
         self.grid_rowconfigure(3, weight=2)
 
@@ -130,6 +141,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
             messagebox.showerror("Database error", str(exc), parent=self)
             self.after(50, self.on_close)
             return
+
+        self._active_db_path = str(Path(db_path).resolve())
 
         self._index_db_mode = self._data_store.is_index_database()
         self._on_demand_mode = self._index_db_mode
@@ -306,9 +319,17 @@ class ChromatogramVisualizerWindow(BaseWindow):
         for k, val in c.metadata.items():
             row_data[k] = val
         series = pd.Series(row_data)
-        compound, _res = self._processor.parse_dataframe_row_to_compound(
+        compound, res = self._processor.parse_dataframe_row_to_compound(
             series, self._config, 0
         )
+        if compound is None:
+            err = res.errors[0].error_message if res.errors else "unknown parse error"
+            logger.warning(
+                "Index hydrate failed for %s (fields_per_point=%s): %s",
+                c.compound_id,
+                self._config.parsed_fields_per_point(),
+                err,
+            )
         return compound
 
     def _reload_compound_after_config_change(self, c: Compound) -> Optional[Compound]:
@@ -415,6 +436,64 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 text=f"Configuration updated: {n} compound(s) in table. Select rows to plot again.",
             )
             logger.info("Configuration refresh: %s compound(s) in table", n)
+
+    def ensure_database_current(self) -> None:
+        """Reload SQLite connection when the active database file changed."""
+        path = self._resolve_database_path()
+        if not path:
+            return
+        resolved = str(Path(path).resolve())
+        if resolved == self._active_db_path:
+            return
+        self.refresh_after_database_changed()
+
+    def refresh_after_database_changed(self) -> None:
+        """Reopen the active SQLite file and refresh compound IDs and table state."""
+        path = self._resolve_database_path()
+        if not path or not Path(path).is_file():
+            logger.warning("Database refresh skipped: no active database file")
+            return
+
+        resolved = str(Path(path).resolve())
+        if resolved == self._active_db_path and self._data_store is not None:
+            return
+
+        try:
+            self._data_store = DataStore(db_path=Path(path), use_memory=False)
+        except Exception as exc:
+            logger.error("Failed to reopen database: %s", exc, exc_info=True)
+            messagebox.showerror("Database error", str(exc), parent=self)
+            return
+
+        self._active_db_path = resolved
+        self._index_db_mode = self._data_store.is_index_database()
+        self._on_demand_mode = self._index_db_mode
+        self._clear_parse_caches_silently()
+        self._clear_plot_pick_focus_state()
+
+        assert self._config is not None
+        if self._uses_variants:
+            self._all_ids = self._data_store.get_distinct_primary_compound_ids()
+        else:
+            self._all_ids = sorted(self._data_store.get_all_compound_ids())
+
+        for iid in list(self._tree.get_children()):
+            self._tree.delete(iid)
+        self._table_compounds_by_iid.clear()
+        self._current_compounds = []
+        self._style_axes_empty()
+        self._canvas.draw()
+        self._table_status.configure(
+            text=(
+                f"Database changed: {len(self._all_ids)} compound(s) available. "
+                "Load compounds from the list to plot."
+            )
+        )
+        logger.info(
+            "Chromatogram visualizer database refreshed (%s compounds, index_db=%s)",
+            len(self._all_ids),
+            self._index_db_mode,
+        )
 
     def _build_header(self) -> None:
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -528,10 +607,24 @@ class ChromatogramVisualizerWindow(BaseWindow):
             width=110,
             command=self._on_export_plot,
         )
-        btn_export.pack(side="left", padx=(0, 12))
+        btn_export.pack(side="left", padx=(0, 6))
         attach_tooltip(
             btn_export,
             "Save the current plot to PNG, PDF, or SVG. At least one trace must be visible.",
+        )
+
+        self._btn_peak_analysis = ctk.CTkButton(
+            row0,
+            text="Peak analysis ▶",
+            width=130,
+            fg_color="#6f42c1",
+            hover_color="#8957e5",
+            command=self._toggle_peak_analysis_panel,
+        )
+        self._btn_peak_analysis.pack(side="left", padx=(0, 12))
+        attach_tooltip(
+            self._btn_peak_analysis,
+            "Open peak picking and integration for one compound and one count channel.",
         )
 
         self._count_series_frame = ctk.CTkFrame(row0, fg_color="transparent")
@@ -1018,6 +1111,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
 
         self._pick_meta.clear()
         self._legend_text_meta.clear()
+        self._plot_color_by_compound_id.clear()
         legend_meta_in_order: List[Tuple[str, str]] = []
         colors = ("#58a6ff", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff", "#ff7b72")
         plotted = 0
@@ -1037,6 +1131,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
                     continue
                 if not times:
                     continue
+                plot_times = self._display_times(times)
                 color = colors[idx % len(colors)]
                 lib_id = str(compound.primary_compound_id or compound.compound_id or "").strip()
                 if not lib_id:
@@ -1046,7 +1141,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 else:
                     legend_label = f"{lib_id} — {count_name}"
                 (line,) = ax.plot(
-                    times,
+                    plot_times,
                     counts,
                     label=legend_label,
                     color=color,
@@ -1055,6 +1150,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 line.set_picker(_PLOT_LINE_PICK_RADIUS_PT)
                 line._lcseq_base = {"color": color, "lw": default_lw}
                 table_iid = str(compound.compound_id).strip()
+                self._plot_color_by_compound_id[table_iid] = color
                 self._pick_meta[id(line)] = (table_iid, count_name)
                 legend_meta_in_order.append((table_iid, count_name))
                 plotted += 1
@@ -1074,21 +1170,188 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 fontsize=12,
             )
         else:
-            ax.set_xlabel("Time")
+            _, display_unit = self._peak_display_time_units()
+            ax.set_xlabel(time_axis_label(display_unit))
             ax.set_ylabel("Count")
             title_primary = compounds[0].primary_compound_id or compounds[0].compound_id
             ax.set_title(f"Chromatogram — {title_primary}")
-            legend = ax.legend(facecolor="#2b2b2b", edgecolor="gray", labelcolor="lightgray")
-            if legend is not None:
-                texts: List[Text] = legend.get_texts()
-                for text_obj, meta in zip(texts, legend_meta_in_order):
-                    self._legend_text_meta[id(text_obj)] = meta
+            if self._plot_legend_visible():
+                legend = ax.legend(facecolor="#2b2b2b", edgecolor="gray", labelcolor="lightgray")
+                if legend is not None:
+                    texts: List[Text] = legend.get_texts()
+                    for text_obj, meta in zip(texts, legend_meta_in_order):
+                        self._legend_text_meta[id(text_obj)] = meta
             ax.grid(True, alpha=0.25, color="gray")
             self._sync_plot_pick_after_redraw()
             self._apply_plot_line_focus_styling()
+            self._draw_peak_analysis_overlays(ax)
 
         self._figure.tight_layout()
         self._canvas.draw()
+
+    def _toggle_peak_analysis_panel(self) -> None:
+        self._peak_panel_visible = not self._peak_panel_visible
+        if self._peak_panel_visible:
+            self._btn_peak_analysis.configure(text="Peak analysis ◀")
+            if self._peak_panel is None and self._config is not None:
+                self._peak_panel = PeakAnalysisPanel(
+                    self,
+                    self._config,
+                    on_result_changed=self._on_peak_analysis_result,
+                    on_view_changed=self._on_peak_analysis_view_changed,
+                    get_figure=lambda: self._figure,
+                    get_target_compounds=self._get_plotted_compounds,
+                    get_plot_color=self._get_plot_color_for_compound,
+                )
+            if self._peak_panel is not None:
+                self._peak_panel.grid(row=1, column=1, rowspan=3, sticky="nsew", padx=(0, 12), pady=(0, 10))
+            self._on_peak_analysis_view_changed()
+        else:
+            self._btn_peak_analysis.configure(text="Peak analysis ▶")
+            if self._peak_panel is not None:
+                self._peak_panel.grid_forget()
+            self._redraw_plot()
+
+    def _get_plotted_compounds(self) -> List[Compound]:
+        return [c for c in self._current_compounds if c is not None]
+
+    def _get_plot_color_for_compound(self, compound_id: str) -> str:
+        key = str(compound_id).strip()
+        if key in self._plot_color_by_compound_id:
+            return self._plot_color_by_compound_id[key]
+        palette = ("#58a6ff", "#3fb950", "#d2a8ff", "#ffa657", "#79c0ff", "#ff7b72")
+        idx = len(self._plot_color_by_compound_id) % len(palette)
+        return palette[idx]
+
+    def _peak_display_time_units(self) -> tuple[TimeUnit, TimeUnit]:
+        """Return (stored_unit, display_unit) for peak analysis overlays."""
+        if self._peak_panel is not None:
+            return self._peak_panel.stored_time_unit, self._peak_panel.display_time_unit
+        if self._config is not None:
+            stored: TimeUnit = (
+                "minutes" if self._config.analysis_time_unit == "minutes" else "seconds"
+            )
+            return stored, stored
+        return "seconds", "seconds"
+
+    def _display_time(self, value: float) -> float:
+        stored, display = self._peak_display_time_units()
+        return convert_time_value(value, stored, display)
+
+    def _display_times(self, times: List[float]) -> List[float]:
+        stored, display = self._peak_display_time_units()
+        return convert_time_series(times, stored, display)
+
+    def _get_single_plotted_channel(self) -> Optional[str]:
+        names = self._selected_count_names()
+        if len(names) == 1:
+            return names[0]
+        if self._peak_panel is not None:
+            ch = self._peak_panel._channel_var.get().strip()
+            if ch and ch != "(none)":
+                return ch
+        return None
+
+    def _plot_legend_visible(self) -> bool:
+        if self._peak_panel_visible and self._peak_panel is not None:
+            return self._peak_panel.show_legend
+        return True
+
+    def _on_peak_analysis_view_changed(self) -> None:
+        if self._peak_panel is not None:
+            self._peak_analysis_batch = self._peak_panel.batch
+            self._show_peak_baseline = self._peak_panel.show_baseline
+        self._redraw_plot()
+
+    def _on_peak_analysis_result(self, batch: Optional[PeakAnalysisBatchResult]) -> None:
+        if batch is not None:
+            for entry in batch.results:
+                entry.plot_color = self._get_plot_color_for_compound(str(entry.compound_id))
+        self._peak_analysis_batch = batch
+        self._show_peak_baseline = (
+            self._peak_panel.show_baseline if self._peak_panel is not None else False
+        )
+        self._redraw_plot()
+
+    def _peak_overlay_alpha(self, compound_id: str, peak_index: int) -> float:
+        if self._peak_panel is None:
+            return 1.0
+        keys = self._peak_panel.selected_peak_keys
+        if keys is None:
+            return 1.0
+        return (
+            1.0
+            if (str(compound_id).strip(), peak_index) in keys
+            else self._peak_panel.unfocused_peak_alpha
+        )
+
+    def _show_peak_integration(self) -> bool:
+        return bool(self._peak_panel is not None and self._peak_panel.show_integration)
+
+    def _baseline_annotation_label(self, entry) -> str:
+        label = str(entry.primary_compound_id or entry.compound_id).strip()
+        if entry.variant_label:
+            label = f"{label[:12]}…" if len(label) > 12 else label
+            return f"{label} ({entry.variant_label})"
+        return label[:16] + "…" if len(label) > 16 else label
+
+    def _draw_peak_analysis_overlays(self, ax) -> None:
+        batch = self._peak_analysis_batch
+        if batch is None:
+            return
+
+        x_right = ax.get_xlim()[1]
+        for entry in batch.results:
+            color = self._plot_color_by_compound_id.get(
+                str(entry.compound_id).strip(),
+                entry.plot_color,
+            )
+            if self._show_peak_baseline and entry.baseline is not None:
+                mu = entry.baseline.mu
+                ax.axhline(
+                    mu,
+                    color=color,
+                    linestyle="--",
+                    linewidth=1.2,
+                    alpha=0.85,
+                )
+                if entry.baseline.sigma > 0:
+                    ax.axhspan(
+                        mu - entry.baseline.sigma,
+                        mu + entry.baseline.sigma,
+                        color=color,
+                        alpha=0.08,
+                    )
+                short = self._baseline_annotation_label(entry)
+                ax.annotate(
+                    f"{short} μ={mu:.4g}",
+                    xy=(x_right, mu),
+                    xytext=(-6, 8),
+                    textcoords="offset points",
+                    ha="right",
+                    va="bottom",
+                    color=color,
+                    fontsize=8,
+                    clip_on=False,
+                )
+
+            for p in entry.peaks:
+                left = self._display_time(p.left_rt)
+                right = self._display_time(p.right_rt)
+                rt = self._display_time(p.rt)
+                alpha = self._peak_overlay_alpha(str(entry.compound_id), p.peak_index)
+                if self._show_peak_integration():
+                    ax.axvspan(left, right, color=color, alpha=0.15 * alpha)
+                ax.axvline(rt, color=color, linewidth=1.0, alpha=0.7 * alpha)
+                ax.plot(
+                    rt,
+                    p.intensity,
+                    marker="v",
+                    color=color,
+                    markersize=8,
+                    linestyle="none",
+                    alpha=alpha,
+                )
 
     def on_close(self) -> None:
         if self._data_store is not None:

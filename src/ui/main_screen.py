@@ -97,7 +97,7 @@ class MainScreen(ctk.CTk):
         # Initial state update
         self._update_ui_state()
         
-        # Restore saved config and database immediately; spreadsheet loads in background.
+        # Restore saved configuration and active database only (no automatic spreadsheet load).
         self.after(150, self._restore_session_on_startup)
         
         logger.info("Main screen initialized")
@@ -237,8 +237,7 @@ class MainScreen(ctk.CTk):
         )
         
         can_manage_db = (
-            self.app_state.spreadsheet_loaded
-            and self.app_state.spreadsheet_configured
+            self.app_state.spreadsheet_configured
             and self.app_state.config_valid
         )
         self.database_manage_button.configure(
@@ -316,8 +315,7 @@ class MainScreen(ctk.CTk):
             return
 
         can_manage_db = (
-            self.app_state.spreadsheet_loaded
-            and self.app_state.spreadsheet_configured
+            self.app_state.spreadsheet_configured
             and self.app_state.config_valid
         )
         if not can_manage_db:
@@ -354,6 +352,7 @@ class MainScreen(ctk.CTk):
         self._remember_database_path(path)
         self.app_state.set_data_processed(True, path, type_word)
         self._update_ui_state()
+        self._notify_chromatogram_visualizer_database_changed()
         messagebox.showinfo(
             "Database loaded",
             f"Loaded {type_word} database.\n\n{path}",
@@ -433,11 +432,10 @@ class MainScreen(ctk.CTk):
             pass
 
     def _restore_session_on_startup(self) -> None:
-        """Restore saved configuration and database first; spreadsheet loads in background."""
+        """Restore saved spreadsheet configuration and last active database path."""
         self._restore_default_config_if_available()
         self._restore_last_database_if_available()
         self._update_ui_state()
-        self._restore_last_spreadsheet_if_available()
 
     def _restore_default_config_if_available(self) -> bool:
         """Apply saved default configuration from disk when structurally valid."""
@@ -540,6 +538,7 @@ class MainScreen(ctk.CTk):
         logger.info("Entering chromatogram visualizer")
         if self._chromatogram_window is not None:
             try:
+                self._chromatogram_window.ensure_database_current()
                 self._chromatogram_window.lift()
                 self._chromatogram_window.focus()
                 return
@@ -584,6 +583,16 @@ class MainScreen(ctk.CTk):
             return
         try:
             win.refresh_after_configuration_changed()
+        except tk.TclError:
+            self._chromatogram_window = None
+
+    def _notify_chromatogram_visualizer_database_changed(self) -> None:
+        """Keep an open visualizer in sync when the active SQLite database changes."""
+        win = self._chromatogram_window
+        if win is None:
+            return
+        try:
+            win.refresh_after_database_changed()
         except tk.TclError:
             self._chromatogram_window = None
     
@@ -688,27 +697,40 @@ class MainScreen(ctk.CTk):
     
     def _on_database_manage(self) -> None:
         """Open create / load / delete managed bulk database dialog."""
-        if not self.app_state.spreadsheet_loaded or not self.app_state.spreadsheet_path:
-            logger.warning("Database manage requested without spreadsheet")
-            return
-        if not self.app_state.config_valid:
+        if not self.app_state.spreadsheet_configured or not self.app_state.config_valid:
             messagebox.showwarning(
                 "Configuration Required",
-                "Please complete spreadsheet configuration first.",
+                "A saved spreadsheet configuration is required. Load a spreadsheet and "
+                "complete Configure Spreadsheet, or restore your default configuration.",
                 parent=self,
             )
             return
 
         def begin_bulk() -> None:
+            if not self.app_state.spreadsheet_loaded or not self.app_state.spreadsheet_path:
+                messagebox.showwarning(
+                    "Spreadsheet Required",
+                    "Load a spreadsheet before creating a full database.",
+                    parent=self,
+                )
+                return
             self._run_bulk_create_database_flow()
 
         def begin_index() -> None:
+            if not self.app_state.spreadsheet_loaded or not self.app_state.spreadsheet_path:
+                messagebox.showwarning(
+                    "Spreadsheet Required",
+                    "Load a spreadsheet before creating an index database.",
+                    parent=self,
+                )
+                return
             self._run_index_database_build_flow()
 
         def on_database_loaded(path: str, db_kind: str) -> None:
             self._remember_database_path(path)
             self.app_state.set_data_processed(True, path, db_kind)
             self._update_ui_state()
+            self._notify_chromatogram_visualizer_database_changed()
 
         def on_active_cleared() -> None:
             self.app_state.clear_active_database()
@@ -755,6 +777,7 @@ class MainScreen(ctk.CTk):
             self._remember_database_path(result.database_path)
             self.app_state.set_data_processed(True, result.database_path, "index")
             self._update_ui_state()
+            self._notify_chromatogram_visualizer_database_changed()
             messagebox.showinfo(
                 "Index database",
                 f"Index database created.\n{result.database_path}\n\n"
@@ -787,6 +810,8 @@ class MainScreen(ctk.CTk):
             if result.database_path:
                 self._remember_database_path(result.database_path)
             self.app_state.set_data_processed(True, result.database_path, "full")
+            self._update_ui_state()
+            self._notify_chromatogram_visualizer_database_changed()
             logger.info(
                 "Bulk database created: %s compounds -> %s",
                 result.successful_compounds,

@@ -92,6 +92,14 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         # Phase 7.3: Metadata column selection
         self.selected_metadata_columns: List[str] = []
         self.metadata_checkboxes: dict[str, ctk.CTkCheckBox] = {}
+
+        # DEL / pedigree (tab 5)
+        self.library_cycle_count: int = 3
+        self.null_token: str = "AgxNull"
+        self.analysis_time_unit: str = "seconds"
+        self.bb_position_columns: List[str] = ["", "", "", ""]
+        self._bb_column_menus: List[ctk.CTkOptionMenu] = []
+        self._bb_column_labels: List[ctk.CTkLabel] = []
         
         # Get available columns
         self.available_columns: List[str] = self.loader.get_column_names()
@@ -138,6 +146,20 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                     # Load Phase 7.3 metadata columns if available
                     if existing_config.selected_metadata_columns:
                         self.selected_metadata_columns = existing_config.selected_metadata_columns.copy()
+                    self.library_cycle_count = int(
+                        getattr(existing_config, "library_cycle_count", 3) or 3
+                    )
+                    self.null_token = str(getattr(existing_config, "null_token", "AgxNull"))
+                    self.analysis_time_unit = str(
+                        getattr(existing_config, "analysis_time_unit", "seconds")
+                    )
+                    bb = getattr(existing_config, "bb_position_columns", None)
+                    if bb and len(bb) >= 4:
+                        self.bb_position_columns = [str(c or "") for c in bb[:4]]
+                    elif bb:
+                        self.bb_position_columns = [str(c or "") for c in bb] + [""] * (
+                            4 - len(bb)
+                        )
                     vcol = getattr(existing_config, "compound_variant_column", None)
                     if vcol and str(vcol).strip() and str(vcol) in self.available_columns:
                         self.selected_variant_column = str(vcol).strip()
@@ -172,6 +194,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             "2 — Delimiters & parse",
             "3 — Time & counts",
             "4 — Metadata",
+            "5 — DEL / Pedigree",
         ]
         tab__populate_tab_columns = self.tabview.add("1 — Columns")
         tab__populate_tab_columns.grid_columnconfigure(0, weight=1)
@@ -185,6 +208,9 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         tab__populate_tab_metadata = self.tabview.add("4 — Metadata")
         tab__populate_tab_metadata.grid_columnconfigure(0, weight=1)
         self._populate_tab_metadata(tab__populate_tab_metadata)
+        tab_pedigree = self.tabview.add("5 — DEL / Pedigree")
+        tab_pedigree.grid_columnconfigure(0, weight=1)
+        self._populate_tab_pedigree(tab_pedigree)
         self.validation_label = ctk.CTkLabel(
             self,
             text="",
@@ -641,6 +667,100 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             )
             no_metadata_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
 
+    def _suggest_bb_columns(self) -> List[str]:
+        """Prefer columns named like BB1 Name .. BB4 Name when present."""
+        suggestions: List[str] = []
+        for i in range(1, 5):
+            for candidate in (f"BB{i} Name", f"BB{i}", f"BB{i}_Name"):
+                if candidate in self.available_columns:
+                    suggestions.append(candidate)
+                    break
+            else:
+                suggestions.append("")
+        return suggestions
+
+    def _populate_tab_pedigree(self, parent: ctk.CTkFrame) -> None:
+        import tkinter as tk
+
+        row = 0
+        ctk.CTkLabel(
+            parent,
+            text="Step 5: DEL library structure (for pedigree / null-truncation analysis)",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 5), sticky="w")
+        row += 1
+        ctk.CTkLabel(
+            parent,
+            text=(
+                "BB1 is the first building block coupled (C-terminus). BB4 is the N-terminus in a "
+                "4-cycle library. The analysis engine uses N→C order internally. Compound ID is for "
+                "display only — pedigree uses the BB columns below."
+            ),
+            font=ctk.CTkFont(size=11),
+            wraplength=950,
+            justify="left",
+        ).grid(row=row, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="w")
+        row += 1
+
+        cycle_fr = ctk.CTkFrame(parent, fg_color="transparent")
+        cycle_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
+        row += 1
+        ctk.CTkLabel(cycle_fr, text="Library cycles:", font=ctk.CTkFont(weight="bold")).pack(
+            side="left", padx=(0, 8)
+        )
+        self._cycle_count_var = tk.IntVar(value=self.library_cycle_count)
+        for n in (2, 3, 4):
+            ctk.CTkRadioButton(
+                cycle_fr,
+                text=str(n),
+                variable=self._cycle_count_var,
+                value=n,
+                command=self._on_library_cycle_changed,
+            ).pack(side="left", padx=6)
+
+        bb_fr = ctk.CTkFrame(parent)
+        bb_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
+        row += 1
+        if not any(self.bb_position_columns):
+            self.bb_position_columns = self._suggest_bb_columns()
+        self._bb_column_menus.clear()
+        self._bb_column_labels.clear()
+        slot_labels = ("BB1 (C-term)", "BB2", "BB3", "BB4 (N-term)")
+        col_opts = ["(none)"] + self.available_columns
+        self._bb_column_vars: List[tk.StringVar] = []
+        for i in range(4):
+            lbl = ctk.CTkLabel(bb_fr, text=slot_labels[i])
+            lbl.grid(row=i, column=0, padx=8, pady=6, sticky="w")
+            self._bb_column_labels.append(lbl)
+            initial = self.bb_position_columns[i] if self.bb_position_columns[i] else "(none)"
+            if initial not in col_opts:
+                initial = "(none)"
+            var = tk.StringVar(value=initial)
+            self._bb_column_vars.append(var)
+            menu = ctk.CTkOptionMenu(bb_fr, variable=var, values=col_opts, width=280)
+            menu.grid(row=i, column=1, padx=8, pady=6, sticky="w")
+            self._bb_column_menus.append(menu)
+
+        null_fr = ctk.CTkFrame(parent, fg_color="transparent")
+        null_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
+        row += 1
+        ctk.CTkLabel(null_fr, text="Null token:").pack(side="left", padx=(0, 8))
+        self._null_token_entry = ctk.CTkEntry(null_fr, width=120)
+        self._null_token_entry.insert(0, self.null_token)
+        self._null_token_entry.pack(side="left")
+
+        unit_fr = ctk.CTkFrame(parent, fg_color="transparent")
+        unit_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
+        row += 1
+        ctk.CTkLabel(unit_fr, text="Default analysis time unit:").pack(side="left", padx=(0, 8))
+        self._analysis_time_unit_var = tk.StringVar(value=self.analysis_time_unit)
+        ctk.CTkRadioButton(
+            unit_fr, text="Seconds", variable=self._analysis_time_unit_var, value="seconds"
+        ).pack(side="left", padx=4)
+        ctk.CTkRadioButton(
+            unit_fr, text="Minutes", variable=self._analysis_time_unit_var, value="minutes"
+        ).pack(side="left", padx=4)
+
         self.accept_button = ctk.CTkButton(
             parent,
             text="Accept configuration",
@@ -649,6 +769,32 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             width=220,
         )
         self.accept_button.grid(row=row, column=0, columnspan=2, padx=20, pady=(20, 16), sticky="e")
+        self._on_library_cycle_changed()
+
+    def _on_library_cycle_changed(self) -> None:
+        if not hasattr(self, "_cycle_count_var"):
+            return
+        n = int(self._cycle_count_var.get())
+        self.library_cycle_count = n
+        for i, (menu, lbl) in enumerate(zip(self._bb_column_menus, self._bb_column_labels)):
+            active = i < n
+            menu.configure(state="normal" if active else "disabled")
+            lbl.configure(text_color=("gray10", "gray90") if active else "gray")
+
+    def _read_pedigree_fields_from_ui(self) -> None:
+        if not hasattr(self, "_cycle_count_var"):
+            return
+        self.library_cycle_count = int(self._cycle_count_var.get())
+        self.null_token = self._null_token_entry.get().strip() or "AgxNull"
+        self.analysis_time_unit = self._analysis_time_unit_var.get()
+        cols: List[str] = []
+        for i in range(4):
+            if i >= self.library_cycle_count:
+                cols.append("")
+                continue
+            v = self._bb_column_vars[i].get()
+            cols.append("" if v == "(none)" else v)
+        self.bb_position_columns = cols
 
     def _wizard_tab_index(self) -> int:
         name = self.tabview.get()
@@ -1607,6 +1753,8 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 )
                 return
         
+        self._read_pedigree_fields_from_ui()
+
         try:
             # Create complete configuration
             config = SpreadsheetConfig(
@@ -1617,7 +1765,11 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 time_column_index=self.selected_time_index,
                 count_column_indices=self.selected_count_indices.copy(),
                 count_names=self.count_names.copy(),
-                selected_metadata_columns=self.selected_metadata_columns.copy()
+                selected_metadata_columns=self.selected_metadata_columns.copy(),
+                null_token=self.null_token,
+                library_cycle_count=self.library_cycle_count,
+                bb_position_columns=self.bb_position_columns.copy(),
+                analysis_time_unit=self.analysis_time_unit,
             )
             
             # Validate complete configuration
@@ -1827,8 +1979,14 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self.selected_metadata_columns = (
             config.selected_metadata_columns.copy() if config.selected_metadata_columns else []
         )
-
-        vcol = getattr(config, "compound_variant_column", None)
+        self.library_cycle_count = int(getattr(config, "library_cycle_count", 3))
+        self.null_token = str(getattr(config, "null_token", "AgxNull"))
+        self.analysis_time_unit = str(getattr(config, "analysis_time_unit", "seconds"))
+        bb = getattr(config, "bb_position_columns", None)
+        if bb and len(bb) >= 4:
+            self.bb_position_columns = [str(c or "") for c in bb[:4]]
+        else:
+            self.bb_position_columns = ["", "", "", ""]
         if vcol and str(vcol).strip() and str(vcol).strip() in self.available_columns:
             self.selected_variant_column = str(vcol).strip()
             self.variant_var.set(self.selected_variant_column)
@@ -1891,6 +2049,10 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 count_column_indices=self.selected_count_indices.copy(),
                 count_names=self.count_names.copy(),
                 selected_metadata_columns=self.selected_metadata_columns.copy(),
+                null_token=self.null_token,
+                library_cycle_count=self.library_cycle_count,
+                bb_position_columns=self.bb_position_columns.copy(),
+                analysis_time_unit=self.analysis_time_unit,
             )
             applied.__post_init__()
         except ValueError as e:
@@ -1927,6 +2089,8 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self._show_error("Cannot save: Configuration is incomplete or invalid.")
             return
 
+        self._read_pedigree_fields_from_ui()
+
         try:
             config = SpreadsheetConfig(
                 compound_id_column=self.selected_compound_id_column,
@@ -1937,6 +2101,10 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 count_column_indices=self.selected_count_indices.copy(),
                 count_names=self.count_names.copy(),
                 selected_metadata_columns=self.selected_metadata_columns.copy(),
+                null_token=self.null_token,
+                library_cycle_count=self.library_cycle_count,
+                bb_position_columns=self.bb_position_columns.copy(),
+                analysis_time_unit=self.analysis_time_unit,
             )
 
             success = self.config_manager.save_named_config(config, name.strip())
