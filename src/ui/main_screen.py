@@ -97,8 +97,8 @@ class MainScreen(ctk.CTk):
         # Initial state update
         self._update_ui_state()
         
-        # Reload last spreadsheet from settings (if path still valid) without blocking UI
-        self.after(150, self._restore_last_spreadsheet_if_available)
+        # Restore saved config and database immediately; spreadsheet loads in background.
+        self.after(150, self._restore_session_on_startup)
         
         logger.info("Main screen initialized")
     
@@ -308,6 +308,13 @@ class MainScreen(ctk.CTk):
         if self._active_database_resolved():
             self._on_database_manage()
             return
+
+        path = self._resolve_quick_database_path()
+        if path:
+            self._restore_default_config_if_available()
+            self._on_quick_load_database()
+            return
+
         can_manage_db = (
             self.app_state.spreadsheet_loaded
             and self.app_state.spreadsheet_configured
@@ -316,21 +323,17 @@ class MainScreen(ctk.CTk):
         if not can_manage_db:
             messagebox.showinfo(
                 "Database",
-                "Load and configure a spreadsheet first. Then click here again to load your "
-                "last database, or use 'Create / Load database'.",
+                "No saved database was found. Load and configure a spreadsheet, then use "
+                "'Create / Load database' to build one.",
                 parent=self,
             )
             return
-        path = self._resolve_quick_database_path()
-        if path:
-            self._on_quick_load_database()
-        else:
-            messagebox.showinfo(
-                "Database",
-                "No saved or managed database file was found. Use 'Create / Load database' to "
-                "build or register one.",
-                parent=self,
-            )
+        messagebox.showinfo(
+            "Database",
+            "No saved or managed database file was found. Use 'Create / Load database' to "
+            "build or register one.",
+            parent=self,
+        )
 
     def _on_quick_load_database(self) -> None:
         """Attach the saved or default managed database without opening the manage dialog."""
@@ -358,7 +361,7 @@ class MainScreen(ctk.CTk):
         )
     
     def _apply_spreadsheet_loaded(
-        self, file_path: str
+        self, file_path: str, *, preserve_database: bool = False
     ) -> Optional[tuple[bool, str]]:
         """
         Update application state and settings after a successful spreadsheet load.
@@ -368,6 +371,7 @@ class MainScreen(ctk.CTk):
 
         Args:
             file_path: Path to the loaded file (resolved)
+            preserve_database: When True, keep the active database pointer (session restore).
 
         Returns:
             None if there is no default configuration file to check.
@@ -375,7 +379,8 @@ class MainScreen(ctk.CTk):
             (False, message) if a default exists but is not valid for this spreadsheet.
         """
         self.app_state.set_spreadsheet_loaded(file_path)
-        self.app_state.set_data_processed(False, None)
+        if not preserve_database:
+            self.app_state.set_data_processed(False, None)
         self.app_state.set_spreadsheet_configured(False)
         self.app_state.set_config_valid(False)
 
@@ -426,6 +431,27 @@ class MainScreen(ctk.CTk):
             self.after(0, invoke)
         except tk.TclError:
             pass
+
+    def _restore_session_on_startup(self) -> None:
+        """Restore saved configuration and database first; spreadsheet loads in background."""
+        self._restore_default_config_if_available()
+        self._restore_last_database_if_available()
+        self._update_ui_state()
+        self._restore_last_spreadsheet_if_available()
+
+    def _restore_default_config_if_available(self) -> bool:
+        """Apply saved default configuration from disk when structurally valid."""
+        default_config = self.config_manager.load_default_config()
+        if not default_config:
+            return False
+        is_valid, error_msg = self.config_manager.validate_config(default_config)
+        if not is_valid:
+            logger.info("Saved default configuration is not valid: %s", error_msg)
+            return False
+        self.app_state.set_spreadsheet_configured(True)
+        self.app_state.set_config_valid(default_config.is_complete())
+        logger.info("Restored saved default configuration from disk")
+        return True
 
     def _restore_last_spreadsheet_if_available(self) -> None:
         """If settings contain a last file path that still exists, load it in the background."""
@@ -479,7 +505,7 @@ class MainScreen(ctk.CTk):
         self.spreadsheet_loader.current_data = loader.current_data
         self.spreadsheet_loader.current_file_path = loader.current_file_path
         self.spreadsheet_loader.current_sheet_name = loader.current_sheet_name
-        self._apply_spreadsheet_loaded(path_resolved)
+        self._apply_spreadsheet_loaded(path_resolved, preserve_database=True)
         self._restore_last_database_if_available()
         self._update_ui_state()
         logger.info("Restored last spreadsheet from settings: %s", path_resolved)
@@ -488,11 +514,7 @@ class MainScreen(ctk.CTk):
         """Reattach the last active database path from settings when the file still exists."""
         if self.app_state.data_processed:
             return
-        if not (
-            self.app_state.spreadsheet_loaded
-            and self.app_state.spreadsheet_configured
-            and self.app_state.config_valid
-        ):
+        if not (self.app_state.spreadsheet_configured and self.app_state.config_valid):
             return
 
         settings = self.config_manager.load_settings()

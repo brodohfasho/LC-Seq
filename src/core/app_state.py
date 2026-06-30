@@ -54,14 +54,11 @@ class AppState:
         Check if user can open Library Data or the Chromatogram Visualizer.
 
         Returns:
-            True when spreadsheet is configured, config is valid, and the active
-            database file exists.
+            True when spreadsheet configuration is valid and the active
+            database file exists. A spreadsheet file does not need to be loaded
+            in memory when using an existing index or full database.
         """
-        if not (
-            self.spreadsheet_loaded
-            and self.spreadsheet_configured
-            and self.config_valid
-        ):
+        if not (self.spreadsheet_configured and self.config_valid):
             return False
         if not self.data_processed or not self.database_path:
             return False
@@ -193,20 +190,36 @@ class AppState:
         Returns:
             Status message string
         """
+        if (
+            self.spreadsheet_configured
+            and self.config_valid
+            and self.data_processed
+            and self.database_path
+            and Path(self.database_path).is_file()
+        ):
+            if not self.spreadsheet_loaded:
+                return (
+                    "Database is active (saved configuration). Open Chromatogram Visualizer or "
+                    "Library Data, or load a spreadsheet for bulk processing."
+                )
+            return (
+                "Database is active. Open Chromatogram Visualizer or Library Data, or use "
+                "'Create / Load database' to switch or build another file."
+            )
+
         if not self.spreadsheet_loaded:
-            return "No spreadsheet loaded. Click 'Load Spreadsheet' to begin."
+            if self.spreadsheet_configured and self.config_valid:
+                return (
+                    "Saved configuration is ready. Click the database status above to load your "
+                    "last database, or load a spreadsheet to begin."
+                )
+            return "No spreadsheet loaded. Click 'Load Spreadsheet' to begin, or load a saved database above."
         
         if not self.spreadsheet_configured:
             return "Spreadsheet loaded. Click 'Configure Spreadsheet' to set up parsing."
         
         if not self.config_valid:
             return "Configuration incomplete. Please complete spreadsheet configuration."
-        
-        if self.data_processed and self.database_path:
-            return (
-                "Database is active. Open Chromatogram Visualizer or Library Data, or use "
-                "'Create / Load database' to switch or build another file."
-            )
 
         return (
             "Configuration complete. Use 'Create / Load database' to build or load an index or "

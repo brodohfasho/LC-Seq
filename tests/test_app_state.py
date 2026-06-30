@@ -49,6 +49,21 @@ class TestAppState:
         finally:
             os.unlink(path)
 
+    def test_can_enter_visualizer_without_spreadsheet_in_memory(self):
+        """Index/full DB workflows do not require the spreadsheet dataframe in memory."""
+        state = AppState()
+        state.set_spreadsheet_configured(True)
+        state.set_config_valid(True)
+
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            state.set_data_processed(True, path)
+            assert state.spreadsheet_loaded is False
+            assert state.can_enter_visualizer() is True
+        finally:
+            os.unlink(path)
+
     def test_clear_active_database(self):
         """Clearing active DB pointer does not require spreadsheet reload."""
         state = AppState()

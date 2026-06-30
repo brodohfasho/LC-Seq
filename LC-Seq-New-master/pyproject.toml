@@ -1,0 +1,33 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "lcseq"
+version = "0.1.0"
+description = "LC-Seq: pedigree-tree pruning for DEL cyclic-peptide libraries"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "openpyxl>=3.1",
+  "graphviz>=0.20",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "maturin>=1.7"]
+
+[project.scripts]
+lcseq = "lcseq.cli:main"
+
+[tool.maturin]
+features = ["extension-module"]
+python-source = "python"
+module-name = "lcseq._native"
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+addopts = "-m 'not slow'"
+markers = [
+  "slow: tests that parse the full master xlsx (~25s each); run with `pytest -m slow`",
+]

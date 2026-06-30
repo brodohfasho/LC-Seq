@@ -1,0 +1,31 @@
+/target
+/.venv
+__pycache__/
+*.pyc
+*.so
+*.dylib
+.pytest_cache/
+.maturin/
+*.egg-info/
+.DS_Store
+
+# Local-only data (large / proprietary). The master xlsx lives here.
+/data/
+
+# Local scratch artifacts — debug figures, notebooks, throwaway outputs.
+/scratch/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python build artifacts
+build/
+dist/
+*.egg
+
+# Coverage
+.coverage
+htmlcov/
