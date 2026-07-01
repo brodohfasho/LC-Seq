@@ -23,7 +23,7 @@ from src.core.library_metrics import (
 
 logger = logging.getLogger(__name__)
 
-SNAPSHOT_FORMAT_VERSION = "2.0"
+SNAPSHOT_FORMAT_VERSION = "2.1"
 LEGACY_SNAPSHOT_FORMAT_VERSION = "1.0"
 
 
@@ -127,6 +127,7 @@ def snapshot_to_dict(snapshot: LibraryComputationSnapshot) -> Dict[str, Any]:
         "entries_attempted": snapshot.entries_attempted,
         "entries_used": snapshot.entries_used,
         "entries_skipped": snapshot.entries_skipped,
+        "signal_quality_alpha": snapshot.signal_quality_alpha,
         "metric_results": [_metric_result_to_dict(m) for m in snapshot.metric_results],
         "plot_results": [_plot_result_to_dict(p) for p in snapshot.plot_results],
     }
@@ -160,6 +161,7 @@ def snapshot_from_dict(data: Dict[str, Any], json_path: Optional[Path] = None) -
         entries_attempted=int(data.get("entries_attempted", 0)),
         entries_used=int(data.get("entries_used", 0)),
         entries_skipped=int(data.get("entries_skipped", 0)),
+        signal_quality_alpha=float(data.get("signal_quality_alpha", 0.001)),
         metric_results=[
             _metric_result_from_dict(item) for item in data.get("metric_results", [])
         ],

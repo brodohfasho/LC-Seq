@@ -7,17 +7,22 @@ from pathlib import Path
 
 from src.core.library_metrics import (
     DEFAULT_FRACTION_COUNT,
-    METRIC_AVG_COUNT_PER_FRACTION,
+    ChannelAggregateStats,
+    LibraryComputationSnapshot,
+    METRIC_LIBRARY_COVERAGE_INDEX,
     METRIC_TOTAL_COUNT_PER_ENTRY,
+    MetricResult,
     ScannedEntry,
     compound_total_counts,
     compute_library_metrics,
     compute_metrics_from_scan,
+    export_metrics_summary_csv,
     run_library_computation,
     scan_library,
 )
 from src.core.library_plots import (
     PLOT_TOTAL_COUNT_HISTOGRAM,
+    PLOT_TOTAL_COUNT_PER_FRACTION,
     generate_plots,
 )
 from src.core.library_metrics_store import (
@@ -84,11 +89,7 @@ class TestTotalCountLibraryStats:
         assert ch_total.count_name == "Count"
         assert ch_total.n == 2
         assert ch_total.mean == 35.0
-
-        ch_frac = result.avg_count_per_fraction[0]
-        assert ch_frac.n == 2
-        assert ch_frac.mean == 35.0 / DEFAULT_FRACTION_COUNT
-        assert ch_frac.mean == ch_total.mean / DEFAULT_FRACTION_COUNT
+        assert result.fraction_count == DEFAULT_FRACTION_COUNT
 
 
 class TestScanArtifact:
@@ -169,6 +170,45 @@ class TestLibraryPlots:
         assert plots[0].image_path is not None
         assert plots[0].image_path.is_file()
 
+    def test_generate_total_count_per_fraction_plot(self, tmp_path) -> None:
+        from src.core.library_metrics import LibraryScanData
+
+        scan = LibraryScanData(
+            entries=[
+                ScannedEntry("a", [0.0, 1.0], {"Count": [1.0, 2.0]}),
+                ScannedEntry("b", [0.0, 1.0], {"Count": [10.0, 20.0]}),
+            ],
+            entries_used=2,
+            entries_attempted=2,
+            channel_names=["Count"],
+        )
+        out = tmp_path / "plots"
+        plots = generate_plots(scan, [PLOT_TOTAL_COUNT_PER_FRACTION], ["Count"], out)
+        assert len(plots) == 1
+        assert plots[0].image_path is not None
+        assert plots[0].image_path.is_file()
+
+    def test_generate_all_registered_plot_types(self, tmp_path) -> None:
+        from src.core.library_metrics import LibraryScanData
+        from src.core.library_plots import list_library_plot_definitions
+
+        scan = LibraryScanData(
+            entries=[
+                ScannedEntry("a", [0.0, 1.0, 2.0], {"Count": [1.0, 50.0, 2.0]}),
+                ScannedEntry("b", [0.0, 1.0], {"Count": [2.0, 30.0]}),
+            ],
+            entries_used=2,
+            entries_attempted=2,
+            channel_names=["Count"],
+        )
+        plot_ids = [p.plot_id for p in list_library_plot_definitions()]
+        out = tmp_path / "all_plots"
+        plots = generate_plots(scan, plot_ids, ["Count"], out, signal_quality_alpha=0.01)
+        assert len(plots) == len(plot_ids)
+        for result in plots:
+            assert result.image_path is not None, result.title
+            assert result.image_path.is_file(), result.title
+
 
 class TestLibraryMetricsStore:
     def test_save_and_load_roundtrip(self, tmp_path) -> None:
@@ -191,7 +231,7 @@ class TestLibraryMetricsStore:
             database_kind="full",
             database_path=db_path,
             channel_names=["Count"],
-            metric_ids=[METRIC_TOTAL_COUNT_PER_ENTRY, METRIC_AVG_COUNT_PER_FRACTION],
+            metric_ids=[METRIC_TOTAL_COUNT_PER_ENTRY, METRIC_LIBRARY_COVERAGE_INDEX],
         )
         store.close()
 
@@ -205,3 +245,30 @@ class TestLibraryMetricsStore:
         assert loaded.selected_metrics == snapshot.selected_metrics
         assert len(loaded.metric_results) == 2
         assert database_paths_match(str(db_path), db_path)
+
+    def test_export_metrics_summary_csv(self, tmp_path) -> None:
+        from datetime import datetime, timezone
+
+        snapshot = LibraryComputationSnapshot(
+            processed_at=datetime.now(timezone.utc),
+            database_path=str(tmp_path / "lib.db"),
+            database_kind="full",
+            fraction_count=96,
+            selected_channels=["Count"],
+            selected_metrics=[METRIC_TOTAL_COUNT_PER_ENTRY],
+            metric_results=[
+                MetricResult(
+                    metric_id=METRIC_TOTAL_COUNT_PER_ENTRY,
+                    title="Total count",
+                    help_text="help",
+                    channels=[ChannelAggregateStats("Count", 10.0, 2.0, 5)],
+                )
+            ],
+            signal_quality_alpha=0.001,
+        )
+        out = tmp_path / "metrics.csv"
+        export_metrics_summary_csv(snapshot, out)
+        text = out.read_text(encoding="utf-8")
+        assert "metric_id" in text
+        assert METRIC_TOTAL_COUNT_PER_ENTRY in text
+        assert "Count" in text

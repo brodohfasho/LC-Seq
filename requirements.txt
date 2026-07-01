@@ -12,6 +12,7 @@ xlrd>=2.0.1
 # Plotting
 matplotlib>=3.7.0
 scipy>=1.10.0
+reportlab>=4.0.0
 
 # Testing
 pytest>=7.4.0

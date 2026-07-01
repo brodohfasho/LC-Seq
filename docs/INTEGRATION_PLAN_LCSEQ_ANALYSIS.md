@@ -109,6 +109,19 @@ Scientists should be able to run **full-library pedigree pruning** from Library 
 
 **Design constraint:** Tree rendering and storage must be **modular** so a future interactive tree viewer (click node → open chromatograms) can replace “export PNG only” without rewriting the analysis core.
 
+### 1.2.1 Library Data — Bulk Signal Quality Metrics
+
+Before or in parallel with pedigree, Library Data should expose **library-wide chromatographic quality** (see **§1.4**):
+
+| Action | User-facing name (proposed) |
+|--------|----------------------------|
+| Scan library + compute top-peak S/N statistics | **Signal-to-noise (bulk)** |
+| View mean ± SD of baseline, peak height, S/N | **S/N summary card** |
+| After pedigree: mean product-peak prominence | **Product peak prominence (pedigree)** |
+| Relate counts to diversity × fractions | **Sequencing coverage** (extend existing fraction metrics) |
+
+Bulk S/N uses the same **count channel** picker as other Library Data metrics. Results persist in `LibraryComputationSnapshot` like existing metric cards.
+
 ### 1.3 Embedded Scientist Help
 
 Non-technical DEL scientists need **plain-English explanations** inside the app:
@@ -119,6 +132,76 @@ Non-technical DEL scientists need **plain-English explanations** inside the app:
 - What is pedigree / split-tree analysis and what do pass/fail colors mean?
 
 Help must be reachable from **Peak Analysis** and **Library Data → Pedigree** via a **? Help** button, not buried in repo markdown.
+
+### 1.4 Library Data — Signal Quality & Sequencing Depth (Owner Request)
+
+Scientists need **library-wide quality metrics** to inform experimental design (how much sequencing depth is required for usable chromatographic resolution). This splits into two related questions:
+
+| Question | What it measures | Primary metric(s) |
+|----------|------------------|-------------------|
+| **Chromatographic resolution** | Can we distinguish product signal from noise/background on individual traces? | Signal-to-noise, peak prominence, baseline statistics |
+| **Sequencing coverage** | How many counts do we have per library member per fraction? | Total counts, mean count per fraction, coverage index |
+
+These are **complementary**: high coverage with poor S/N suggests depth is not the bottleneck; low coverage with borderline S/N suggests more sequencing may help.
+
+#### Approach A — Bulk “top peak vs baseline” S/N (implement first)
+
+**Per entry (compound chromatogram), per count channel:**
+
+1. Estimate baseline (σ-clipped median — same model as peak picking).
+2. Find the **tallest local maximum** (or tallest statistically significant peak if α is applied).
+3. Compute per-entry scalars, e.g.:
+   - `peak_height` — apex intensity
+   - `baseline_mu`, `baseline_sigma`
+   - `snr_height = peak_height - baseline_mu` (excess signal)
+   - `snr_ratio = (peak_height - baseline_mu) / baseline_sigma` when σ > 0
+
+**Across the library:** mean, sample SD, median, and **n** (entries used / skipped), matching existing `library_metrics.py` card pattern.
+
+**Pros:** Fast; reuses one library scan + existing peak/baseline code; no pedigree; answers “typical best peak above noise floor.”
+
+**Cons:** The **highest peak is not always the product** (impurities, aggregates, bleed-through, odd elution). Library mean can be dominated by easy compounds. Treat as a **conservative library QC screen**, not ground truth for product resolution.
+
+**Feasibility:** **Yes — implement now** as new metric card(s) in Library Data (Phase 2.5 below), piggybacking on `LibraryScanData` + `get_peak_picker_backend()`.
+
+#### Approach B — Product-peak prominence via pedigree (implement after pedigree)
+
+**Per entry where pedigree identifies a validated product peak** (chosen RT / PASS at leaf tier):
+
+1. Measure **prominence** at the product apex (height minus higher adjacent valley — same as peak table).
+2. Optionally also report product peak height − baseline, area, and pedigree score.
+
+**Across library:** mean ± SD of product prominence; optionally **conditional** stats (only PASS compounds).
+
+**Pros:** Biologically meaningful; aligns with DEL null-truncation logic; prominence is more robust than raw height − baseline when shoulders exist.
+
+**Cons:** Requires pedigree run first; FAIL / insufficient-data compounds need explicit handling; isoforms need per-variant runs or filtering.
+
+**Feasibility:** **Yes — after Phase 5** (or as Phase 5.7 add-on). Reuse `evaluate_library` node `chosen_rt` + existing prominence integration.
+
+#### Other useful library-wide S/N proxies (future / optional)
+
+| Metric | Role |
+|--------|------|
+| **Fraction of entries with ≥1 significant peak** (α) | “How many chromatograms show any real signal?” |
+| **Distribution of baseline μ and σ** | Characterize noise floor across library |
+| **Peaks per chromatogram** (significant maxima) | High counts may indicate noisy / fragmented traces |
+| **Median prominence of all significant peaks** | Less biased than “max peak only” |
+| **Dynamic range** `max(intensity) / baseline_mu` | Scale-free alternative to σ-normalized S/N |
+
+#### Sequencing coverage metric (extend existing Library Data)
+
+Partially covered today by **Total count per entry** and **Average count per fraction** (user-configurable fraction count, default 96).
+
+**Proposed coverage index (v2):**
+
+```
+coverage_index = library_total_reads / (n_library_entries × n_fractions)
+```
+
+where `library_total_reads` = sum of per-entry total counts for the selected channel. Display alongside mean per-fraction count so scientists can relate **depth** to **S/N**.
+
+**Library diversity:** use `entries_used` from scan (compound/variant rows in DB). Document that this is **observed diversity in this dataset**, not theoretical library size from synthesis.
 
 ---
 
@@ -558,6 +641,127 @@ Add **“Load saved analysis”** if snapshot exists for current compound.
 
 ---
 
+### Phase 2.5 — Library-Wide Signal-to-Noise (Bulk) in Library Data
+
+**Objective:** Add bulk chromatographic S/N metrics to Library Data **before** lineage/pedigree, using Approach A (§1.4).
+
+**Prerequisite:** Phase 1 peak/baseline engine (Rust or Python fallback) — **done**.
+
+#### Step 2.5.1 — Per-entry S/N computation
+
+Extend `library_metrics.py` (or `library_signal_quality.py` called from it):
+
+```python
+@dataclass
+class EntrySignalStats:
+    compound_id: str
+    peak_height: float
+    baseline_mu: float
+    baseline_sigma: float
+    snr_excess: float          # peak_height - baseline_mu
+    snr_ratio: Optional[float] # snr_excess / baseline_sigma if sigma > 0
+    peak_rt: float
+    used_significance_filter: bool  # optional: only tallest *significant* peak
+```
+
+For each `ScannedEntry` in an existing library scan:
+
+1. Run `estimate_baseline(intensity)` on selected channel.
+2. Find tallest local maximum (optionally restrict to peaks with p < α using same picker as visualizer).
+3. Store per-entry scalars; skip entries with &lt; 3 points.
+
+#### Step 2.5.2 — Library aggregate metrics (new cards)
+
+Register in `LIBRARY_METRIC_DEFINITIONS`:
+
+| `metric_id` | Card title | Aggregates |
+|-------------|------------|------------|
+| `snr_excess_top_peak` | Top-peak signal above baseline — mean ± SD | mean, SD, n of `snr_excess` |
+| `snr_ratio_top_peak` | Top-peak S/N ratio (÷ baseline σ) — mean ± SD | mean, SD, n of `snr_ratio` |
+| `baseline_mu_library` | Baseline level — mean ± SD | mean, SD of `baseline_mu` |
+| `peak_height_top` | Tallest peak height — mean ± SD | mean, SD of `peak_height` |
+
+Optional: export per-entry CSV (`library_snr_per_entry.csv`) from Library Data.
+
+#### Step 2.5.3 — UI
+
+- Add metric checkboxes on Library Data scan dialog (default: S/N cards on for new runs).
+- In-card help text explaining Approach A limitations (§1.4).
+- User selects **one count channel** for S/N (or compute all configured channels like total-count metric).
+
+#### Step 2.5.4 — Sequencing coverage (light touch)
+
+- Document relationship to existing **avg count per fraction** card.
+- Optional new card: **Library coverage index** = sum(entry totals) / (n_entries × fraction_count).
+
+#### Step 2.5.5 — Tests
+
+- `tests/test_library_snr_metrics.py` — synthetic chromatograms with known baseline + Gaussian peak
+- Verify mean S/N matches hand calculation on fixture
+
+**Exit criteria Phase 2.5:**
+
+- [x] Scan 1k+ entries without UI freeze (background thread, existing pattern)
+- [x] Mean ± SD displayed per channel; skipped entries counted
+- [x] Help text states this is **bulk top-peak** S/N, not pedigree-validated product peak
+- [x] Metric checkboxes (coverage + signal), α and fraction count controls
+- [x] Per-entry signal CSV export
+- [x] Signal histogram plots (SNR excess, baseline μ, significant peak count)
+- [x] Formal definitions in `docs/LIBRARY_SIGNAL_QUALITY.md`
+- [x] `tests/test_library_signal_quality.py`
+
+---
+
+### Phase 2.6 — Generate Library Report (PDF)
+
+**Objective:** One-click **Generate library report** from Library Data that produces a well-organized PDF with methodology summary, selected metric cards, and embedded plots.
+
+**Prerequisite:** Phase 2.5 signal-quality metrics and plots — **done**.
+
+#### Step 2.6.1 — Report content model
+
+Assemble from `LibraryComputationSnapshot` + session plot PNGs:
+
+| Section | Source |
+|---------|--------|
+| Title page | Database name, timestamp, entry counts, α, fraction count |
+| Methodology | Short summary + link to `docs/LIBRARY_SIGNAL_QUALITY.md` |
+| Coverage metrics | Selected coverage cards (tables) |
+| Signal quality | Selected signal cards with α noted |
+| Plots | Embedded PNGs from `plot_results` |
+| Per-entry appendix | Optional: attach exported CSV path or summary stats |
+
+#### Step 2.6.2 — PDF engine
+
+Use **reportlab** or **matplotlib PdfPages** (prefer reportlab for multi-section layout). New module: `src/core/library_report.py`.
+
+```python
+def generate_library_report_pdf(
+    snapshot: LibraryComputationSnapshot,
+    output_path: Path,
+    *,
+    plot_results: Sequence[PlotResult],
+) -> Path: ...
+```
+
+#### Step 2.6.3 — UI
+
+- Button: **Generate library report…** on Library Data (enabled when snapshot exists).
+- File save dialog → PDF path.
+- Progress on background thread for large libraries.
+
+#### Step 2.6.4 — Tests
+
+- `tests/test_library_report.py` — minimal snapshot → PDF file exists, page count ≥ 1.
+
+**Exit criteria Phase 2.6:**
+
+- [ ] PDF opens in standard viewer with title, metrics tables, and at least one plot when plots were generated
+- [ ] Methodology section states Approach A vs future pedigree prominence (Phase 5.7)
+- [ ] α and fraction count recorded on title page
+
+---
+
 ### Phase 3 — Lineage (Null) Analysis per Compound
 
 **Objective:** From visualizer, user runs **Analyze lineage** for selected compound.
@@ -696,6 +900,20 @@ Modify `library_data_window.py`:
 - [ ] Tier summary printed matches buddy CLI `_summarise` on same data
 - [ ] Tree PNG color legend matches help doc
 - [ ] 128k library: document expected runtime; consider sub-library filter for v1
+
+#### Step 5.7 — Product-peak prominence (pedigree-validated S/N)
+
+**Depends on:** Phase 5 pedigree run (Approach B, §1.4).
+
+After `evaluate_library`, for each **leaf / product** node with `chosen_rt` and PASS (or evaluated with signal):
+
+1. Map `chosen_rt` to nearest time index on that compound’s chromatogram.
+2. Compute **prominence** (same as visualizer peak table).
+3. Aggregate library mean ± SD of product prominence; report n_pass / n_total.
+
+New Library Data metric card: **Product peak prominence (pedigree)** — enabled only when a pedigree snapshot exists for the same DB + channel, or computed in same session after pedigree completes.
+
+Optional: compare bulk S/N (Phase 2.5) vs pedigree prominence in one dashboard view (“bulk vs validated”).
 
 ---
 
@@ -877,10 +1095,12 @@ See **§2.2.1**. Scientists should not need Rust long-term; developers compile o
 When approved, assign agents **one phase at a time**:
 
 ```
-Phase 0 → Phase 1 → Phase 2 → Phase 6 (help for peak features)
-       → Phase 3 → Phase 5 → Phase 6 (help for pedigree)
-       → Phase 4 (batch) when single-compound path is stable
+Phase 0 → Phase 1 → Phase 2 → Phase 2.5 (library bulk S/N) → Phase 2.6 (PDF report) → Phase 6 (help for peak + S/N)
+       → Phase 3 (lineage) → Phase 5 (pedigree + product prominence §5.7) → Phase 6 (pedigree help)
+       → Phase 4 (batch peaks) when single-compound path is stable
 ```
+
+**Rationale:** Bulk S/N (2.5) informs experimental design immediately and reuses the peak engine; pedigree-validated prominence (5.7) refines the same question after lineage/pedigree infrastructure exists.
 
 **Phase 6 can start in parallel** after Phase 0 (help content does not require UI).
 
@@ -898,9 +1118,10 @@ Each agent handoff should include:
 The integration is complete when a DEL scientist can:
 
 1. Open a chromatogram, pick peaks, read % integration, export table — **without reading Rust code**.
-2. Run lineage analysis on a compound, understand PASS/FAIL from colors + help text.
-3. Run library pedigree from Library Data, export tree image + CSV, reload later.
-4. Get plain-English explanations for every analysis button they use.
+2. Run **Library Data → bulk S/N** and interpret mean top-peak signal vs baseline for sequencing-depth decisions.
+3. Run lineage analysis on a compound, understand PASS/FAIL from colors + help text.
+4. Run library pedigree from Library Data, export tree image + CSV, reload later; view **product-peak prominence** where pedigree validates product RT.
+5. Get plain-English explanations for every analysis button they use.
 
 ---
 

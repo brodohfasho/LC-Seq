@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import statistics
+import csv
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,11 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import pandas as pd
 
+from src.core.library_signal_quality import (
+    DEFAULT_SIGNAL_QUALITY_ALPHA,
+    EntrySignalStats,
+    attach_signal_quality_to_entries,
+)
 from src.core.data_processor import DataProcessor
 from src.core.data_store import DataStore
 from src.models.compound import Compound
@@ -33,6 +39,33 @@ DEFAULT_FRACTION_COUNT = 96
 
 METRIC_TOTAL_COUNT_PER_ENTRY = "total_count_per_entry"
 METRIC_AVG_COUNT_PER_FRACTION = "avg_count_per_fraction"
+METRIC_LIBRARY_COVERAGE_INDEX = "library_coverage_index"
+
+METRIC_BASELINE_MU = "baseline_mu_library"
+METRIC_BASELINE_SIGMA = "baseline_sigma_library"
+METRIC_TALLEST_SIG_PEAK_HEIGHT = "tallest_significant_peak_height_mean"
+METRIC_TALLEST_SIG_SNR_EXCESS = "tallest_significant_snr_excess_mean"
+METRIC_TALLEST_SIG_SNR_RATIO = "tallest_significant_snr_ratio_mean"
+METRIC_TALLEST_SIG_DYNAMIC_RANGE = "tallest_significant_dynamic_range_mean"
+METRIC_FRACTION_SIGNIFICANT = "fraction_with_significant_peak"
+METRIC_SIG_PEAK_COUNT_MEAN = "significant_peak_count_mean"
+METRIC_MAX_PROMINENCE_MEAN = "max_significant_prominence_mean"
+METRIC_MEDIAN_PROMINENCE_MEAN = "median_significant_prominence_mean"
+
+SIGNAL_QUALITY_METRIC_IDS = frozenset(
+    {
+        METRIC_BASELINE_MU,
+        METRIC_BASELINE_SIGMA,
+        METRIC_TALLEST_SIG_PEAK_HEIGHT,
+        METRIC_TALLEST_SIG_SNR_EXCESS,
+        METRIC_TALLEST_SIG_SNR_RATIO,
+        METRIC_TALLEST_SIG_DYNAMIC_RANGE,
+        METRIC_FRACTION_SIGNIFICANT,
+        METRIC_SIG_PEAK_COUNT_MEAN,
+        METRIC_MAX_PROMINENCE_MEAN,
+        METRIC_MEDIAN_PROMINENCE_MEAN,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +96,8 @@ class LibraryScanData:
     entries_used: int = 0
     entries_skipped: int = 0
     channel_names: List[str] = field(default_factory=list)
+    signal_quality_alpha: Optional[float] = None
+    signal_quality_by_channel: Dict[str, List] = field(default_factory=dict)
 
     def totals_by_channel(self, channel: str) -> List[float]:
         """Per-entry total count for one channel."""
@@ -79,6 +114,24 @@ def entry_total_for_channel(entry: ScannedEntry, channel: str) -> Optional[float
     if values is None:
         return None
     return float(sum(values))
+
+
+def library_coverage_index(
+    entries: Sequence[ScannedEntry],
+    channel: str,
+    fraction_count: int,
+) -> Optional[float]:
+    """Sum of per-entry totals ÷ (n_entries × fraction_count)."""
+    if fraction_count <= 0:
+        return None
+    totals = [
+        t
+        for entry in entries
+        if (t := entry_total_for_channel(entry, channel)) is not None
+    ]
+    if not totals:
+        return None
+    return float(sum(totals)) / (len(totals) * float(fraction_count))
 
 
 @dataclass
@@ -118,6 +171,7 @@ class LibraryComputationSnapshot:
     entries_skipped: int = 0
     metric_results: List[MetricResult] = field(default_factory=list)
     plot_results: List[PlotResult] = field(default_factory=list)
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA
 
     @property
     def database_name(self) -> str:
@@ -147,21 +201,78 @@ class LibraryMetricsResult:
 
 
 @dataclass(frozen=True)
+class MetricComputeOptions:
+    """Parameters shared by library metric compute functions."""
+
+    fraction_count: int = DEFAULT_FRACTION_COUNT
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA
+
+
+@dataclass(frozen=True)
 class MetricDefinition:
     """Registry entry for an extensible library-wide calculation."""
 
     metric_id: str
     title: str
     help_text: str
-    compute_fn: Callable[[LibraryScanData, Sequence[str], int], List[ChannelAggregateStats]]
+    compute_fn: Callable[
+        [LibraryScanData, Sequence[str], MetricComputeOptions],
+        List[ChannelAggregateStats],
+    ]
+    category: str = "general"
+
+
+def _ensure_signal_quality(
+    scan: LibraryScanData,
+    channels: Sequence[str],
+    alpha: float,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> None:
+    """Populate ``scan.signal_quality_by_channel`` when needed."""
+    if (
+        scan.signal_quality_alpha == alpha
+        and scan.signal_quality_by_channel
+        and all(ch in scan.signal_quality_by_channel for ch in channels)
+    ):
+        if progress_callback is not None:
+            total = max(len(scan.entries) * len(channels), 1)
+            progress_callback(total, total, "Signal quality cache ready")
+        return
+    scan.signal_quality_by_channel = attach_signal_quality_to_entries(
+        scan.entries,
+        channels,
+        alpha=alpha,
+        progress_callback=progress_callback,
+    )
+    scan.signal_quality_alpha = alpha
+
+
+def _signal_stats_for_channel(
+    scan: LibraryScanData, channel: str
+) -> List[EntrySignalStats]:
+    return list(scan.signal_quality_by_channel.get(channel, []))
+
+
+def ensure_scan_signal_quality(
+    scan: LibraryScanData,
+    channels: Sequence[str],
+    alpha: float,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> None:
+    """Populate per-entry signal stats on ``scan`` when needed (cached by α)."""
+    _ensure_signal_quality(
+        scan, channels, alpha, progress_callback=progress_callback
+    )
 
 
 def _compute_total_count_per_entry(
     scan: LibraryScanData,
     channels: Sequence[str],
-    fraction_count: int,
+    options: MetricComputeOptions,
 ) -> List[ChannelAggregateStats]:
-    del fraction_count
+    del options
     values = {name: scan.totals_by_channel(name) for name in channels}
     return _channel_stats_from_values(channels, values)
 
@@ -169,8 +280,9 @@ def _compute_total_count_per_entry(
 def _compute_avg_count_per_fraction(
     scan: LibraryScanData,
     channels: Sequence[str],
-    fraction_count: int,
+    options: MetricComputeOptions,
 ) -> List[ChannelAggregateStats]:
+    fraction_count = options.fraction_count
     if fraction_count <= 0:
         return _channel_stats_from_values(channels, {name: [] for name in channels})
     inv_fraction = 1.0 / float(fraction_count)
@@ -179,6 +291,75 @@ def _compute_avg_count_per_fraction(
     }
     return _channel_stats_from_values(channels, values)
 
+
+def _compute_library_coverage_index(
+    scan: LibraryScanData,
+    channels: Sequence[str],
+    options: MetricComputeOptions,
+) -> List[ChannelAggregateStats]:
+    channels_out: List[ChannelAggregateStats] = []
+    for name in channels:
+        idx = library_coverage_index(scan.entries, name, options.fraction_count)
+        if idx is None:
+            channels_out.append(ChannelAggregateStats(count_name=name, mean=0.0, std_dev=0.0, n=0))
+        else:
+            channels_out.append(
+                ChannelAggregateStats(count_name=name, mean=idx, std_dev=0.0, n=scan.entries_used)
+            )
+    return channels_out
+
+
+def _compute_signal_metric(
+    scan: LibraryScanData,
+    channels: Sequence[str],
+    options: MetricComputeOptions,
+    accessor: Callable[[EntrySignalStats], Optional[float]],
+    *,
+    skip_none: bool = False,
+) -> List[ChannelAggregateStats]:
+    _ensure_signal_quality(scan, channels, options.signal_quality_alpha)
+    values: Dict[str, List[float]] = {}
+    for name in channels:
+        vals: List[float] = []
+        for stats in _signal_stats_for_channel(scan, name):
+            raw = accessor(stats)
+            if raw is None:
+                if skip_none:
+                    continue
+            else:
+                vals.append(float(raw))
+        values[name] = vals
+    return _channel_stats_from_values(channels, values)
+
+
+def _compute_fraction_significant(
+    scan: LibraryScanData,
+    channels: Sequence[str],
+    options: MetricComputeOptions,
+) -> List[ChannelAggregateStats]:
+    return _compute_signal_metric(
+        scan,
+        channels,
+        options,
+        lambda s: 1.0 if s.has_significant_peak else 0.0,
+    )
+
+
+_BASELINE_ALGORITHM = (
+    "Baseline μ and σ use the same σ-clipped median as Chromatogram Visualizer: "
+    "iteratively remove points above mean+2σ, then take the median of remaining "
+    "points as μ and their sample standard deviation as σ."
+)
+
+_SIGNIFICANT_PEAK_NOTE = (
+    "Peaks are called significant when the peak picker's height or area p-value "
+    "is below α (same engine as Chromatogram Visualizer). Lower α keeps fewer peaks."
+)
+
+_SIGNIFICANT_PEAK_HEIGHT_NOTE = (
+    "The tallest significant peak is the highest apex among peaks with p-value < α—it may "
+    "not be the DEL product."
+)
 
 LIBRARY_METRIC_DEFINITIONS: Dict[str, MetricDefinition] = {
     METRIC_TOTAL_COUNT_PER_ENTRY: MetricDefinition(
@@ -189,6 +370,7 @@ LIBRARY_METRIC_DEFINITIONS: Dict[str, MetricDefinition] = {
             "Mean and sample standard deviation are taken across the library."
         ),
         compute_fn=_compute_total_count_per_entry,
+        category="coverage",
     ),
     METRIC_AVG_COUNT_PER_FRACTION: MetricDefinition(
         metric_id=METRIC_AVG_COUNT_PER_FRACTION,
@@ -198,16 +380,166 @@ LIBRARY_METRIC_DEFINITIONS: Dict[str, MetricDefinition] = {
             "per fraction. Mean and sample SD of those per-compound averages are shown here."
         ),
         compute_fn=_compute_avg_count_per_fraction,
+        category="coverage",
+    ),
+    METRIC_LIBRARY_COVERAGE_INDEX: MetricDefinition(
+        metric_id=METRIC_LIBRARY_COVERAGE_INDEX,
+        title="Library coverage index",
+        help_text=(
+            "Σ(entry total counts) ÷ (n_entries × fraction count). Single index per channel "
+            "summarizing average sequencing depth per library member per fraction."
+        ),
+        compute_fn=_compute_library_coverage_index,
+        category="coverage",
+    ),
+    METRIC_BASELINE_MU: MetricDefinition(
+        metric_id=METRIC_BASELINE_MU,
+        title="Baseline level (μ) — library mean ± SD",
+        help_text=(
+            "Per entry: σ-clipped median noise floor before peak heights are measured. "
+            f"{_BASELINE_ALGORITHM}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: s.baseline_mu
+        ),
+        category="signal",
+    ),
+    METRIC_BASELINE_SIGMA: MetricDefinition(
+        metric_id=METRIC_BASELINE_SIGMA,
+        title="Baseline spread (σ) — library mean ± SD",
+        help_text=(
+            "Per entry: sample standard deviation of baseline points retained after "
+            f"σ-clipping. {_BASELINE_ALGORITHM}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: s.baseline_sigma
+        ),
+        category="signal",
+    ),
+    METRIC_TALLEST_SIG_PEAK_HEIGHT: MetricDefinition(
+        metric_id=METRIC_TALLEST_SIG_PEAK_HEIGHT,
+        title="Tallest significant peak height — library mean ± SD",
+        help_text=(
+            "Per entry: apex height of the tallest peak with p-value < α. Zero when no "
+            f"significant peaks. {_SIGNIFICANT_PEAK_HEIGHT_NOTE} {_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: s.tallest_significant_peak_height
+        ),
+        category="signal",
+    ),
+    METRIC_TALLEST_SIG_SNR_EXCESS: MetricDefinition(
+        metric_id=METRIC_TALLEST_SIG_SNR_EXCESS,
+        title="Tallest significant peak SNR excess — library mean ± SD",
+        help_text=(
+            "Per entry: tallest significant peak height minus baseline μ (signal above the "
+            f"noise floor in count units). {_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: s.tallest_significant_snr_excess
+        ),
+        category="signal",
+    ),
+    METRIC_TALLEST_SIG_SNR_RATIO: MetricDefinition(
+        metric_id=METRIC_TALLEST_SIG_SNR_RATIO,
+        title="Tallest significant peak SNR ratio (÷ σ) — library mean ± SD",
+        help_text=(
+            "Per entry: (tallest significant peak height − baseline μ) ÷ baseline σ. "
+            f"Entries with σ ≈ 0 are skipped. {_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: s.tallest_significant_snr_ratio, skip_none=True
+        ),
+        category="signal",
+    ),
+    METRIC_TALLEST_SIG_DYNAMIC_RANGE: MetricDefinition(
+        metric_id=METRIC_TALLEST_SIG_DYNAMIC_RANGE,
+        title="Dynamic range (significant peak ÷ μ) — library mean ± SD",
+        help_text=(
+            "Per entry: tallest significant peak height divided by baseline μ. Entries "
+            f"with μ ≈ 0 are skipped. {_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: s.tallest_significant_dynamic_range, skip_none=True
+        ),
+        category="signal",
+    ),
+    METRIC_FRACTION_SIGNIFICANT: MetricDefinition(
+        metric_id=METRIC_FRACTION_SIGNIFICANT,
+        title="Fraction with ≥1 significant peak",
+        help_text=(
+            "Per entry: 1 if at least one significant peak exists, else 0. The library "
+            f"mean equals the fraction of entries with any significant peak. {_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=_compute_fraction_significant,
+        category="signal",
+    ),
+    METRIC_SIG_PEAK_COUNT_MEAN: MetricDefinition(
+        metric_id=METRIC_SIG_PEAK_COUNT_MEAN,
+        title="Significant peaks per entry — library mean ± SD",
+        help_text=(
+            "Per entry: number of peaks returned by the peak picker at the configured α. "
+            f"{_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: float(s.significant_peak_count)
+        ),
+        category="signal",
+    ),
+    METRIC_MAX_PROMINENCE_MEAN: MetricDefinition(
+        metric_id=METRIC_MAX_PROMINENCE_MEAN,
+        title="Max prominence (significant peaks) — library mean ± SD",
+        help_text=(
+            "Per entry: maximum prominence among significant peaks (apex height minus the "
+            "higher adjacent valley). Zero if no significant peaks. "
+            f"{_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan, ch, opt, lambda s: s.max_significant_prominence
+        ),
+        category="signal",
+    ),
+    METRIC_MEDIAN_PROMINENCE_MEAN: MetricDefinition(
+        metric_id=METRIC_MEDIAN_PROMINENCE_MEAN,
+        title="Median prominence (significant peaks) — library mean ± SD",
+        help_text=(
+            "Per entry: median prominence among significant peaks. Entries with no "
+            f"significant peaks are excluded. {_SIGNIFICANT_PEAK_NOTE}"
+        ),
+        compute_fn=lambda scan, ch, opt: _compute_signal_metric(
+            scan,
+            ch,
+            opt,
+            lambda s: s.median_significant_prominence,
+            skip_none=True,
+        ),
+        category="signal",
     ),
 }
 
 
 def list_library_metric_definitions() -> List[MetricDefinition]:
     """Return registered metrics in stable display order."""
-    return [
-        LIBRARY_METRIC_DEFINITIONS[METRIC_TOTAL_COUNT_PER_ENTRY],
-        LIBRARY_METRIC_DEFINITIONS[METRIC_AVG_COUNT_PER_FRACTION],
+    order = [
+        METRIC_TOTAL_COUNT_PER_ENTRY,
+        METRIC_LIBRARY_COVERAGE_INDEX,
+        METRIC_BASELINE_MU,
+        METRIC_BASELINE_SIGMA,
+        METRIC_TALLEST_SIG_PEAK_HEIGHT,
+        METRIC_TALLEST_SIG_SNR_EXCESS,
+        METRIC_TALLEST_SIG_SNR_RATIO,
+        METRIC_TALLEST_SIG_DYNAMIC_RANGE,
+        METRIC_FRACTION_SIGNIFICANT,
+        METRIC_SIG_PEAK_COUNT_MEAN,
+        METRIC_MAX_PROMINENCE_MEAN,
+        METRIC_MEDIAN_PROMINENCE_MEAN,
     ]
+    return [LIBRARY_METRIC_DEFINITIONS[mid] for mid in order]
+
+
+def list_library_metric_definitions_by_category(category: str) -> List[MetricDefinition]:
+    """Return metrics filtered by category (``coverage`` or ``signal``)."""
+    return [m for m in list_library_metric_definitions() if m.category == category]
 
 
 def compound_total_counts(compound: Compound, count_names: Sequence[str]) -> Dict[str, float]:
@@ -371,19 +703,44 @@ def compute_metrics_from_scan(
     *,
     channels: Sequence[str],
     fraction_count: int = DEFAULT_FRACTION_COUNT,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> List[MetricResult]:
     """Compute selected metrics from an existing scan (fast aggregation only)."""
+    options = MetricComputeOptions(
+        fraction_count=fraction_count,
+        signal_quality_alpha=signal_quality_alpha,
+    )
     selected_channels = [name for name in channels if name in scan.channel_names]
+    metric_list = list(metric_ids)
+    needs_signal = any(mid in SIGNAL_QUALITY_METRIC_IDS for mid in metric_list)
+    if needs_signal:
+        _ensure_signal_quality(
+            scan,
+            selected_channels,
+            signal_quality_alpha,
+            progress_callback=progress_callback,
+        )
+
     results: List[MetricResult] = []
-    for metric_id in metric_ids:
+    total_metrics = len(metric_list)
+    for index, metric_id in enumerate(metric_list, start=1):
         definition = LIBRARY_METRIC_DEFINITIONS.get(metric_id)
         if definition is None:
             logger.warning("Unknown library metric id: %s", metric_id)
             continue
+        if progress_callback is not None:
+            progress_callback(
+                index,
+                total_metrics,
+                f"Aggregating: {definition.title[:48]}…",
+            )
         title = definition.title
         if metric_id == METRIC_AVG_COUNT_PER_FRACTION:
             title = f"{definition.title} ({fraction_count})"
-        channel_stats = definition.compute_fn(scan, selected_channels, fraction_count)
+        elif metric_id in SIGNAL_QUALITY_METRIC_IDS:
+            title = f"{definition.title} (α={signal_quality_alpha:g})"
+        channel_stats = definition.compute_fn(scan, selected_channels, options)
         results.append(
             MetricResult(
                 metric_id=metric_id,
@@ -405,6 +762,8 @@ def build_snapshot_from_scan(
     plot_ids: Optional[Sequence[str]] = None,
     plot_results: Optional[Sequence[PlotResult]] = None,
     fraction_count: int = DEFAULT_FRACTION_COUNT,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> LibraryComputationSnapshot:
     """Build a snapshot with metrics computed from an existing scan."""
     metrics = metric_ids if metric_ids is not None else [
@@ -415,6 +774,8 @@ def build_snapshot_from_scan(
         metrics,
         channels=channel_names,
         fraction_count=fraction_count,
+        signal_quality_alpha=signal_quality_alpha,
+        progress_callback=progress_callback,
     )
     return LibraryComputationSnapshot(
         processed_at=datetime.now(timezone.utc),
@@ -429,6 +790,7 @@ def build_snapshot_from_scan(
         entries_skipped=scan.entries_skipped,
         metric_results=metric_results,
         plot_results=list(plot_results or []),
+        signal_quality_alpha=signal_quality_alpha,
     )
 
 
@@ -463,6 +825,7 @@ def run_library_computation(
     channel_names: Sequence[str],
     metric_ids: Sequence[str],
     fraction_count: int = DEFAULT_FRACTION_COUNT,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> LibraryComputationSnapshot:
     """Scan the library and compute the selected metrics."""
@@ -480,6 +843,7 @@ def run_library_computation(
         channel_names=channel_names,
         metric_ids=metric_ids,
         fraction_count=fraction_count,
+        signal_quality_alpha=signal_quality_alpha,
     )
 
 
@@ -490,6 +854,7 @@ def run_library_computation_for_path(
     channel_names: Sequence[str],
     metric_ids: Sequence[str],
     fraction_count: int = DEFAULT_FRACTION_COUNT,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> LibraryComputationSnapshot:
     """Thread-safe entry: opens DB in the current thread, runs scan + compute."""
@@ -505,6 +870,7 @@ def run_library_computation_for_path(
             channel_names=channel_names,
             metric_ids=metric_ids,
             fraction_count=fraction_count,
+            signal_quality_alpha=signal_quality_alpha,
             progress_callback=progress_callback,
         )
     finally:
@@ -610,6 +976,46 @@ def compute_total_count_library_stats_for_path(
         entries_used=full.entries_used,
         entries_skipped=full.entries_skipped,
     )
+
+
+def export_metrics_summary_csv(
+    snapshot: LibraryComputationSnapshot,
+    path: str | Path,
+) -> Path:
+    """Write one row per channel per calculated metric to a CSV file."""
+    out = Path(path)
+    fieldnames = [
+        "metric_id",
+        "metric_title",
+        "channel",
+        "mean",
+        "std_dev",
+        "n",
+    ]
+    with out.open("w", encoding="utf-8", newline="") as fh:
+        fh.write(
+            f"# database={snapshot.database_name}; "
+            f"database_kind={snapshot.database_kind}; "
+            f"entries_used={snapshot.entries_used}; "
+            f"entries_attempted={snapshot.entries_attempted}; "
+            f"fraction_count={snapshot.fraction_count}; "
+            f"signal_quality_alpha={snapshot.signal_quality_alpha:g}\n"
+        )
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for metric in snapshot.metric_results:
+            for channel in metric.channels:
+                writer.writerow(
+                    {
+                        "metric_id": metric.metric_id,
+                        "metric_title": metric.title,
+                        "channel": channel.count_name,
+                        "mean": channel.mean,
+                        "std_dev": channel.std_dev,
+                        "n": channel.n,
+                    }
+                )
+    return out
 
 
 ChannelTotalCountStats = ChannelAggregateStats

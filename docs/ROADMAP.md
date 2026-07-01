@@ -494,20 +494,23 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 ## Phase 17: LC-Seq Analysis Integration (in progress)
 
-**Status:** Phase 0–1 partial — **peak picking in Chromatogram Visualizer** ready for GUI test.
+**Status:** Phase 0–1 complete (peak analysis + multi-compound overlay + Library Data foundation). **Next:** Phase 2.5 bulk S/N, then lineage.
 
 ### Done
 - [x] `SpreadsheetConfig`: `library_cycle_count`, `bb_position_columns`, `null_token`, `analysis_time_unit`
 - [x] Configure Spreadsheet tab **5 — DEL / Pedigree** (2/3/4 cycles, 4 BB slots)
 - [x] Rust backend wrapper + Python fallback (`scipy`)
-- [x] `peak_analysis_service`, export CSV, `PeakAnalysisPanel` in visualizer
+- [x] `peak_analysis_service`, export CSV, `PeakAnalysisPanel` in visualizer (incl. multi-compound overlay, S/N UI polish)
 - [x] `pedigree_adapter` (BB column → N→C tuple)
-- [x] Unit tests: peak analysis, pedigree adapter
+- [x] Library Data: scan/compute/plots framework + total count / avg per fraction metrics
+- [x] Unit tests: peak analysis, pedigree adapter, library metrics
 
-### Next (after user GUI test)
-- [ ] Lineage analysis window
-- [ ] Library Data pedigree + `render_pruned_tree` with `max_display_tier`
-- [ ] Embedded help
+### Next (recommended order)
+- [ ] **Phase 2.5:** Library-wide bulk S/N (top peak vs baseline, mean ± SD) in Library Data
+- [ ] Lineage analysis window (Phase 3)
+- [ ] Library Data pedigree + `render_pruned_tree` with `max_display_tier` (Phase 5)
+- [ ] Product-peak prominence metric after pedigree (Phase 5.7)
+- [ ] Embedded help (peak, S/N, pedigree)
 - [ ] Rust build in installer / `DEVELOPER_SETUP` on analyst machines
 
 ---

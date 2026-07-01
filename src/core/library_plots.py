@@ -6,6 +6,7 @@ Library-wide visualizations generated from a parsed :class:`LibraryScanData` art
 from __future__ import annotations
 
 import logging
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
@@ -18,15 +19,26 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from src.core.library_metrics import LibraryScanData, PlotResult, entry_total_for_channel
+from src.core.library_signal_quality import (
+    DEFAULT_SIGNAL_QUALITY_ALPHA,
+    attach_signal_quality_to_entries,
+)
 
 logger = logging.getLogger(__name__)
 
+ProgressCallback = Callable[[int, int, str], None]
+
 PLOT_TOTAL_COUNT_HISTOGRAM = "total_count_histogram"
-PLOT_MEAN_CHROMATOGRAM = "mean_chromatogram"
+PLOT_TOTAL_COUNT_PER_FRACTION = "total_count_per_fraction"
 PLOT_MAX_COUNT_HISTOGRAM = "max_count_histogram"
+PLOT_SNR_EXCESS_HISTOGRAM = "snr_excess_histogram"
+PLOT_BASELINE_MU_HISTOGRAM = "baseline_mu_histogram"
+PLOT_SIG_PEAK_COUNT_HISTOGRAM = "significant_peak_count_histogram"
 
 DEFAULT_HISTOGRAM_BINS = 50
-DEFAULT_CHROMATOGRAM_BINS = 120
+DEFAULT_SIGNAL_QUALITY_ALPHA = 0.001
+
+PLOT_TOTAL_COUNT_PER_FRACTION_TITLE = "Total sequencing count per fraction"
 
 
 @dataclass(frozen=True)
@@ -36,29 +48,205 @@ class PlotDefinition:
     plot_id: str
     title: str
     help_text: str
-    render_fn: Callable[[LibraryScanData, str, int], Figure]
+    render_fn: Callable[..., Figure]
+    category: str = "coverage"
 
 
 def list_library_plot_definitions() -> List[PlotDefinition]:
     """Return registered plots in stable display order."""
     return [
         LIBRARY_PLOT_DEFINITIONS[PLOT_TOTAL_COUNT_HISTOGRAM],
-        LIBRARY_PLOT_DEFINITIONS[PLOT_MEAN_CHROMATOGRAM],
+        LIBRARY_PLOT_DEFINITIONS[PLOT_TOTAL_COUNT_PER_FRACTION],
         LIBRARY_PLOT_DEFINITIONS[PLOT_MAX_COUNT_HISTOGRAM],
+        LIBRARY_PLOT_DEFINITIONS[PLOT_SNR_EXCESS_HISTOGRAM],
+        LIBRARY_PLOT_DEFINITIONS[PLOT_BASELINE_MU_HISTOGRAM],
+        LIBRARY_PLOT_DEFINITIONS[PLOT_SIG_PEAK_COUNT_HISTOGRAM],
     ]
+
+
+def _integer_histogram_bins(values: Sequence[float]) -> np.ndarray:
+    """Bin edges aligned to integer counts (0, 1, 2, …) for discrete distributions."""
+    if not values:
+        return np.array([-0.5, 0.5, 1.5])
+    vmax = int(max(values))
+    return np.arange(-0.5, vmax + 1.5, 1.0)
+
+
+def _normal_pdf(x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
+    """Gaussian PDF; returns zeros when σ is not positive."""
+    if sigma <= 0:
+        return np.zeros_like(x, dtype=float)
+    return (1.0 / (sigma * np.sqrt(2.0 * np.pi))) * np.exp(-0.5 * ((x - mu) / sigma) ** 2)
+
+
+def _curve_height_at(x: float, n: int, bin_width: float, mu: float, sigma: float) -> float:
+    """Scale a normal PDF to match histogram bar heights (count scale)."""
+    return float(n * bin_width * _normal_pdf(np.array([x]), mu, sigma)[0])
+
+
+def _overlay_distribution_reference(
+    ax,
+    values: Sequence[float],
+    *,
+    bin_edges: np.ndarray,
+    bin_width: float,
+) -> None:
+    """
+    Overlay a normal reference curve on the histogram and mark mean, median, and ±1 SD.
+
+    The curve uses the sample mean and SD; markers sit on that curve at the corresponding
+    x positions (appropriate as a smooth reference for continuous library metrics).
+    """
+    from matplotlib.lines import Line2D
+
+    if len(values) == 0:
+        return
+
+    mean_val = float(statistics.mean(values))
+    median_val = float(statistics.median(values))
+    std_val = float(statistics.stdev(values)) if len(values) > 1 else 0.0
+    n = len(values)
+
+    x_min = float(bin_edges[0])
+    x_max = float(bin_edges[-1])
+    x_pad = max((x_max - x_min) * 0.05, bin_width)
+    x_curve = np.linspace(x_min - x_pad, x_max + x_pad, 400)
+
+    legend_handles: List[Line2D] = []
+
+    if std_val > 0:
+        y_curve = n * bin_width * _normal_pdf(x_curve, mean_val, std_val)
+        ax.plot(
+            x_curve,
+            y_curve,
+            color="#3D444D",
+            linewidth=2.0,
+            alpha=0.85,
+            zorder=4,
+        )
+
+        marker_specs = (
+            ("o", "#FF6B6B", mean_val, f"Mean: {mean_val:.4g}"),
+            ("s", "#FFB347", median_val, f"Median: {median_val:.4g}"),
+            ("^", "#888888", mean_val - std_val, f"μ − σ: {mean_val - std_val:.4g}"),
+            ("v", "#888888", mean_val + std_val, f"μ + σ: {mean_val + std_val:.4g} (σ={std_val:.4g})"),
+        )
+        for marker, color, x_pos, label in marker_specs:
+            y_pos = _curve_height_at(x_pos, n, bin_width, mean_val, std_val)
+            ax.plot(
+                x_pos,
+                y_pos,
+                marker=marker,
+                color=color,
+                markersize=7,
+                linestyle="None",
+                zorder=5,
+            )
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker=marker,
+                    color="w",
+                    markerfacecolor=color,
+                    markeredgecolor=color,
+                    markersize=7,
+                    linestyle="None",
+                    label=label,
+                )
+            )
+    else:
+        ymax = ax.get_ylim()[1]
+        y_mark = ymax * 0.92 if ymax > 0 else 1.0
+        ax.plot(
+            mean_val,
+            y_mark,
+            marker="o",
+            color="#FF6B6B",
+            markersize=7,
+            linestyle="None",
+            zorder=5,
+        )
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="w",
+                markerfacecolor="#FF6B6B",
+                markeredgecolor="#FF6B6B",
+                markersize=7,
+                linestyle="None",
+                label=f"Mean / median: {mean_val:.4g}",
+            )
+        )
+
+    legend_handles.append(
+        Line2D([0], [0], color="none", label=f"n = {n:,}")
+    )
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=8, framealpha=0.9)
+
+
+def _render_histogram(
+    ax,
+    values: Sequence[float],
+    *,
+    color: str,
+    xlabel: str,
+    title: str,
+    integer_bins: bool = False,
+) -> None:
+    """Render a histogram with a normal reference curve and summary markers."""
+    if not values:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(title)
+        return
+    if integer_bins:
+        bins = _integer_histogram_bins(values)
+        _, bin_edges, _ = ax.hist(
+            values,
+            bins=bins,
+            color=color,
+            edgecolor="white",
+            alpha=0.9,
+            align="mid",
+            label="_nolegend_",
+        )
+        vmax = int(max(values))
+        ax.set_xticks(list(range(vmax + 1)))
+        ax.set_xlabel(xlabel)
+    else:
+        _, bin_edges, _ = ax.hist(
+            values,
+            bins=DEFAULT_HISTOGRAM_BINS,
+            color=color,
+            edgecolor="white",
+            alpha=0.9,
+            label="_nolegend_",
+        )
+        ax.set_xlabel(xlabel)
+    bin_width = float(bin_edges[1] - bin_edges[0]) if len(bin_edges) > 1 else 1.0
+    ax.set_ylabel("Entries")
+    ax.set_title(title)
+    _overlay_distribution_reference(ax, values, bin_edges=bin_edges, bin_width=bin_width)
+
+
+def list_library_plot_definitions_by_category(category: str) -> List[PlotDefinition]:
+    """Return plots filtered by category (``coverage`` or ``signal``)."""
+    return [p for p in list_library_plot_definitions() if p.category == category]
 
 
 def _render_total_count_histogram(scan: LibraryScanData, channel: str, dpi: int) -> Figure:
     values = [entry_total_for_channel(entry, channel) for entry in scan.entries]
     values = [v for v in values if v is not None]
-    fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=dpi)
-    if not values:
-        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-    else:
-        ax.hist(values, bins=DEFAULT_HISTOGRAM_BINS, color="#4C9AFF", edgecolor="white", alpha=0.9)
-        ax.set_xlabel(f"Total {channel}")
-        ax.set_ylabel("Entries")
-    ax.set_title(f"Total {channel} per entry")
+    fig, ax = plt.subplots(figsize=(7.0, 4.2), dpi=dpi)
+    _render_histogram(
+        ax,
+        values,
+        color="#4C9AFF",
+        xlabel=f"Total {channel}",
+        title=f"Total {channel} per entry",
+    )
     fig.tight_layout()
     return fig
 
@@ -71,74 +259,236 @@ def _render_max_count_histogram(scan: LibraryScanData, channel: str, dpi: int) -
         counts = entry.counts_by_channel[channel]
         if counts:
             values.append(float(max(counts)))
-    fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=dpi)
-    if not values:
-        ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-    else:
-        ax.hist(values, bins=DEFAULT_HISTOGRAM_BINS, color="#3FB950", edgecolor="white", alpha=0.9)
-        ax.set_xlabel(f"Max {channel}")
-        ax.set_ylabel("Entries")
-    ax.set_title(f"Peak {channel} per entry")
+    fig, ax = plt.subplots(figsize=(7.0, 4.2), dpi=dpi)
+    _render_histogram(
+        ax,
+        values,
+        color="#3FB950",
+        xlabel=f"Max {channel}",
+        title=f"Peak {channel} per entry",
+    )
     fig.tight_layout()
     return fig
 
 
-def _binned_mean_chromatogram(
+def _library_total_per_fraction_index(
     scan: LibraryScanData,
     channel: str,
-    *,
-    n_bins: int = DEFAULT_CHROMATOGRAM_BINS,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    all_times: List[float] = []
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """
+    Sum sequencing counts at each fraction index across all scanned entries.
+
+    Fraction index is the 1-based position in each entry's time-sorted chromatogram
+    (first time point = fraction 1, second = fraction 2, …).
+    """
+    max_fractions = 0
     for entry in scan.entries:
-        all_times.extend(entry.times)
-    if not all_times:
-        return np.array([]), np.array([]), np.array([])
+        if channel in entry.counts_by_channel:
+            max_fractions = max(max_fractions, len(entry.counts_by_channel[channel]))
+    if max_fractions == 0:
+        return np.array([]), np.array([]), 0
 
-    t_min = float(min(all_times))
-    t_max = float(max(all_times))
-    if t_max <= t_min:
-        t_max = t_min + 1.0
-
-    bin_edges = np.linspace(t_min, t_max, n_bins + 1)
-    bin_sums = np.zeros(n_bins, dtype=float)
-    bin_counts = np.zeros(n_bins, dtype=float)
-    span = t_max - t_min
-
+    totals = np.zeros(max_fractions, dtype=float)
+    entries_used = 0
     for entry in scan.entries:
         if channel not in entry.counts_by_channel:
             continue
-        for time_val, count_val in zip(entry.times, entry.counts_by_channel[channel]):
-            idx = int((float(time_val) - t_min) / span * n_bins)
-            idx = min(max(idx, 0), n_bins - 1)
-            bin_sums[idx] += float(count_val)
-            bin_counts[idx] += 1.0
+        counts = entry.counts_by_channel[channel]
+        if not counts:
+            continue
+        entries_used += 1
+        for index, value in enumerate(counts):
+            totals[index] += float(value)
 
-    centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
-    means = np.divide(
-        bin_sums,
-        bin_counts,
-        out=np.full(n_bins, np.nan),
-        where=bin_counts > 0,
-    )
-    return centers, means, bin_counts
+    indices = np.arange(1, max_fractions + 1, dtype=float)
+    return indices, totals, entries_used
 
 
-def _render_mean_chromatogram(scan: LibraryScanData, channel: str, dpi: int) -> Figure:
-    centers, means, counts = _binned_mean_chromatogram(scan, channel)
+def _per_entry_mean_per_fraction(
+    scan: LibraryScanData,
+    channel: str,
+) -> List[float]:
+    """Mean count per fraction index, averaged across entries that have that index."""
+    max_fractions = 0
+    for entry in scan.entries:
+        if channel in entry.counts_by_channel:
+            max_fractions = max(max_fractions, len(entry.counts_by_channel[channel]))
+    if max_fractions == 0:
+        return []
+
+    means: List[float] = []
+    for index in range(max_fractions):
+        values: List[float] = []
+        for entry in scan.entries:
+            if channel not in entry.counts_by_channel:
+                continue
+            counts = entry.counts_by_channel[channel]
+            if index < len(counts):
+                values.append(float(counts[index]))
+        if values:
+            means.append(float(statistics.mean(values)))
+    return means
+
+
+def _render_total_count_per_fraction(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+) -> Figure:
+    indices, totals, entries_used = _library_total_per_fraction_index(scan, channel)
     fig, ax = plt.subplots(figsize=(7.0, 4.0), dpi=dpi)
-    if centers.size == 0:
+    if indices.size == 0:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
     else:
-        valid = ~np.isnan(means)
-        ax.plot(centers[valid], means[valid], color="#FF7B72", linewidth=1.6, label="Mean")
-        ax.fill_between(centers[valid], 0, means[valid], color="#FF7B72", alpha=0.15)
-        ax.set_xlabel("Time")
-        ax.set_ylabel(channel)
-        n_used = int(np.sum(counts > 0))
-        ax.set_title(f"Mean library chromatogram ({channel}, n={n_used:,} time bins used)")
+        ax.plot(indices, totals, color="#FF7B72", linewidth=1.6)
+        ax.fill_between(indices, 0, totals, color="#FF7B72", alpha=0.15)
+        ax.set_xlabel("Fraction index")
+        ax.set_ylabel(f"Total {channel}")
+        ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0), useMathText=True)
+        ax.set_title(
+            f"{PLOT_TOTAL_COUNT_PER_FRACTION_TITLE} ({channel}, "
+            f"{entries_used:,} entries)"
+        )
+
+        library_total = float(np.sum(totals))
+        per_fraction_means = _per_entry_mean_per_fraction(scan, channel)
+        if per_fraction_means:
+            avg_per_fraction = float(statistics.mean(per_fraction_means))
+            sd_per_fraction = (
+                float(statistics.stdev(per_fraction_means))
+                if len(per_fraction_means) > 1
+                else 0.0
+            )
+            stats_lines = (
+                f"Library total count: {library_total:,.4g}\n"
+                f"Mean count per fraction: {avg_per_fraction:,.4g} ± {sd_per_fraction:,.4g}"
+            )
+        else:
+            stats_lines = f"Library total count: {library_total:,.4g}"
+
+        ax.text(
+            0.98,
+            0.98,
+            stats_lines,
+            transform=ax.transAxes,
+            va="top",
+            ha="right",
+            fontsize=9,
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "facecolor": "white",
+                "alpha": 0.9,
+                "edgecolor": "#cccccc",
+            },
+        )
     fig.tight_layout()
     return fig
+
+
+def _signal_stats_for_channel(
+    scan: LibraryScanData,
+    channel: str,
+    signal_quality_alpha: float,
+) -> List:
+    """Reuse scan signal-quality cache when α matches; otherwise compute once."""
+    if (
+        scan.signal_quality_alpha is not None
+        and abs(scan.signal_quality_alpha - signal_quality_alpha) < 1e-12
+        and channel in scan.signal_quality_by_channel
+    ):
+        return list(scan.signal_quality_by_channel[channel])
+    stats = attach_signal_quality_to_entries(
+        scan.entries, [channel], alpha=signal_quality_alpha
+    )
+    if scan.signal_quality_alpha is None or scan.signal_quality_alpha != signal_quality_alpha:
+        scan.signal_quality_by_channel[channel] = stats.get(channel, [])
+        scan.signal_quality_alpha = signal_quality_alpha
+    return list(stats.get(channel, []))
+
+
+def _render_signal_histogram(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+    *,
+    signal_quality_alpha: float,
+    value_fn: Callable,
+    xlabel: str,
+    title: str,
+    color: str,
+    integer_bins: bool = False,
+) -> Figure:
+    stats_list = _signal_stats_for_channel(scan, channel, signal_quality_alpha)
+    values = [float(value_fn(s)) for s in stats_list]
+    fig, ax = plt.subplots(figsize=(7.0, 4.2), dpi=dpi)
+    _render_histogram(
+        ax,
+        values,
+        color=color,
+        xlabel=xlabel,
+        title=f"{title} (α={signal_quality_alpha:g})",
+        integer_bins=integer_bins,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def _render_snr_excess_histogram(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+    *,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+) -> Figure:
+    return _render_signal_histogram(
+        scan,
+        channel,
+        dpi,
+        signal_quality_alpha=signal_quality_alpha,
+        value_fn=lambda s: s.tallest_significant_snr_excess,
+        xlabel="SNR excess (tallest significant peak − μ)",
+        title=f"Tallest significant peak SNR excess — {channel}",
+        color="#A371F7",
+    )
+
+
+def _render_baseline_mu_histogram(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+    *,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+) -> Figure:
+    return _render_signal_histogram(
+        scan,
+        channel,
+        dpi,
+        signal_quality_alpha=signal_quality_alpha,
+        value_fn=lambda s: s.baseline_mu,
+        xlabel="Baseline μ",
+        title=f"Baseline level — {channel}",
+        color="#D29922",
+    )
+
+
+def _render_sig_peak_count_histogram(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+    *,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+) -> Figure:
+    return _render_signal_histogram(
+        scan,
+        channel,
+        dpi,
+        signal_quality_alpha=signal_quality_alpha,
+        value_fn=lambda s: s.significant_peak_count,
+        xlabel="Significant peak count",
+        title=f"Significant peaks per entry — {channel}",
+        color="#58A6FF",
+        integer_bins=True,
+    )
 
 
 LIBRARY_PLOT_DEFINITIONS: Dict[str, PlotDefinition] = {
@@ -148,17 +498,50 @@ LIBRARY_PLOT_DEFINITIONS: Dict[str, PlotDefinition] = {
         help_text="Histogram of per-entry total count summed across all time points.",
         render_fn=_render_total_count_histogram,
     ),
-    PLOT_MEAN_CHROMATOGRAM: PlotDefinition(
-        plot_id=PLOT_MEAN_CHROMATOGRAM,
-        title="Mean library chromatogram",
-        help_text="Average count vs time using shared time bins across all scanned entries.",
-        render_fn=_render_mean_chromatogram,
+    PLOT_TOTAL_COUNT_PER_FRACTION: PlotDefinition(
+        plot_id=PLOT_TOTAL_COUNT_PER_FRACTION,
+        title=PLOT_TOTAL_COUNT_PER_FRACTION_TITLE,
+        help_text=(
+            "At each fraction index (1…N in time-sorted order), the sum of sequencing "
+            "counts across all library entries."
+        ),
+        render_fn=_render_total_count_per_fraction,
     ),
     PLOT_MAX_COUNT_HISTOGRAM: PlotDefinition(
         plot_id=PLOT_MAX_COUNT_HISTOGRAM,
         title="Peak count distribution",
         help_text="Histogram of the maximum count value observed per entry.",
         render_fn=_render_max_count_histogram,
+    ),
+    PLOT_SNR_EXCESS_HISTOGRAM: PlotDefinition(
+        plot_id=PLOT_SNR_EXCESS_HISTOGRAM,
+        title="Tallest significant peak SNR excess distribution",
+        help_text=(
+            "Histogram of per-entry SNR excess for the tallest statistically significant "
+            "peak (apex height minus baseline μ)."
+        ),
+        render_fn=_render_snr_excess_histogram,
+        category="signal",
+    ),
+    PLOT_BASELINE_MU_HISTOGRAM: PlotDefinition(
+        plot_id=PLOT_BASELINE_MU_HISTOGRAM,
+        title="Baseline μ distribution",
+        help_text=(
+            "Histogram of per-entry baseline μ from the σ-clipped median noise model "
+            "(iteratively remove points above mean+2σ, median of remainder)."
+        ),
+        render_fn=_render_baseline_mu_histogram,
+        category="signal",
+    ),
+    PLOT_SIG_PEAK_COUNT_HISTOGRAM: PlotDefinition(
+        plot_id=PLOT_SIG_PEAK_COUNT_HISTOGRAM,
+        title="Significant peak count distribution",
+        help_text=(
+            "Histogram of significant peak counts per entry. A peak counts when the "
+            "picker's height or area p-value is below α. Lower α → fewer peaks."
+        ),
+        render_fn=_render_sig_peak_count_histogram,
+        category="signal",
     ),
 }
 
@@ -175,6 +558,8 @@ def generate_plots(
     output_dir: Path,
     *,
     dpi: int = 120,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> List[PlotResult]:
     """
     Render selected plots for each channel and write PNG files to ``output_dir``.
@@ -184,28 +569,75 @@ def generate_plots(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     results: List[PlotResult] = []
+
+    jobs: List[tuple[str, PlotDefinition, str]] = []
     for plot_id in plot_ids:
         definition = LIBRARY_PLOT_DEFINITIONS.get(plot_id)
         if definition is None:
             logger.warning("Unknown library plot id: %s", plot_id)
             continue
         for channel in channels:
-            if channel not in scan.channel_names:
-                continue
-            fig = definition.render_fn(scan, channel, dpi)
-            filename = _safe_plot_filename(plot_id, channel)
-            target = output_dir / filename
+            if channel in scan.channel_names:
+                jobs.append((plot_id, definition, channel))
+
+    signal_channels = {
+        channel
+        for _pid, definition, channel in jobs
+        if definition.category == "signal"
+    }
+    if signal_channels:
+        from src.core.library_metrics import ensure_scan_signal_quality
+
+        ensure_scan_signal_quality(
+            scan,
+            list(signal_channels),
+            signal_quality_alpha,
+            progress_callback=progress_callback,
+        )
+
+    total_jobs = len(jobs)
+    for job_index, (plot_id, definition, channel) in enumerate(jobs, start=1):
+        if progress_callback is not None:
+            progress_callback(
+                job_index,
+                total_jobs,
+                f"Rendering: {definition.title} — {channel}",
+            )
+        target = output_dir / _safe_plot_filename(plot_id, channel)
+        try:
+            if definition.category == "signal":
+                fig = definition.render_fn(
+                    scan, channel, dpi, signal_quality_alpha=signal_quality_alpha
+                )
+            else:
+                fig = definition.render_fn(scan, channel, dpi)
             try:
                 fig.savefig(target, format="png", bbox_inches="tight")
             finally:
                 plt.close(fig)
-            results.append(
-                PlotResult(
-                    plot_id=plot_id,
-                    title=f"{definition.title} — {channel}",
-                    help_text=definition.help_text,
-                    channel=channel,
-                    image_path=target,
-                )
+            image_path = target.resolve()
+        except Exception as exc:
+            logger.error(
+                "Failed to render plot %s for channel %s: %s",
+                plot_id,
+                channel,
+                exc,
+                exc_info=True,
             )
+            image_path = None
+            title = f"{definition.title} — {channel} (render failed)"
+            help_text = f"{definition.help_text} Error: {exc}"
+        else:
+            title = f"{definition.title} — {channel}"
+            help_text = definition.help_text
+
+        results.append(
+            PlotResult(
+                plot_id=plot_id,
+                title=title,
+                help_text=help_text,
+                channel=channel,
+                image_path=image_path,
+            )
+        )
     return results
