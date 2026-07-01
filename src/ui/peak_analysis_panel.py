@@ -25,7 +25,7 @@ from src.core.time_display import convert_time_value
 from src.models.analysis_settings import AnalysisSettings, TimeUnit
 from src.models.compound import Compound
 from src.models.peak_result import PeakAnalysisBatchResult, PeakAnalysisResult
-from src.models.pedigree_result import LineageAnalysisResult
+from src.models.pedigree_result import LineageAnalysisResult, LineageBatchResult
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.widget_tooltip import attach_tooltip
 
@@ -93,6 +93,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._pedigree_configured = pedigree_configured
         self._batch: Optional[PeakAnalysisBatchResult] = None
         self._lineage_result: Optional[LineageAnalysisResult] = None
+        self._lineage_batch: Optional[LineageBatchResult] = None
         self._show_suspected_peak_column = False
         self._show_baseline_flag = False
         self._show_integration_flag = False
@@ -111,16 +112,29 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self.grid_rowconfigure(4, weight=1)
 
         backend = get_peak_picker_backend().info()
+        top_row = ctk.CTkFrame(self, fg_color="transparent")
+        top_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
+        top_row.grid_columnconfigure(0, weight=1)
+
         self._engine_label = ctk.CTkLabel(
-            self,
+            top_row,
             text=f"Engine: {backend.name}",
             font=ctk.CTkFont(size=10),
             text_color="gray",
             anchor="w",
         )
-        self._engine_label.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
+        self._engine_label.grid(row=0, column=0, sticky="w")
         if not backend.is_native:
             attach_tooltip(self._engine_label, backend.detail)
+
+        ctk.CTkButton(
+            top_row,
+            text="? Help",
+            width=64,
+            height=24,
+            fg_color="gray40",
+            command=self._on_peak_help,
+        ).grid(row=0, column=1, sticky="e")
 
         settings = ctk.CTkFrame(self, fg_color="transparent")
         settings.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
@@ -258,11 +272,11 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         else:
             attach_tooltip(
                 self._lineage_btn,
-                "Run pedigree evaluation and assign suspected peak IDs to the table.",
+                "Run lineage for all plotted compounds (up to 50). Updates suspected peak IDs when peaks are picked.",
             )
             attach_tooltip(
                 self._view_lineage_btn,
-                "Open a scrollable lineage figure (run Analyze lineage first).",
+                "Open lineage figure(s). Select compounds from the list when multiple are analyzed.",
             )
         if on_view_lineage is None:
             self._view_lineage_btn.configure(state="disabled")
@@ -453,7 +467,21 @@ class PeakAnalysisPanel(ctk.CTkFrame):
 
     @property
     def lineage_result(self) -> Optional[LineageAnalysisResult]:
+        if self._lineage_batch is not None and self._lineage_batch.results:
+            return self._lineage_batch.results[0]
         return self._lineage_result
+
+    @property
+    def lineage_batch(self) -> Optional[LineageBatchResult]:
+        return self._lineage_batch
+
+    @property
+    def lineage_results(self) -> List[LineageAnalysisResult]:
+        if self._lineage_batch is not None:
+            return list(self._lineage_batch.results)
+        if self._lineage_result is not None:
+            return [self._lineage_result]
+        return []
 
     def set_lineage_busy(self, message: str) -> None:
         """Disable lineage actions while a background analysis runs."""
@@ -465,21 +493,37 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._status.configure(text=message, text_color=("gray10", "gray90"))
 
     def set_lineage_result(self, result: LineageAnalysisResult) -> None:
-        """Store a completed lineage analysis and enable the viewer."""
-        self._lineage_result = result
-        n = len(result.panels)
+        """Store a single completed lineage analysis and enable the viewer."""
+        self.set_lineage_batch_results(LineageBatchResult(results=(result,)))
+
+    def set_lineage_batch_results(self, batch: LineageBatchResult) -> None:
+        """Store one or more lineage results and enable the viewer."""
+        self._lineage_batch = batch
+        self._lineage_result = batch.results[0] if batch.results else None
+        n_ok = batch.success_count
+        n_fail = batch.failure_count
         self._lineage_btn.configure(state="normal")
-        self._view_lineage_btn.configure(state="normal")
-        self._status.configure(
-            text=(
-                f"Lineage ready for {result.compound_id} — {n} tier(s). "
+        self._view_lineage_btn.configure(state="normal" if n_ok else "disabled")
+        if n_ok == 1 and self._lineage_result is not None:
+            n_panels = len(self._lineage_result.panels)
+            status = (
+                f"Lineage ready for {self._lineage_result.compound_id} — {n_panels} tier(s). "
                 "Peak IDs updated when peaks are picked. Click View lineage to open the figure."
-            ),
-            text_color=("gray10", "gray90"),
-        )
+            )
+        elif n_ok > 1:
+            status = (
+                f"Lineage ready for {n_ok} compound(s). "
+                "Click View lineage to browse figures and batch-export."
+            )
+        else:
+            status = "Lineage analysis finished with no successful compounds."
+        if n_fail:
+            status += f" {n_fail} compound(s) failed."
+        self._status.configure(text=status, text_color=("gray10", "gray90"))
 
     def set_lineage_failed(self, message: str) -> None:
         self._lineage_result = None
+        self._lineage_batch = None
         self._lineage_btn.configure(state="normal")
         self._view_lineage_btn.configure(state="disabled")
         self._status.configure(text=message, text_color="#D29922")
@@ -673,6 +717,11 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             self._populate_table(self._batch)
         self._on_view_changed()
 
+    def _on_peak_help(self) -> None:
+        from src.ui.help_window import open_help_window
+
+        open_help_window(self.winfo_toplevel(), "peak_picking")
+
     def _on_lineage_clicked(self) -> None:
         if self._on_analyze_lineage is not None:
             self._on_analyze_lineage()
@@ -684,6 +733,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
     def _on_clear(self) -> None:
         self._batch = None
         self._lineage_result = None
+        self._lineage_batch = None
         self._show_suspected_peak_column = False
         self._table_columns = self._build_table_columns()
         self._apply_tree_columns()

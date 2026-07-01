@@ -53,6 +53,19 @@ from src.core.library_signal_quality import (
     attach_signal_quality_to_entries,
     export_per_entry_signal_csv,
 )
+from src.core.pedigree_analysis_store import (
+    get_latest_pedigree_snapshot_path,
+    get_pedigree_analysis_dir,
+    load_pedigree_result,
+    save_pedigree_result,
+    session_pedigree_dir,
+)
+from src.core.pedigree_backend import pedigree_backend_available
+from src.core.pedigree_export import export_pedigree_csv, export_product_prominence_csv
+from src.core.pedigree_render import graphviz_available, render_pedigree_tree
+from src.core.pedigree_service import run_pedigree_analysis_for_path
+from src.models.analysis_settings import AnalysisSettings
+from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeTierSummary
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
 from src.ui.widget_tooltip import attach_tooltip
@@ -61,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 _TAB_METRICS = "Summary metrics"
 _TAB_PLOTS = "Visualizations"
+_TAB_PEDIGREE = "Pedigree"
 
 _SIDEBAR_WRAP = 280
 _PLOT_PREVIEW_MAX_WIDTH = 820
@@ -119,6 +133,19 @@ class LibraryDataWindow(BaseWindow):
         self._plot_vars: Dict[str, tk.BooleanVar] = {}
         self._fraction_count_var = tk.StringVar(value=str(DEFAULT_FRACTION_COUNT))
         self._signal_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._pedigree_result: Optional[PedigreeAnalysisResult] = None
+        self._pedigree_snapshot_path: Optional[Path] = None
+        self._pedigree_tree_photo: Optional[object] = None
+        self._pedigree_frame: Optional[ctk.CTkScrollableFrame] = None
+        self._pedigree_summary_label: Optional[ctk.CTkLabel] = None
+        self._pedigree_status_label: Optional[ctk.CTkLabel] = None
+        self._pedigree_tree_preview: Optional[tk.Label] = None
+        self._pedigree_channel_var = tk.StringVar(value="")
+        self._pedigree_time_unit_var = tk.StringVar(value="seconds")
+        self._pedigree_tolerance_var = tk.StringVar(value="30")
+        self._pedigree_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._pedigree_isoform_var = tk.StringVar(value="All")
+        self._pedigree_variant_choices: List[str] = ["All"]
         self._cached_scan: Optional[LibraryScanData] = None
         self._current_snapshot: Optional[LibraryComputationSnapshot] = None
         self._current_snapshot_path: Optional[Path] = None
@@ -166,6 +193,8 @@ class LibraryDataWindow(BaseWindow):
 
         self._index_db_mode = self._data_store.is_index_database()
         n_compounds = self._data_store.get_compound_count()
+
+        self._init_pedigree_settings()
 
         self._build_top_bar(str(db_path))
         self._build_left_sidebar()
@@ -436,6 +465,8 @@ class LibraryDataWindow(BaseWindow):
                 self._busy_sensitive_widgets.append(cb)
                 row += 1
 
+        row = self._build_pedigree_sidebar(panel, row)
+
         ctk.CTkLabel(
             panel,
             text=(
@@ -460,6 +491,193 @@ class LibraryDataWindow(BaseWindow):
             justify="left",
         )
         self._status_label.grid(row=row, column=0, padx=8, pady=(4, 10), sticky="w")
+
+    def _build_pedigree_sidebar(self, panel: ctk.CTkScrollableFrame, row: int) -> int:
+        """Pedigree analysis controls in the left sidebar."""
+        ctk.CTkLabel(
+            panel,
+            text="Pedigree (split-tree)",
+            font=_section_header_font(),
+            text_color=_SECTION_HEADER_COLOR,
+        ).grid(row=row, column=0, sticky="w", padx=8, pady=(12, 4))
+        row += 1
+
+        pedigree_box = ctk.CTkFrame(panel, fg_color="transparent")
+        pedigree_box.grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 8))
+        row += 1
+
+        assert self._config is not None
+        pedigree_header = ctk.CTkFrame(pedigree_box, fg_color="transparent")
+        pedigree_header.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(
+            pedigree_header,
+            text="Count channel",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(side="left", anchor="w")
+        ctk.CTkButton(
+            pedigree_header,
+            text="? Help",
+            width=64,
+            height=22,
+            fg_color="gray40",
+            command=self._on_pedigree_help,
+        ).pack(side="right")
+
+        channel_menu = ctk.CTkOptionMenu(
+            pedigree_box,
+            variable=self._pedigree_channel_var,
+            values=list(self._config.count_names) or [""],
+        )
+        channel_menu.pack(fill="x", pady=(2, 6))
+        self._busy_sensitive_widgets.append(channel_menu)
+
+        unit_row = ctk.CTkFrame(pedigree_box, fg_color="transparent")
+        unit_row.pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(unit_row, text="Time unit", font=ctk.CTkFont(size=11, weight="bold")).pack(
+            anchor="w"
+        )
+        unit_btns = ctk.CTkFrame(unit_row, fg_color="transparent")
+        unit_btns.pack(fill="x", pady=(2, 0))
+        ctk.CTkRadioButton(
+            unit_btns,
+            text="Seconds",
+            variable=self._pedigree_time_unit_var,
+            value="seconds",
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkRadioButton(
+            unit_btns,
+            text="Minutes",
+            variable=self._pedigree_time_unit_var,
+            value="minutes",
+        ).pack(side="left")
+
+        ctk.CTkLabel(pedigree_box, text="Tolerance", font=ctk.CTkFont(size=11, weight="bold")).pack(
+            anchor="w", pady=(6, 0)
+        )
+        tol_entry = ctk.CTkEntry(pedigree_box, textvariable=self._pedigree_tolerance_var)
+        tol_entry.pack(fill="x", pady=(2, 4))
+        self._busy_sensitive_widgets.append(tol_entry)
+
+        ctk.CTkLabel(pedigree_box, text="Peak significance α", font=ctk.CTkFont(size=11, weight="bold")).pack(
+            anchor="w"
+        )
+        alpha_entry = ctk.CTkEntry(pedigree_box, textvariable=self._pedigree_alpha_var)
+        alpha_entry.pack(fill="x", pady=(2, 4))
+        self._busy_sensitive_widgets.append(alpha_entry)
+
+        if self._config.compound_variant_column:
+            ctk.CTkLabel(pedigree_box, text="Isoform", font=ctk.CTkFont(size=11, weight="bold")).pack(
+                anchor="w"
+            )
+            iso_menu = ctk.CTkOptionMenu(
+                pedigree_box,
+                variable=self._pedigree_isoform_var,
+                values=self._pedigree_variant_choices,
+            )
+            iso_menu.pack(fill="x", pady=(2, 6))
+            self._busy_sensitive_widgets.append(iso_menu)
+
+        self._pedigree_run_btn = ctk.CTkButton(
+            pedigree_box,
+            text="Run pedigree analysis",
+            fg_color="#1F6FEB",
+            command=self._on_run_pedigree,
+        )
+        self._pedigree_run_btn.pack(fill="x", pady=(4, 4))
+        self._busy_sensitive_widgets.append(self._pedigree_run_btn)
+
+        ped_row = ctk.CTkFrame(pedigree_box, fg_color="transparent")
+        ped_row.pack(fill="x", pady=(0, 4))
+        self._pedigree_load_btn = ctk.CTkButton(
+            ped_row,
+            text="Load last",
+            width=90,
+            fg_color="gray40",
+            command=self._on_load_last_pedigree,
+        )
+        self._pedigree_load_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        self._pedigree_browse_btn = ctk.CTkButton(
+            ped_row,
+            text="Browse…",
+            width=90,
+            fg_color="gray40",
+            command=self._on_browse_pedigree,
+        )
+        self._pedigree_browse_btn.pack(side="left", expand=True, fill="x")
+        self._busy_sensitive_widgets.extend([self._pedigree_load_btn, self._pedigree_browse_btn])
+
+        pedigree_ready = (
+            self._config.pedigree_configured()
+            and pedigree_backend_available()
+            and bool(self._config.count_names)
+        )
+        if not pedigree_ready:
+            self._pedigree_run_btn.configure(state="disabled")
+            tip = (
+                "Map BB1..BBn columns in Configure Spreadsheet and build the Rust lcseq "
+                "extension to enable pedigree analysis."
+            )
+            if not pedigree_backend_available():
+                tip = (
+                    "The Rust lcseq extension is required. See docs/DEVELOPER_SETUP.md."
+                )
+            attach_tooltip(self._pedigree_run_btn, tip)
+        else:
+            attach_tooltip(
+                self._pedigree_run_btn,
+                "Evaluate the full null-truncation pedigree and render a split-tree figure.",
+            )
+
+        self._pedigree_status_label = ctk.CTkLabel(
+            pedigree_box,
+            text="No pedigree run yet.",
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="w",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        )
+        self._pedigree_status_label.pack(fill="x", pady=(4, 0))
+
+        return row
+
+    def _init_pedigree_settings(self) -> None:
+        """Set pedigree control defaults from loaded spreadsheet config."""
+        if self._config is None:
+            return
+        default_channel = self._config.count_names[0] if self._config.count_names else ""
+        self._pedigree_channel_var.set(default_channel)
+        self._pedigree_time_unit_var.set(self._config.analysis_time_unit)
+        self._pedigree_tolerance_var.set(
+            "30" if self._config.analysis_time_unit == "seconds" else "0.5"
+        )
+        self._pedigree_alpha_var.set(str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._pedigree_isoform_var.set("All")
+        self._pedigree_variant_choices = self._collect_variant_choices()
+
+    def _collect_variant_choices(self) -> List[str]:
+        """Distinct isoform labels from the active database."""
+        choices = ["All"]
+        if self._data_store is None or self._config is None:
+            return choices
+        if not self._config.compound_variant_column:
+            return choices
+        try:
+            cursor = self._data_store.conn.execute(
+                """
+                SELECT DISTINCT compound_variant
+                FROM compounds
+                WHERE compound_variant IS NOT NULL AND TRIM(compound_variant) != ''
+                ORDER BY compound_variant
+                """
+            )
+            for row in cursor.fetchall():
+                label = str(row[0]).strip()
+                if label and label not in choices:
+                    choices.append(label)
+        except Exception as exc:
+            logger.warning("Could not load variant choices: %s", exc)
+        return choices
 
     def _build_right_content(self) -> None:
         """Right column (~70%): metrics and visualization tabs."""
@@ -612,6 +830,126 @@ class LibraryDataWindow(BaseWindow):
         ]
         self._plot_preview_tk = tk.Label(preview_host, text="", bg=tk_bg, borderwidth=0)
         self._plot_preview_tk.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+
+        pedigree_tab = self._content_tabview.add(_TAB_PEDIGREE)
+        pedigree_tab.grid_columnconfigure(0, weight=1)
+        pedigree_tab.grid_rowconfigure(1, weight=1)
+
+        pedigree_toolbar = ctk.CTkFrame(pedigree_tab, fg_color="transparent")
+        pedigree_toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+        pedigree_toolbar.grid_columnconfigure(0, weight=1)
+
+        self._pedigree_summary_label = ctk.CTkLabel(
+            pedigree_toolbar,
+            text="Run pedigree analysis from the sidebar to evaluate the full library.",
+            font=ctk.CTkFont(size=12),
+            text_color="gray",
+            anchor="w",
+            wraplength=760,
+            justify="left",
+        )
+        self._pedigree_summary_label.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
+        pedigree_actions = ctk.CTkFrame(pedigree_toolbar, fg_color="transparent")
+        pedigree_actions.grid(row=1, column=0, sticky="w")
+
+        self._pedigree_export_tree_btn = ctk.CTkButton(
+            pedigree_actions,
+            text="Export tree PNG…",
+            width=140,
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_export_pedigree_tree,
+        )
+        self._pedigree_export_tree_btn.pack(side="left", padx=(0, 6))
+        self._busy_sensitive_widgets.append(self._pedigree_export_tree_btn)
+
+        self._pedigree_export_csv_btn = ctk.CTkButton(
+            pedigree_actions,
+            text="Export pedigree CSV…",
+            width=150,
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_export_pedigree_csv,
+        )
+        self._pedigree_export_csv_btn.pack(side="left", padx=(0, 6))
+        self._busy_sensitive_widgets.append(self._pedigree_export_csv_btn)
+
+        self._pedigree_export_prominence_btn = ctk.CTkButton(
+            pedigree_actions,
+            text="Export product prominence CSV…",
+            width=200,
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_export_product_prominence_csv,
+        )
+        self._pedigree_export_prominence_btn.pack(side="left", padx=(0, 6))
+        self._busy_sensitive_widgets.append(self._pedigree_export_prominence_btn)
+
+        self._pedigree_save_btn = ctk.CTkButton(
+            pedigree_actions,
+            text="Save pedigree",
+            width=120,
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_save_pedigree,
+        )
+        self._pedigree_save_btn.pack(side="left")
+        self._busy_sensitive_widgets.append(self._pedigree_save_btn)
+
+        pedigree_body = ctk.CTkFrame(pedigree_tab, fg_color="transparent")
+        pedigree_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        pedigree_body.grid_columnconfigure(0, weight=1)
+        pedigree_body.grid_columnconfigure(1, weight=2)
+        pedigree_body.grid_rowconfigure(0, weight=1)
+
+        self._pedigree_frame = ctk.CTkScrollableFrame(
+            pedigree_body,
+            label_text="Tier summary",
+            label_font=_section_header_font(),
+            label_text_color=_SECTION_HEADER_COLOR,
+        )
+        self._pedigree_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        tree_col = ctk.CTkFrame(pedigree_body, corner_radius=8)
+        tree_col.grid(row=0, column=1, sticky="nsew")
+        tree_col.grid_columnconfigure(0, weight=1)
+        tree_col.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            tree_col,
+            text="Split-tree (root at centre)",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+
+        ctk.CTkLabel(
+            tree_col,
+            text=(
+                "Green = passed class/compound · Red = synthesis failure · "
+                "Yellow = insufficient sequencing data · Grey = root"
+            ),
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="w",
+            wraplength=480,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(28, 8))
+
+        tree_host = ctk.CTkFrame(tree_col, fg_color=("gray90", "gray17"))
+        tree_host.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        tree_host.grid_columnconfigure(0, weight=1)
+        tree_host.grid_rowconfigure(0, weight=1)
+
+        self._pedigree_tree_preview = tk.Label(
+            tree_host,
+            text="Tree image appears after pedigree analysis.",
+            bg=tk_bg,
+            borderwidth=0,
+            wraplength=460,
+            justify="center",
+        )
+        self._pedigree_tree_preview.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
         self._loading_frame = ctk.CTkFrame(shell, corner_radius=12)
         self._loading_frame.grid(row=0, column=0, sticky="nsew")
@@ -1357,6 +1695,51 @@ class LibraryDataWindow(BaseWindow):
                 state="normal"
                 if has_channels and has_report_content and not busy
                 else "disabled"
+            )
+            pedigree_ready = (
+                self._config is not None
+                and self._config.pedigree_configured()
+                and pedigree_backend_available()
+            )
+            n_compounds = (
+                self._data_store.get_compound_count() if self._data_store is not None else 0
+            )
+            self._pedigree_run_btn.configure(
+                state=(
+                    "normal"
+                    if pedigree_ready and n_compounds > 0 and not busy
+                    else "disabled"
+                )
+            )
+            has_pedigree = self._pedigree_result is not None
+            latest_ped = (
+                get_latest_pedigree_snapshot_path(self._db_path) if self._db_path else None
+            )
+            self._pedigree_load_btn.configure(
+                state="normal" if latest_ped is not None and not busy else "disabled"
+            )
+            self._pedigree_browse_btn.configure(
+                state="normal" if not busy else "disabled"
+            )
+            tree_path = (
+                self._pedigree_result.tree_image_path
+                if self._pedigree_result is not None
+                else None
+            )
+            has_tree = tree_path is not None and Path(tree_path).is_file()
+            ped_export_state = "normal" if has_pedigree and not busy else "disabled"
+            self._pedigree_export_csv_btn.configure(state=ped_export_state)
+            has_prominence = (
+                self._pedigree_result is not None
+                and self._pedigree_result.product_prominence is not None
+                and self._pedigree_result.product_prominence.entries
+            )
+            self._pedigree_export_prominence_btn.configure(
+                state="normal" if has_prominence and not busy else "disabled"
+            )
+            self._pedigree_save_btn.configure(state=ped_export_state)
+            self._pedigree_export_tree_btn.configure(
+                state="normal" if has_tree and not busy else "disabled"
             )
         except tk.TclError:
             pass
@@ -2502,6 +2885,468 @@ class LibraryDataWindow(BaseWindow):
             justify="left",
         ).grid(row=1, column=0, padx=14, pady=(0, 12), sticky="w")
         return card
+
+    def _parse_pedigree_settings(self) -> Optional[AnalysisSettings]:
+        channel = self._pedigree_channel_var.get().strip()
+        if not channel:
+            messagebox.showerror("Pedigree", "Select a count channel.", parent=self)
+            return None
+        try:
+            tolerance = float(self._pedigree_tolerance_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Pedigree", "Tolerance must be a number.", parent=self)
+            return None
+        if tolerance <= 0:
+            messagebox.showerror("Pedigree", "Tolerance must be positive.", parent=self)
+            return None
+        try:
+            alpha = float(self._pedigree_alpha_var.get().strip())
+        except ValueError:
+            messagebox.showerror("Pedigree", "α must be a number.", parent=self)
+            return None
+        if alpha <= 0 or alpha >= 1:
+            messagebox.showerror("Pedigree", "α must be between 0 and 1 (exclusive).", parent=self)
+            return None
+        time_unit = self._pedigree_time_unit_var.get()
+        if time_unit not in ("seconds", "minutes"):
+            messagebox.showerror("Pedigree", "Invalid time unit.", parent=self)
+            return None
+        isoform = self._pedigree_isoform_var.get().strip() or "All"
+        variants = None if isoform == "All" else [isoform]
+        return AnalysisSettings(
+            count_channel=channel,
+            time_unit=time_unit,  # type: ignore[arg-type]
+            alpha=alpha,
+            tolerance=tolerance,
+            selected_variants=variants,
+        )
+
+    def _format_pedigree_summary(self, result: PedigreeAnalysisResult) -> str:
+        parts = [
+            f"{result.n_chromatograms:,} chromatograms · channel {result.channel} · "
+            f"α={result.settings.alpha:g} · tolerance={result.settings.tolerance:g} "
+            f"{result.settings.time_unit}"
+        ]
+        if result.isoform_label != "All":
+            parts.append(f"isoform={result.isoform_label}")
+        tier_bits = []
+        for summary in result.tier_summaries:
+            tier_bits.append(
+                f"tier {summary.tier}: pass={summary.pass_count} "
+                f"fail={summary.fail_count} pruned={summary.pruned_count}"
+            )
+        if tier_bits:
+            parts.append(" · ".join(tier_bits))
+        return "\n".join(parts)
+
+    def _on_run_pedigree(self) -> None:
+        if self._is_busy():
+            return
+        if self._data_store is None or self._db_path is None or self._config is None:
+            return
+        if not self._config.pedigree_configured():
+            messagebox.showinfo(
+                "Pedigree",
+                "Map BB1..BBn columns in Configure Spreadsheet before running pedigree.",
+                parent=self,
+            )
+            return
+        if not pedigree_backend_available():
+            messagebox.showerror(
+                "Pedigree",
+                "The Rust lcseq extension is required.\n\nSee docs/DEVELOPER_SETUP.md.",
+                parent=self,
+            )
+            return
+        settings = self._parse_pedigree_settings()
+        if settings is None:
+            return
+        if self._data_store.get_compound_count() == 0:
+            messagebox.showinfo("Pedigree", "The database has no compounds.", parent=self)
+            return
+        n = self._data_store.get_compound_count()
+        if not messagebox.askyesno(
+            "Pedigree analysis",
+            f"Run full-library pedigree evaluation on {n:,} compound(s)?\n\n"
+            "Index databases may take several minutes on first run.",
+            parent=self,
+        ):
+            return
+        isoform = self._pedigree_isoform_var.get().strip() or "All"
+        self._start_pedigree_analysis(settings, isoform_label=isoform)
+
+    def _start_pedigree_analysis(
+        self,
+        settings: AnalysisSettings,
+        *,
+        isoform_label: str,
+    ) -> None:
+        assert self._db_path is not None and self._config is not None
+        self._show_loading_page(
+            "Running pedigree analysis",
+            "Loading compounds and evaluating null-truncation pedigree…",
+        )
+        if self._pedigree_status_label is not None:
+            self._pedigree_status_label.configure(text="Pedigree analysis running…")
+        self._update_action_states()
+
+        db_path = self._db_path
+        config = self._config
+
+        def worker() -> None:
+            try:
+                def progress(step: int, total: int, status: str) -> None:
+                    fraction = (step + 1) / total if total > 0 else 0.0
+                    self._thread_loading_progress(
+                        min(0.95, fraction),
+                        status or "Evaluating pedigree…",
+                    )
+
+                result = run_pedigree_analysis_for_path(
+                    db_path,
+                    config,
+                    settings,
+                    progress_callback=progress,
+                    isoform_label=isoform_label,
+                )
+                session_dir = session_pedigree_dir(db_path)
+                tree_path = session_dir / "pedigree_tree.png"
+                try:
+                    render_out = render_pedigree_tree(
+                        result.records,
+                        tree_path,
+                        max_display_tier=result.max_display_tier,
+                    )
+                    result.tree_image_path = render_out.path
+                    result.tree_render_engine = render_out.engine
+                    result.tree_render_note = render_out.detail
+                except Exception as exc:
+                    logger.error("Pedigree tree render failed: %s", exc, exc_info=True)
+                    result.tree_render_note = f"Tree image could not be generated: {exc}"
+                self._schedule_on_main(self._on_pedigree_ready, result)
+            except Exception as exc:
+                logger.error("Pedigree analysis failed: %s", exc, exc_info=True)
+                self._schedule_on_main(self._on_pedigree_failed, str(exc))
+
+        self._start_worker(worker)
+
+    def _on_pedigree_ready(self, result: PedigreeAnalysisResult) -> None:
+        self._worker_thread = None
+        self._pedigree_result = result
+        self._pedigree_snapshot_path = None
+        self._display_pedigree_result(result)
+        if self._pedigree_status_label is not None:
+            status = (
+                f"Pedigree ready — {len(result.records):,} nodes, "
+                f"{result.n_chromatograms:,} chromatograms."
+            )
+            if result.tree_render_engine:
+                status += f" Tree: {result.tree_render_engine}."
+            if result.tree_render_note and result.tree_image_path is None:
+                status += f" {result.tree_render_note}"
+            self._pedigree_status_label.configure(
+                text=status,
+                text_color=("gray10", "gray90"),
+            )
+        if self._content_tabview is not None:
+            try:
+                self._content_tabview.set(_TAB_PEDIGREE)
+            except ValueError:
+                pass
+        self._hide_loading_page()
+        self._update_action_states()
+
+    def _on_pedigree_failed(self, message: str) -> None:
+        self._worker_thread = None
+        if self._pedigree_status_label is not None:
+            self._pedigree_status_label.configure(text=message, text_color="#D29922")
+        self._hide_loading_page()
+        messagebox.showerror("Pedigree analysis", message, parent=self)
+        self._update_action_states()
+
+    def _display_pedigree_result(self, result: PedigreeAnalysisResult) -> None:
+        if self._pedigree_summary_label is not None:
+            self._pedigree_summary_label.configure(
+                text=self._format_pedigree_summary(result),
+                text_color=("gray10", "gray90"),
+            )
+        self._clear_frame_children(self._pedigree_frame)
+        if self._pedigree_frame is not None:
+            total_pass = sum(s.pass_count for s in result.tier_summaries)
+            total_fail = sum(s.fail_count for s in result.tier_summaries)
+            total_pruned = sum(s.pruned_count for s in result.tier_summaries)
+            header = self._make_info_card(
+                self._pedigree_frame,
+                "Library totals",
+                (
+                    f"{len(result.records):,} nodes — passed={total_pass:,}, "
+                    f"failed={total_fail:,}, pruned={total_pruned:,} · "
+                    f"engine {result.backend_name}"
+                ),
+            )
+            header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+            row_idx = 1
+            prom = result.product_prominence
+            if prom is not None:
+                prom_card = self._make_product_prominence_card(self._pedigree_frame, prom)
+                prom_card.grid(row=row_idx, column=0, sticky="ew", pady=(0, 8))
+                row_idx += 1
+            for summary in result.tier_summaries:
+                card = self._make_tier_summary_card(self._pedigree_frame, summary)
+                card.grid(row=row_idx, column=0, sticky="ew", pady=4)
+                row_idx += 1
+        self._show_pedigree_tree_preview(result)
+
+    def _make_product_prominence_card(self, parent, prom) -> ctk.CTkFrame:
+        """Card for pedigree-validated product peak prominence (Phase 5.7)."""
+        card = ctk.CTkFrame(parent, corner_radius=10)
+        card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            card,
+            text="Product peak prominence (pedigree-validated)",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
+        body = (
+            f"Channel {prom.channel}: mean ± SD = {prom.mean:.4g} ± {prom.std_dev:.4g} "
+            f"(n={prom.n_pass_with_prominence} passed compounds, "
+            f"{prom.n_compound_nodes} compound nodes, {prom.n_skipped} skipped).\n\n"
+            "Measured at the pedigree-chosen product RT on each passed full compound. "
+            "Compare with bulk signal-quality metrics, which use the tallest significant "
+            "peak and may not be the product."
+        )
+        ctk.CTkLabel(
+            card,
+            text=body,
+            font=ctk.CTkFont(size=12),
+            anchor="w",
+            wraplength=720,
+            justify="left",
+        ).grid(row=1, column=0, padx=14, pady=(0, 12), sticky="w")
+        return card
+
+    def _on_pedigree_help(self) -> None:
+        from src.ui.help_window import open_help_window
+
+        open_help_window(self, "pedigree_analysis")
+
+    def _make_tier_summary_card(
+        self,
+        parent: ctk.CTkScrollableFrame,
+        summary: PedigreeTierSummary,
+    ) -> ctk.CTkFrame:
+        card = ctk.CTkFrame(parent, corner_radius=10)
+        card.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            card,
+            text=f"Tier {summary.tier}",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, padx=14, pady=(10, 4), sticky="w")
+        for r, (label, value) in enumerate(
+            (
+                ("Passed", str(summary.pass_count)),
+                ("Failed", str(summary.fail_count)),
+                ("Pruned", str(summary.pruned_count)),
+            ),
+            start=1,
+        ):
+            ctk.CTkLabel(card, text=label, text_color="gray", anchor="w").grid(
+                row=r, column=0, padx=14, pady=2, sticky="w"
+            )
+            ctk.CTkLabel(card, text=value, font=ctk.CTkFont(weight="bold"), anchor="e").grid(
+                row=r, column=1, padx=14, pady=2, sticky="e"
+            )
+        ctk.CTkLabel(card, text="").grid(row=4, column=0, pady=4)
+        return card
+
+    def _show_pedigree_tree_preview(self, result: PedigreeAnalysisResult) -> None:
+        if self._pedigree_tree_preview is None:
+            return
+        image_path = result.tree_image_path
+        if image_path is None or not Path(image_path).is_file():
+            self._pedigree_tree_photo = None
+            message = result.tree_render_note or (
+                "Tree image could not be generated. Check logs for details."
+            )
+            self._pedigree_tree_preview.configure(image="", text=message)
+            return
+        try:
+            from PIL import Image, ImageTk
+
+            img = Image.open(image_path)
+            max_w, max_h = 520, 520
+            img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+            self._pedigree_tree_photo = ImageTk.PhotoImage(img)
+            caption = ""
+            if result.tree_render_engine == "matplotlib":
+                caption = result.tree_render_note or ""
+            self._pedigree_tree_preview.configure(
+                image=self._pedigree_tree_photo,
+                text=caption,
+            )
+        except Exception as exc:
+            logger.warning("Could not load pedigree tree preview: %s", exc)
+            self._pedigree_tree_preview.configure(
+                image="",
+                text=f"Tree saved at:\n{image_path}",
+            )
+
+    def _on_export_pedigree_csv(self) -> None:
+        if self._pedigree_result is None:
+            return
+        dest = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export pedigree CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+        )
+        if not dest:
+            return
+        try:
+            export_pedigree_csv(self._pedigree_result, dest)
+            messagebox.showinfo("Pedigree", f"Saved to:\n{dest}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Pedigree", str(exc), parent=self)
+
+    def _on_export_product_prominence_csv(self) -> None:
+        if self._pedigree_result is None or self._pedigree_result.product_prominence is None:
+            return
+        prom = self._pedigree_result.product_prominence
+        if not prom.entries:
+            messagebox.showinfo(
+                "Product prominence",
+                "No pedigree-validated product prominences to export.",
+                parent=self,
+            )
+            return
+        dest = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export product prominence CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+        )
+        if not dest:
+            return
+        try:
+            export_product_prominence_csv(prom, dest)
+            messagebox.showinfo("Product prominence", f"Saved to:\n{dest}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Product prominence", str(exc), parent=self)
+
+    def _on_export_pedigree_tree(self) -> None:
+        if self._pedigree_result is None:
+            return
+        if not graphviz_available():
+            if not messagebox.askyesno(
+                "Pedigree export",
+                "Graphviz is not installed; export will use the matplotlib tier-ring "
+                "layout instead of the native split-tree engine.\n\nContinue?",
+                parent=self,
+            ):
+                return
+        dest = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export pedigree tree",
+            defaultextension=".png",
+            filetypes=[
+                ("PNG", "*.png"),
+                ("SVG vector", "*.svg"),
+                ("PDF", "*.pdf"),
+            ],
+        )
+        if not dest:
+            return
+        try:
+            fmt = Path(dest).suffix.lstrip(".") or "png"
+            render_out = render_pedigree_tree(
+                self._pedigree_result.records,
+                Path(dest),
+                fmt=fmt,
+                max_display_tier=self._pedigree_result.max_display_tier,
+            )
+            messagebox.showinfo(
+                "Pedigree",
+                f"Saved to:\n{render_out.path}\n\n({render_out.engine})",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror("Pedigree", str(exc), parent=self)
+
+    def _on_save_pedigree(self) -> None:
+        if self._pedigree_result is None:
+            return
+        try:
+            saved = save_pedigree_result(self._pedigree_result)
+            self._pedigree_snapshot_path = saved
+            messagebox.showinfo(
+                "Pedigree",
+                f"Saved pedigree snapshot to:\n{saved}",
+                parent=self,
+            )
+            self._update_action_states()
+        except Exception as exc:
+            messagebox.showerror("Pedigree", str(exc), parent=self)
+
+    def _on_load_last_pedigree(self) -> None:
+        if self._db_path is None:
+            return
+        path = get_latest_pedigree_snapshot_path(self._db_path)
+        if path is None:
+            messagebox.showinfo("Pedigree", "No saved pedigree run for this database.", parent=self)
+            return
+        self._load_pedigree_from_path(path)
+
+    def _on_browse_pedigree(self) -> None:
+        initial = str(get_pedigree_analysis_dir()) if self._db_path else ""
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Open pedigree snapshot",
+            initialdir=initial,
+            filetypes=[("Pedigree JSON", "*.json")],
+        )
+        if not path:
+            return
+        self._load_pedigree_from_path(Path(path))
+
+    def _load_pedigree_from_path(self, path: Path) -> None:
+        try:
+            result = load_pedigree_result(path)
+        except Exception as exc:
+            messagebox.showerror("Pedigree", f"Could not load snapshot:\n{exc}", parent=self)
+            return
+        if self._db_path is not None and not database_paths_match(
+            result.database_path, self._db_path
+        ):
+            if not messagebox.askyesno(
+                "Pedigree",
+                "This snapshot was saved from a different database. Load anyway?",
+                parent=self,
+            ):
+                return
+        self._pedigree_result = result
+        self._pedigree_snapshot_path = path
+        self._sync_pedigree_controls(result)
+        self._display_pedigree_result(result)
+        if self._pedigree_status_label is not None:
+            self._pedigree_status_label.configure(
+                text=f"Loaded pedigree snapshot from {path.name}",
+                text_color=("gray10", "gray90"),
+            )
+        if self._content_tabview is not None:
+            try:
+                self._content_tabview.set(_TAB_PEDIGREE)
+            except ValueError:
+                pass
+        self._update_action_states()
+
+    def _sync_pedigree_controls(self, result: PedigreeAnalysisResult) -> None:
+        settings = result.settings
+        self._pedigree_channel_var.set(settings.count_channel)
+        self._pedigree_time_unit_var.set(settings.time_unit)
+        self._pedigree_tolerance_var.set(str(settings.tolerance))
+        self._pedigree_alpha_var.set(str(settings.alpha))
+        self._pedigree_isoform_var.set(result.isoform_label)
 
     def on_close(self) -> None:
         self._closing = True

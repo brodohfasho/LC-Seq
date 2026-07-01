@@ -85,7 +85,7 @@ class MainScreen(ctk.CTk):
         
         # Configure grid weights for responsive layout
         self.grid_columnconfigure(0, weight=1)
-        for r in (3, 4, 5, 6):
+        for r in (3, 4, 5, 6, 7, 8):
             self.grid_rowconfigure(r, weight=1)
         
         # Create UI components
@@ -208,6 +208,16 @@ class MainScreen(ctk.CTk):
             state="disabled",
         )
         self.database_manage_button.grid(row=6, column=0, padx=40, pady=10, sticky="ew")
+
+        self.help_button = ctk.CTkButton(
+            self,
+            text="Analysis help",
+            font=ctk.CTkFont(size=13),
+            height=40,
+            fg_color="gray40",
+            command=self._on_analysis_help,
+        )
+        self.help_button.grid(row=7, column=0, padx=40, pady=(10, 0), sticky="ew")
         
         # Status message label
         self.status_label = ctk.CTkLabel(
@@ -217,7 +227,7 @@ class MainScreen(ctk.CTk):
             wraplength=600,
             justify="center"
         )
-        self.status_label.grid(row=7, column=0, padx=40, pady=(30, 20), sticky="n")
+        self.status_label.grid(row=8, column=0, padx=40, pady=(30, 20), sticky="n")
     
     def _on_state_change(self) -> None:
         """Handle application state change."""
@@ -575,6 +585,12 @@ class MainScreen(ctk.CTk):
             self.app_state,
             self.config_manager,
         )
+
+    def _on_analysis_help(self) -> None:
+        """Open the in-app analysis help viewer."""
+        from src.ui.help_window import open_help_window
+
+        open_help_window(self, "peak_picking")
 
     def _notify_chromatogram_visualizer_config_changed(self) -> None:
         """Keep an open visualizer in sync with a newly saved spreadsheet configuration."""

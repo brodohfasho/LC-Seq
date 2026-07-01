@@ -34,7 +34,7 @@ from src.ui.chromatogram_dialogs import CompoundPickerDialog, MetadataSearchDial
 from src.ui.peak_analysis_panel import PeakAnalysisPanel, _PEAK_PANEL_WIDTH
 from src.ui.widget_tooltip import attach_tooltip
 from src.models.peak_result import PeakAnalysisBatchResult
-from src.models.pedigree_result import LineageAnalysisResult
+from src.models.pedigree_result import LineageAnalysisResult, LineageBatchResult
 from src.core.time_display import convert_time_series, convert_time_value, time_axis_label
 from src.models.analysis_settings import TimeUnit
 
@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_PARSE_CACHE = 32
 _MAX_PROCEED_KEYS = 200
+_MAX_LINEAGE_BATCH = 50
 _MAX_METADATA_COLUMNS_DISPLAY = 128
 _TABLE_ROW_INDEX_COL = "row_idx"
 _TABLE_COL_PAD_PX = 28
@@ -1247,9 +1248,9 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._on_peak_analysis_view_changed()
 
     def _on_analyze_lineage(self) -> None:
-        """Run lineage analysis in the background; update peak table when done."""
+        """Run lineage analysis in the background for all plotted compounds."""
         from src.core.lcseq_backend import AnalysisEngineError
-        from src.core.lineage_service import analyze_lineage_for_path
+        from src.core.lineage_service import analyze_lineage_batch_for_path
         from src.core.pedigree_backend import pedigree_backend_available
 
         if self._data_store is None or self._config is None:
@@ -1270,13 +1271,20 @@ class ChromatogramVisualizerWindow(BaseWindow):
             )
             return
         compounds = self._get_plotted_compounds()
-        if len(compounds) != 1:
+        if not compounds:
             messagebox.showinfo(
                 "Lineage analysis",
-                "Plot exactly one compound in the table, then run Analyze lineage.",
+                "Plot one or more compounds in the table, then run Analyze lineage.",
                 parent=self,
             )
             return
+        if len(compounds) > _MAX_LINEAGE_BATCH:
+            compounds = compounds[:_MAX_LINEAGE_BATCH]
+            messagebox.showinfo(
+                "Lineage analysis",
+                f"Only the first {_MAX_LINEAGE_BATCH} plotted compounds will be analyzed.",
+                parent=self,
+            )
         if self._peak_panel is None:
             return
         if self._lineage_worker is not None and self._lineage_worker.is_alive():
@@ -1287,26 +1295,30 @@ class ChromatogramVisualizerWindow(BaseWindow):
             messagebox.showerror("Lineage analysis", str(exc), parent=self)
             return
 
-        compound = compounds[0]
         db_path = Path(self._data_store.db_path)
         config = self._config
         cache = self._lineage_session_cache
-        self._peak_panel.set_lineage_busy("Starting lineage analysis…")
+        n_comp = len(compounds)
+        self._peak_panel.set_lineage_busy(
+            f"Starting lineage analysis for {n_comp} compound(s)…"
+        )
 
         def worker() -> None:
             try:
-                def progress(step: int, total: int, status: str) -> None:
-                    self.after(0, lambda s=status: self._peak_panel.set_lineage_progress(s))
+                def progress(done: int, total: int, status: str) -> None:
+                    prefix = f"Lineage {done + 1}/{total}" if total > 1 else "Lineage"
+                    msg = f"{prefix}: {status}" if status else prefix
+                    self.after(0, lambda m=msg: self._peak_panel.set_lineage_progress(m))
 
-                result = analyze_lineage_for_path(
+                batch = analyze_lineage_batch_for_path(
                     db_path,
-                    compound,
+                    compounds,
                     config,
                     settings,
                     progress_callback=progress,
                     session_cache=cache,
                 )
-                self.after(0, lambda r=result: self._on_lineage_analysis_finished(r))
+                self.after(0, lambda b=batch: self._on_lineage_analysis_finished(b))
             except AnalysisEngineError as exc:
                 msg = str(exc)
                 self.after(0, lambda m=msg: self._on_lineage_analysis_failed(m))
@@ -1318,12 +1330,37 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._lineage_worker = threading.Thread(target=worker, daemon=True)
         self._lineage_worker.start()
 
-    def _on_lineage_analysis_finished(self, result: LineageAnalysisResult) -> None:
+    def _on_lineage_analysis_finished(self, batch: LineageBatchResult) -> None:
         self._lineage_worker = None
         if self._peak_panel is None:
             return
-        self._peak_panel.set_lineage_result(result)
-        self._on_lineage_complete(result)
+        if not batch.results:
+            self._peak_panel.set_lineage_failed(
+                "Lineage analysis failed for all selected compounds."
+            )
+            if batch.failed:
+                detail = "\n".join(f"{cid}: {err}" for cid, err in batch.failed[:8])
+                if len(batch.failed) > 8:
+                    detail += f"\n… and {len(batch.failed) - 8} more"
+                messagebox.showerror("Lineage analysis", detail, parent=self)
+            else:
+                messagebox.showerror(
+                    "Lineage analysis",
+                    "No lineage results were produced.",
+                    parent=self,
+                )
+            return
+        self._peak_panel.set_lineage_batch_results(batch)
+        self._on_lineage_complete(batch)
+        if batch.failed:
+            detail = "\n".join(f"{cid}: {err}" for cid, err in batch.failed[:6])
+            if len(batch.failed) > 6:
+                detail += f"\n… and {len(batch.failed) - 6} more"
+            messagebox.showwarning(
+                "Lineage analysis",
+                f"{batch.success_count} succeeded, {batch.failure_count} failed:\n\n{detail}",
+                parent=self,
+            )
 
     def _on_lineage_analysis_failed(self, message: str) -> None:
         self._lineage_worker = None
@@ -1332,33 +1369,60 @@ class ChromatogramVisualizerWindow(BaseWindow):
         messagebox.showerror("Lineage analysis", message, parent=self)
 
     def _on_view_lineage(self) -> None:
-        """Open scrollable lineage figure viewer for the last analysis."""
+        """Open scrollable lineage figure viewer for completed analyses."""
         from src.ui.lineage_analysis_window import open_lineage_viewer_window
 
         if self._peak_panel is None or self._config is None:
             return
-        result = self._peak_panel.lineage_result
-        if result is None:
+        results = self._peak_panel.lineage_results
+        if not results:
             messagebox.showinfo(
                 "Lineage viewer",
-                "Run Analyze lineage first to build the lineage figure.",
+                "Run Analyze lineage first to build lineage figure(s).",
                 parent=self,
             )
             return
-        open_lineage_viewer_window(self, result, self._config)
+        open_lineage_viewer_window(self, results, self._config)
 
-    def _on_lineage_complete(self, result: LineageAnalysisResult) -> None:
+    def _on_lineage_complete(self, batch: LineageBatchResult) -> None:
         """Update peak table with suspected peak IDs after lineage analysis."""
         if self._peak_panel is None:
             return
         if self._peak_panel.batch is None or not self._peak_panel.batch.total_peak_count:
             return
-        compounds = self._get_plotted_compounds()
-        if len(compounds) != 1:
-            return
-        cid = str(compounds[0].compound_id).strip()
-        self._peak_panel.apply_lineage_labels(result, cid)
-        self._peak_analysis_batch = self._peak_panel.batch
+        from src.core.lineage_peak_labels import apply_lineage_labels_to_batch_multi
+
+        stored_unit = self._peak_panel.stored_time_unit
+        updated = apply_lineage_labels_to_batch_multi(
+            self._peak_panel.batch,
+            batch.results,
+            stored_time_unit=stored_unit,
+        )
+        self._peak_panel._batch = updated
+        self._peak_panel._ensure_suspected_peak_column()
+        self._peak_panel._populate_table(updated)
+        labeled = sum(
+            1
+            for entry in updated.results
+            for peak in entry.peaks
+            if peak.suspected_peak_id and peak.suspected_peak_id != "unknown"
+        )
+        unknown = sum(
+            1
+            for entry in updated.results
+            for peak in entry.peaks
+            if peak.suspected_peak_id == "unknown"
+        )
+        n_comp = len(batch.results)
+        self._peak_panel._status.configure(
+            text=(
+                f"Lineage labels applied for {n_comp} compound(s) — "
+                f"{labeled} peak(s) matched, {unknown} unknown."
+            ),
+            text_color=("gray10", "gray90"),
+        )
+        self._peak_panel._on_result_changed(updated)
+        self._peak_analysis_batch = updated
         self._redraw_plot()
 
     def _get_plotted_compounds(self) -> List[Compound]:

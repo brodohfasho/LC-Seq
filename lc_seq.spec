@@ -38,6 +38,10 @@ datas += mpl_datas
 binaries += mpl_binaries
 hiddenimports += mpl_hiddenimports
 
+help_dir = project_root / "src" / "help"
+if help_dir.is_dir():
+    datas += [(str(help_dir / name), "src/help") for name in help_dir.iterdir() if name.is_file()]
+
 a = Analysis(
     [str(project_root / "src" / "main.py")],
     pathex=[str(project_root)],

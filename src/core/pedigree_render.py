@@ -1,0 +1,392 @@
+# src/core/pedigree_render.py
+"""
+Render pruned pedigree split-tree figures.
+
+Uses Graphviz (``lcseq.render.render_pruned_tree``) when the ``dot`` binary is
+available; otherwise falls back to a matplotlib tier-ring layout so tree images
+still appear without a system Graphviz install.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import os
+import shutil
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from src.models.pedigree_result import PedigreeNodeRecord
+
+logger = logging.getLogger(__name__)
+
+_COLOR_ROOT = "#d0d0d0"
+_COLOR_CLASS = "#cfe8cf"
+_COLOR_COMPOUND = "#a6d8a6"
+_COLOR_FAILED = "#e57373"
+_COLOR_INSUFFICIENT_DATA = "#fce8a3"
+
+_WINDOWS_DOT_CANDIDATES = (
+    Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Graphviz" / "bin" / "dot.exe",
+    Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+    / "Graphviz"
+    / "bin"
+    / "dot.exe",
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Graphviz" / "bin" / "dot.exe",
+)
+
+
+@dataclass(frozen=True)
+class PedigreeTreeRenderResult:
+    """Output path and renderer used for a pedigree tree image."""
+
+    path: Path
+    engine: str
+    detail: str = ""
+
+
+def find_graphviz_dot() -> Optional[Path]:
+    """Locate the Graphviz ``dot`` executable on PATH or common install dirs."""
+    found = shutil.which("dot")
+    if found:
+        return Path(found)
+    for candidate in _WINDOWS_DOT_CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def configure_graphviz() -> bool:
+    """
+    Point the Python graphviz package at ``dot`` and prepend its bin dir to PATH.
+
+    Returns True when configuration succeeded.
+    """
+    dot = find_graphviz_dot()
+    if dot is None:
+        return False
+    try:
+        import graphviz
+
+        graphviz.set_graphviz_dot(str(dot))
+    except Exception as exc:
+        logger.warning("Could not configure graphviz Python bindings: %s", exc)
+        return False
+    bin_dir = str(dot.parent)
+    path_env = os.environ.get("PATH", "")
+    if bin_dir.lower() not in path_env.lower():
+        os.environ["PATH"] = bin_dir + os.pathsep + path_env
+    return True
+
+
+def graphviz_available() -> bool:
+    """Return True when Graphviz can be used for rendering."""
+    try:
+        import graphviz  # noqa: F401
+    except ImportError:
+        return False
+    return find_graphviz_dot() is not None
+
+
+def graphviz_install_hint() -> str:
+    """Short user-facing hint when only the matplotlib fallback is available."""
+    if graphviz_available():
+        return ""
+    return (
+        "Install Graphviz for higher-quality split-tree layout "
+        "(see docs/DEVELOPER_SETUP.md). Showing matplotlib tier-ring preview."
+    )
+
+
+def filter_records_for_display(
+    records: Sequence[PedigreeNodeRecord],
+    *,
+    max_display_tier: Optional[int] = None,
+) -> List[PedigreeNodeRecord]:
+    """Optionally hide tiers above ``max_display_tier`` (e.g. final compound cluster)."""
+    if max_display_tier is None:
+        return list(records)
+    return [record for record in records if record.tier <= max_display_tier]
+
+
+def visible_pedigree_nodes(
+    records: Sequence[PedigreeNodeRecord],
+    *,
+    include_failed: bool = True,
+    max_display_tier: Optional[int] = None,
+) -> Dict[str, PedigreeNodeRecord]:
+    """Nodes shown in tree figures (matches ``lcseq.render`` visibility rules)."""
+    filtered = filter_records_for_display(records, max_display_tier=max_display_tier)
+    return {
+        record.id: record
+        for record in filtered
+        if record.passed or (include_failed and record.evaluated)
+    }
+
+
+def _node_color(record: PedigreeNodeRecord) -> str:
+    if record.tier == 0:
+        return _COLOR_ROOT
+    if record.passed:
+        return _COLOR_COMPOUND if record.kind == "compound" else _COLOR_CLASS
+    if record.insufficient_data:
+        return _COLOR_INSUFFICIENT_DATA
+    return _COLOR_FAILED
+
+
+def _chosen_rt(record: PedigreeNodeRecord) -> Optional[float]:
+    if record.bayesian_pick is not None:
+        return record.bayesian_pick
+    if record.score_test_rt is not None:
+        return record.score_test_rt
+    picks = record.initial_most_significant_picks
+    return float(picks[0]) if picks else None
+
+
+def _node_label(record: PedigreeNodeRecord, *, show_rt: bool) -> str:
+    label = record.label
+    if show_rt and record.passed:
+        chosen = _chosen_rt(record)
+        if chosen is not None:
+            label = f"{record.label}\nrt={chosen:.1f}"
+    return label
+
+
+def render_pedigree_tree_graphviz(
+    records: Sequence[PedigreeNodeRecord],
+    out_path: Path,
+    *,
+    fmt: str = "png",
+    max_display_tier: Optional[int] = None,
+    include_failed: bool = True,
+    show_rt: bool = True,
+) -> Path:
+    """Render via ``lcseq.render.render_pruned_tree`` (requires Graphviz)."""
+    if not configure_graphviz():
+        raise RuntimeError("Graphviz dot executable is not available.")
+
+    from lcseq.render import render_pruned_tree
+
+    visible = list(
+        visible_pedigree_nodes(
+            records,
+            include_failed=include_failed,
+            max_display_tier=max_display_tier,
+        ).values()
+    )
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    stem = out_path.with_suffix("")
+    rendered = render_pruned_tree(
+        visible,
+        stem,
+        fmt=fmt,
+        layout="twopi",
+        include_failed=include_failed,
+        show_rt=show_rt,
+        keep_dot=False,
+    )
+    return Path(rendered)
+
+
+def render_pedigree_tree_matplotlib(
+    records: Sequence[PedigreeNodeRecord],
+    out_path: Path,
+    *,
+    fmt: str = "png",
+    max_display_tier: Optional[int] = None,
+    include_failed: bool = True,
+    show_rt: bool = True,
+    dpi: int = 150,
+) -> Path:
+    """
+    Matplotlib tier-ring fallback (no Graphviz required).
+
+    Places each tier on a concentric ring (root at centre), matching the
+    split-tree colour scheme used by the Rust renderer.
+    """
+    visible = visible_pedigree_nodes(
+        records,
+        include_failed=include_failed,
+        max_display_tier=max_display_tier,
+    )
+    if not visible:
+        raise ValueError("No pedigree nodes to render.")
+
+    by_tier: Dict[int, List[PedigreeNodeRecord]] = defaultdict(list)
+    for record in visible.values():
+        by_tier[record.tier].append(record)
+
+    positions: Dict[str, Tuple[float, float]] = {}
+    max_tier = max(by_tier)
+    ring_gap = 1.35
+    for tier in sorted(by_tier):
+        nodes = sorted(by_tier[tier], key=lambda r: r.label.lower())
+        count = len(nodes)
+        radius = 0.15 if tier == 0 and max_tier == 0 else 0.35 + tier * ring_gap
+        for index, node in enumerate(nodes):
+            if count == 1:
+                angle = -math.pi / 2
+            else:
+                angle = (2.0 * math.pi * index / count) - (math.pi / 2)
+            positions[node.id] = (radius * math.cos(angle), radius * math.sin(angle))
+
+    node_count = len(visible)
+    fig_size = min(24.0, max(8.0, 6.0 + math.sqrt(node_count) * 0.12))
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size), dpi=dpi)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_facecolor("white")
+
+    for record in visible.values():
+        for parent_id in record.parent_ids:
+            if parent_id not in positions:
+                continue
+            x1, y1 = positions[parent_id]
+            x2, y2 = positions[record.id]
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color="#888888",
+                linewidth=0.35 if node_count > 500 else 0.6,
+                alpha=0.7,
+                zorder=1,
+            )
+
+    xs: List[float] = []
+    ys: List[float] = []
+    colors: List[str] = []
+    sizes: List[float] = []
+    for record in visible.values():
+        x, y = positions[record.id]
+        xs.append(x)
+        ys.append(y)
+        colors.append(_node_color(record))
+        if node_count > 5000:
+            sizes.append(4.0)
+        elif node_count > 500:
+            sizes.append(10.0)
+        elif record.tier == 0:
+            sizes.append(80.0)
+        else:
+            sizes.append(36.0)
+
+    ax.scatter(xs, ys, c=colors, s=sizes, edgecolors="#333333", linewidths=0.2, zorder=2)
+
+    label_limit = 250
+    if node_count <= label_limit:
+        for record in visible.values():
+            x, y = positions[record.id]
+            text = _node_label(record, show_rt=show_rt)
+            fontsize = 5 if node_count > 80 else 7
+            ax.text(
+                x,
+                y,
+                text,
+                fontsize=fontsize,
+                ha="center",
+                va="center",
+                zorder=3,
+                clip_on=True,
+            )
+
+    legend_handles = [
+        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=_COLOR_ROOT, markersize=8, label="root"),
+        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=_COLOR_CLASS, markersize=8, label="passed class"),
+        plt.Line2D(
+            [0], [0], marker="o", color="w", markerfacecolor=_COLOR_COMPOUND, markersize=8, label="passed compound"
+        ),
+        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=_COLOR_FAILED, markersize=8, label="failed"),
+        plt.Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="w",
+            markerfacecolor=_COLOR_INSUFFICIENT_DATA,
+            markersize=8,
+            label="insufficient data",
+        ),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        fontsize=7,
+        framealpha=0.9,
+        borderpad=0.6,
+    )
+    ax.set_title(
+        f"Pedigree split-tree ({node_count:,} nodes, matplotlib preview)",
+        fontsize=11,
+        pad=12,
+    )
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    image_fmt = (fmt or "png").lower().lstrip(".")
+    if image_fmt not in ("png", "pdf", "svg"):
+        image_fmt = "png"
+    if out_path.suffix.lower() != f".{image_fmt}":
+        out_path = out_path.with_suffix(f".{image_fmt}")
+    fig.savefig(out_path, format=image_fmt, bbox_inches="tight", facecolor="white", dpi=dpi)
+    plt.close(fig)
+    return out_path
+
+
+def render_pedigree_tree(
+    records: Sequence[PedigreeNodeRecord],
+    out_path: Path,
+    *,
+    fmt: str = "png",
+    max_display_tier: Optional[int] = None,
+    include_failed: bool = True,
+    show_rt: bool = True,
+) -> PedigreeTreeRenderResult:
+    """
+    Render a pedigree tree image, preferring Graphviz when available.
+
+    Always attempts rendering (matplotlib fallback when Graphviz is missing).
+    """
+    out_path = Path(out_path)
+    if configure_graphviz():
+        try:
+            rendered = render_pedigree_tree_graphviz(
+                records,
+                out_path,
+                fmt=fmt,
+                max_display_tier=max_display_tier,
+                include_failed=include_failed,
+                show_rt=show_rt,
+            )
+            return PedigreeTreeRenderResult(
+                path=rendered,
+                engine="graphviz",
+                detail="Rendered with Graphviz (twopi layout).",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Graphviz pedigree render failed (%s); using matplotlib fallback.",
+                exc,
+                exc_info=True,
+            )
+
+    rendered = render_pedigree_tree_matplotlib(
+        records,
+        out_path,
+        fmt=fmt,
+        max_display_tier=max_display_tier,
+        include_failed=include_failed,
+        show_rt=show_rt,
+    )
+    detail = graphviz_install_hint()
+    return PedigreeTreeRenderResult(
+        path=rendered,
+        engine="matplotlib",
+        detail=detail or "Rendered with matplotlib tier-ring preview.",
+    )

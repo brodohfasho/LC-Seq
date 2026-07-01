@@ -550,8 +550,8 @@ Include regression test: cassette BB name `DLeu-DLeu-Pro` in one BB column does 
 
 **Exit criteria Phase 0:**
 
-- [ ] `pytest tests/test_pedigree_adapter.py tests/test_lcseq_backend_available.py` pass
-- [ ] Can run in Python REPL: load compound from DB → adapter → `find_peaks` → list of peaks
+- [x] `pytest tests/test_pedigree_adapter.py tests/test_lcseq_backend_available.py` pass
+- [x] Can run in Python REPL: load compound from DB → adapter → `find_peaks` → list of peaks
 
 ---
 
@@ -607,10 +607,10 @@ Modify `chromatogram_visualizer_window.py`:
 
 **Exit criteria Phase 1:**
 
-- [ ] Peak table matches exported CSV
-- [ ] %Area sums to ~100% for peaks with non-overlapping windows
-- [ ] PNG export includes peak markers
-- [ ] Works on index DB (on-demand parse path)
+- [x] Peak table matches exported CSV
+- [x] %Area sums to ~100% for peaks with non-overlapping windows
+- [x] PNG export includes peak markers
+- [x] Works on index DB (on-demand parse path)
 
 ---
 
@@ -636,8 +636,8 @@ Add **“Load saved analysis”** if snapshot exists for current compound.
 
 **Exit criteria Phase 2:**
 
-- [ ] Baseline visible and documented in help
-- [ ] Snapshot round-trip works
+- [x] Baseline visible and documented in help
+- [ ] Snapshot round-trip works (`peak_analysis_store` not yet implemented)
 
 ---
 
@@ -756,9 +756,9 @@ def generate_library_report_pdf(
 
 **Exit criteria Phase 2.6:**
 
-- [ ] PDF opens in standard viewer with title, metrics tables, and at least one plot when plots were generated
-- [ ] Methodology section states Approach A vs future pedigree prominence (Phase 5.7)
-- [ ] α and fraction count recorded on title page
+- [x] PDF opens in standard viewer with title, metrics tables, and at least one plot when plots were generated
+- [x] Methodology section states Approach A vs pedigree prominence (Phase 5.7)
+- [x] α and fraction count recorded on title page
 
 ---
 
@@ -806,9 +806,9 @@ Create `src/ui/lineage_analysis_window.py`:
 
 **Exit criteria Phase 3:**
 
-- [ ] Lineage CSV opens in Excel with readable columns
-- [ ] Thresholds match full pedigree run for same compound
-- [ ] Scientist help section “Null truncates & lineage” linked from window
+- [x] Lineage CSV opens in Excel with readable columns
+- [ ] Thresholds match full pedigree run for same compound (formal parity test pending)
+- [x] Scientist help section “Null truncates & lineage” linked from window
 
 ---
 
@@ -897,8 +897,8 @@ Modify `library_data_window.py`:
 
 **Exit criteria Phase 5:**
 
-- [ ] Tier summary printed matches buddy CLI `_summarise` on same data
-- [ ] Tree PNG color legend matches help doc
+- [x] Tier summary printed matches buddy CLI `_summarise` on same data
+- [x] Tree PNG color legend matches help doc (matplotlib fallback when Graphviz absent)
 - [ ] 128k library: document expected runtime; consider sub-library filter for v1
 
 #### Step 5.7 — Product-peak prominence (pedigree-validated S/N)
@@ -914,6 +914,14 @@ After `evaluate_library`, for each **leaf / product** node with `chosen_rt` and 
 New Library Data metric card: **Product peak prominence (pedigree)** — enabled only when a pedigree snapshot exists for the same DB + channel, or computed in same session after pedigree completes.
 
 Optional: compare bulk S/N (Phase 2.5) vs pedigree prominence in one dashboard view (“bulk vs validated”).
+
+**Exit criteria Phase 5.7:**
+
+- [x] `compute_product_prominence_summary` after pedigree run
+- [x] Product prominence card in Library Data pedigree tab
+- [x] Per-entry product prominence CSV export
+- [x] Snapshot save/load includes `product_prominence`
+- [x] `tests/test_pedigree_product_prominence.py`
 
 ---
 
@@ -958,8 +966,8 @@ Extend `AnalysisSettings` / UI with one-line `help_text` strings (pattern from `
 
 **Exit criteria Phase 6:**
 
-- [ ] Scientist can answer “why did my compound fail?” using only in-app help
-- [ ] No broken links between help topics
+- [x] Scientist can answer “why did my compound fail?” using only in-app help
+- [x] No broken links between help topics (`tests/test_help_content.py`)
 
 ---
 

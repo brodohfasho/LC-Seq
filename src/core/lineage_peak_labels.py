@@ -165,3 +165,21 @@ def apply_lineage_labels_to_batch(
         backend_name=batch.backend_name,
         computed_at=batch.computed_at,
     )
+
+
+def apply_lineage_labels_to_batch_multi(
+    batch: PeakAnalysisBatchResult,
+    lineage_results: Sequence[LineageAnalysisResult],
+    *,
+    stored_time_unit: TimeUnit,
+) -> PeakAnalysisBatchResult:
+    """Apply suspected peak IDs for every compound that has a lineage result."""
+    updated_batch = batch
+    for result in lineage_results:
+        updated_batch = apply_lineage_labels_to_batch(
+            updated_batch,
+            result,
+            result.compound_id,
+            stored_time_unit=stored_time_unit,
+        )
+    return updated_batch

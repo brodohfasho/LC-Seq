@@ -494,7 +494,7 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 
 ## Phase 17: LC-Seq Analysis Integration (in progress)
 
-**Status:** Phase 0–1 complete (peak analysis + multi-compound overlay + Library Data foundation). **Next:** Phase 2.5 bulk S/N, then lineage.
+**Status:** Phases 0–3, 2.5–2.6, 5, 5.7, and 6 complete. Remaining: Phase 2 snapshot store, Phase 4 batch peaks, pedigree polish (isoform compare, 128k runtime docs), packaging.
 
 ### Done
 - [x] `SpreadsheetConfig`: `library_cycle_count`, `bb_position_columns`, `null_token`, `analysis_time_unit`
@@ -503,14 +503,17 @@ This roadmap outlines the development phases for the LC-Seq chromatographic data
 - [x] `peak_analysis_service`, export CSV, `PeakAnalysisPanel` in visualizer (incl. multi-compound overlay, S/N UI polish)
 - [x] `pedigree_adapter` (BB column → N→C tuple)
 - [x] Library Data: scan/compute/plots framework + total count / avg per fraction metrics
-- [x] Unit tests: peak analysis, pedigree adapter, library metrics
+- [x] Library-wide bulk S/N (Phase 2.5) + PDF library report (Phase 2.6)
+- [x] Lineage analysis per compound (Phase 3): analyze/view split, vertical figure, suspected peak IDs
+- [x] **Phase 5:** `pedigree_service`, `pedigree_render`, `pedigree_export`, `pedigree_analysis_store`, Library Data pedigree tab
+- [x] **Phase 5.7:** Product-peak prominence after pedigree (`pedigree_product_prominence`, card + CSV + snapshot)
+- [x] **Phase 6:** Embedded help (`src/help/`, `help_window`, contextual ? buttons, main-screen Analysis help)
 
 ### Next (recommended order)
-- [ ] **Phase 2.5:** Library-wide bulk S/N (top peak vs baseline, mean ± SD) in Library Data
-- [ ] Lineage analysis window (Phase 3)
-- [ ] Library Data pedigree + `render_pruned_tree` with `max_display_tier` (Phase 5)
-- [ ] Product-peak prominence metric after pedigree (Phase 5.7)
-- [ ] Embedded help (peak, S/N, pedigree)
+- [ ] **Phase 2:** `peak_analysis_store` — load saved single-compound analysis
+- [ ] **Phase 4:** Batch peak analysis
+- [ ] Isoform side-by-side pedigree comparison
+- [ ] 128k-library pedigree runtime documentation / sub-library filter
 - [ ] Rust build in installer / `DEVELOPER_SETUP` on analyst machines
 
 ---

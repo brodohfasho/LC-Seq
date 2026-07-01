@@ -45,8 +45,9 @@ Peaks are called <i>significant</i> when the peak picker's height or area p-valu
 range metrics use the <b>tallest significant peak</b> on each trace—not the tallest local
 maximum.<br/>
 <br/>
-These are library-wide screening values. Pedigree-validated product-peak prominence is planned
-for a future release.
+These are library-wide screening values (Approach A). When a pedigree run is available,
+compare with <b>Product peak prominence (pedigree)</b> in Library Data — prominence measured
+at the algorithm-chosen product RT on each passed full compound (Approach B).
 """
 
 

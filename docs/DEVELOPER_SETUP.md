@@ -53,6 +53,18 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH
 
 The app runs with a **Python fallback** picker (same algorithm, requires `scipy`). The Peak Analysis panel shows `Engine: Python fallback` until the Rust extension is built.
 
-## Graphviz (pedigree tree PNG export — coming in Library Data)
+## Graphviz (pedigree split-tree export in Library Data)
 
-Install [Graphviz](https://graphviz.org/download/) and ensure `dot` is on PATH for `render_pruned_tree`.
+Full-library pedigree analysis can export a split-tree PNG/SVG/PDF. Install:
+
+1. [Graphviz](https://graphviz.org/download/) — ensure the `dot` executable is on PATH.
+2. Python package (included in `requirements.txt`): `pip install graphviz`
+
+Verify:
+
+```powershell
+dot -V
+..\venv\Scripts\python.exe -c "import graphviz; print(graphviz.__version__)"
+```
+
+Without Graphviz, pedigree **evaluation** still runs; the app draws a **matplotlib tier-ring preview** automatically. Install Graphviz for the higher-quality native split-tree layout (`twopi`).

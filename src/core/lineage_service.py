@@ -31,7 +31,12 @@ from src.core.lineage_cache import LineageSessionCache
 from src.core.pedigree_backend import get_pedigree_backend
 from src.models.analysis_settings import AnalysisSettings
 from src.models.compound import Compound
-from src.models.pedigree_result import LineageAnalysisResult, LineagePanel, PedigreeNodeRecord
+from src.models.pedigree_result import (
+    LineageAnalysisResult,
+    LineageBatchResult,
+    LineagePanel,
+    PedigreeNodeRecord,
+)
 from src.models.spreadsheet_config import SpreadsheetConfig
 
 logger = logging.getLogger(__name__)
@@ -228,3 +233,60 @@ def analyze_lineage_for_path(
         )
     finally:
         store.close()
+
+
+def analyze_lineage_batch_for_path(
+    db_path: Path,
+    compounds: List[Compound],
+    config: SpreadsheetConfig,
+    settings: AnalysisSettings,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+    session_cache: Optional[LineageSessionCache] = None,
+) -> LineageBatchResult:
+    """
+    Run lineage analysis for multiple compounds, reusing one library/pedigree cache.
+
+    Thread-safe: opens the database once in the calling thread.
+    """
+    if not compounds:
+        return LineageBatchResult()
+
+    store = DataStore(db_path=db_path, use_memory=False)
+    results: List[LineageAnalysisResult] = []
+    failed: List[Tuple[str, str]] = []
+    total = len(compounds)
+    try:
+        index_db = store.is_index_database()
+        for index, compound in enumerate(compounds, start=1):
+            cid = str(compound.compound_id).strip()
+
+            def emit_per_compound(step: int, _total: int, status: str) -> None:
+                if progress_callback is not None:
+                    progress_callback(
+                        index - 1,
+                        total,
+                        f"({index}/{total}) {cid}: {status}",
+                    )
+
+            try:
+                result = analyze_lineage(
+                    store,
+                    compound,
+                    config,
+                    settings,
+                    index_database=index_db,
+                    progress_callback=emit_per_compound,
+                    session_cache=session_cache,
+                )
+                results.append(result)
+            except Exception as exc:
+                logger.warning("Lineage failed for %s: %s", cid, exc)
+                failed.append((cid, str(exc)))
+    finally:
+        store.close()
+
+    return LineageBatchResult(
+        results=tuple(results),
+        failed=tuple(failed),
+    )

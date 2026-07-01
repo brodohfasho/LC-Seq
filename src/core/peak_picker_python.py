@@ -162,6 +162,18 @@ def nearest_index(rt: Sequence[float], target: float) -> int:
     return best
 
 
+def prominence_at_rt(
+    rt: Sequence[float],
+    intensity: Sequence[float],
+    target_rt: float,
+) -> Optional[float]:
+    """Return peak prominence at the time point nearest ``target_rt``."""
+    if len(rt) != len(intensity) or len(rt) < 3:
+        return None
+    idx = nearest_index(rt, target_rt)
+    return _compute_prominence(intensity, idx)
+
+
 def find_peaks(
     rt: Sequence[float],
     intensity: Sequence[float],
