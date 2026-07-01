@@ -53,6 +53,8 @@ def peaks_batch_to_dataframe(
                 "left_rt": p.left_rt,
                 "right_rt": p.right_rt,
             }
+            if p.suspected_peak_id is not None:
+                row["suspected_peak_id"] = p.suspected_peak_id
             if include_variant:
                 row["variant"] = entry.variant_label or ""
             rows.append(row)
@@ -120,6 +122,17 @@ def export_peaks_batch_csv(
 
 def export_figure(fig: "Figure", path: str | Path, dpi: int = 150) -> Path:
     """Save matplotlib figure."""
+    from src.core.lineage_render import is_lineage_export_figure
+
     out = Path(path)
-    fig.savefig(out, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
+    if is_lineage_export_figure(fig):
+        fig.savefig(
+            out,
+            dpi=dpi,
+            facecolor=fig.get_facecolor(),
+            bbox_inches=None,
+            pad_inches=0.05,
+        )
+    else:
+        fig.savefig(out, dpi=dpi, bbox_inches="tight", facecolor=fig.get_facecolor())
     return out

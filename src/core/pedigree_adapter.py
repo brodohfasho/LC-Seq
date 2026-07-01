@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from src.core.time_display import convert_time_series
+from src.models.analysis_settings import TimeUnit
 from src.models.compound import Compound
 from src.models.spreadsheet_config import SpreadsheetConfig
 
@@ -87,12 +89,31 @@ def infer_bbs_per_position(
     return [sorted(s) for s in sets]
 
 
+def members_of_class(
+    class_bbs: Sequence[str],
+    chroms: Dict[ChromatogramKey, Chromatogram],
+    null_token: str,
+) -> List[Chromatogram]:
+    """Chromatograms whose non-null N→C subsequence equals ``class_bbs``."""
+    target = list(class_bbs)
+    return [
+        chrom
+        for positions, chrom in chroms.items()
+        if [p for p in positions if p != null_token] == target
+    ]
+
+
 def build_chromatogram_map(
     compounds: Sequence[Compound],
     channel: str,
     config: SpreadsheetConfig,
+    *,
+    time_unit: TimeUnit = "seconds",
 ) -> Dict[ChromatogramKey, Chromatogram]:
     """Build kernel chromatogram dict keyed by N→C position tuple."""
+    stored_unit: TimeUnit = (
+        "minutes" if config.analysis_time_unit == "minutes" else "seconds"
+    )
     out: Dict[ChromatogramKey, Chromatogram] = {}
     for compound in compounds:
         key = truncate_positions_from_metadata(compound, config)
@@ -104,6 +125,8 @@ def build_chromatogram_map(
             continue
         if not times:
             continue
+        if stored_unit != time_unit:
+            times = convert_time_series(times, stored_unit, time_unit)
         rt = np.asarray(times, dtype=np.float64)
         intensity = np.asarray(counts, dtype=np.float64)
         out[key] = (rt, intensity)

@@ -4,6 +4,7 @@ Chromatogram visualizer: plot on top, compound table and controls below (Phase 1
 """
 
 import logging
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from collections import OrderedDict
@@ -23,15 +24,17 @@ from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
 from src.core.data_processor import DataProcessor
 from src.core.data_store import DataStore
+from src.core.lineage_cache import LineageSessionCache
 from src.core.spreadsheet_loader import SpreadsheetLoader
 from src.models.compound import Compound
 from src.models.compound_identity import split_compound_storage_id
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
 from src.ui.chromatogram_dialogs import CompoundPickerDialog, MetadataSearchDialog
-from src.ui.peak_analysis_panel import PeakAnalysisPanel
+from src.ui.peak_analysis_panel import PeakAnalysisPanel, _PEAK_PANEL_WIDTH
 from src.ui.widget_tooltip import attach_tooltip
 from src.models.peak_result import PeakAnalysisBatchResult
+from src.models.pedigree_result import LineageAnalysisResult
 from src.core.time_display import convert_time_series, convert_time_value, time_axis_label
 from src.models.analysis_settings import TimeUnit
 
@@ -98,16 +101,19 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._suppress_table_selection_plot = False
         self._selection_plot_after_id: Optional[str] = None
         self._peak_panel: Optional[PeakAnalysisPanel] = None
-        self._peak_panel_visible = False
         self._peak_analysis_batch: Optional[PeakAnalysisBatchResult] = None
         self._show_peak_baseline = False
         self._plot_color_by_compound_id: Dict[str, str] = {}
+        self._lineage_session_cache = LineageSessionCache()
+        self._plot_frame: Optional[ctk.CTkFrame] = None
+        self._lineage_worker: Optional[threading.Thread] = None
+        self._left_host: Optional[ctk.CTkFrame] = None
+        self._peak_panel_slot: Optional[ctk.CTkFrame] = None
+        self._main_paned: Optional[tk.PanedWindow] = None
 
         self.minsize(900, 600)
+        self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=0)
-        self.grid_rowconfigure(1, weight=3)
-        self.grid_rowconfigure(3, weight=2)
 
         cfg = config_manager.load_default_config()
         if not cfg or not cfg.count_names:
@@ -161,12 +167,15 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 parent=self,
             )
 
+        self._build_main_shell()
         self._build_header()
         self._build_plot_area()
         self._build_bottom_controls()
         self._build_compound_table()
+        self._ensure_peak_panel()
 
         self.after(200, self._apply_maximized_state)
+        self.after(350, self._set_initial_paned_position)
 
         logger.info(
             "Chromatogram visualizer opened (%s compounds, index_db=%s)",
@@ -185,6 +194,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 self.attributes("-zoomed", True)
             except tk.TclError:
                 self.geometry(f"{self.winfo_screenwidth() - 80}x{self.winfo_screenheight() - 120}+40+40")
+        self.after(100, self._set_initial_paned_position)
 
     def _clear_main_reference(self, event: tk.Event) -> None:
         if event.widget != self:
@@ -458,6 +468,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
         if resolved == self._active_db_path and self._data_store is not None:
             return
 
+        self._lineage_session_cache.invalidate()
+
         try:
             self._data_store = DataStore(db_path=Path(path), use_memory=False)
         except Exception as exc:
@@ -495,8 +507,48 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._index_db_mode,
         )
 
+    def _build_main_shell(self) -> None:
+        """Horizontal split: chromatogram + compound table (left) | peak analysis (right)."""
+        sash_bg = "#3d3d3d" if ctk.get_appearance_mode() == "Dark" else "#c0c0c0"
+        self._main_paned = tk.PanedWindow(
+            self,
+            orient=tk.HORIZONTAL,
+            sashwidth=8,
+            sashrelief=tk.RAISED,
+            opaqueresize=True,
+            bg=sash_bg,
+            bd=0,
+            showhandle=False,
+        )
+        self._main_paned.grid(row=0, column=0, sticky="nsew")
+
+        self._left_host = ctk.CTkFrame(self._main_paned, fg_color="transparent")
+        self._left_host.grid_rowconfigure(1, weight=3)
+        self._left_host.grid_rowconfigure(3, weight=2)
+        self._left_host.grid_columnconfigure(0, weight=1)
+        self._main_paned.add(self._left_host, minsize=480, stretch="always")
+
+        self._peak_panel_slot = ctk.CTkFrame(self._main_paned, fg_color="transparent")
+        self._main_paned.add(self._peak_panel_slot, minsize=_PEAK_PANEL_WIDTH, stretch="always")
+
+    def _set_initial_paned_position(self) -> None:
+        """Give the peak analysis pane its default width after the window is laid out."""
+        if self._main_paned is None or not self.winfo_exists():
+            return
+        try:
+            total = self._main_paned.winfo_width()
+            if total > _PEAK_PANEL_WIDTH + 200:
+                self._main_paned.sash_place(0, total - _PEAK_PANEL_WIDTH, 0)
+        except tk.TclError:
+            pass
+
+    def _layout_parent(self) -> ctk.CTkFrame:
+        """Parent frame for plot / table content (left split pane)."""
+        assert self._left_host is not None
+        return self._left_host
+
     def _build_header(self) -> None:
-        header = ctk.CTkFrame(self, fg_color="transparent")
+        header = ctk.CTkFrame(self._layout_parent(), fg_color="transparent")
         header.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 6))
         header.grid_columnconfigure(0, weight=1)
 
@@ -511,7 +563,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
         ).grid(row=0, column=0, sticky="w")
 
     def _build_plot_area(self) -> None:
-        plot_fr = ctk.CTkFrame(self, fg_color="transparent")
+        plot_fr = ctk.CTkFrame(self._layout_parent(), fg_color="transparent")
+        self._plot_frame = plot_fr
         plot_fr.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 6))
         plot_fr.grid_rowconfigure(0, weight=1)
         plot_fr.grid_columnconfigure(0, weight=1)
@@ -547,7 +600,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         ).grid(row=1, column=0, padx=4, pady=(4, 0), sticky="w")
 
     def _build_bottom_controls(self) -> None:
-        bottom = ctk.CTkFrame(self, fg_color="transparent")
+        bottom = ctk.CTkFrame(self._layout_parent(), fg_color="transparent")
         bottom.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 4))
         bottom.grid_columnconfigure(1, weight=1)
 
@@ -613,26 +666,12 @@ class ChromatogramVisualizerWindow(BaseWindow):
             "Save the current plot to PNG, PDF, or SVG. At least one trace must be visible.",
         )
 
-        self._btn_peak_analysis = ctk.CTkButton(
-            row0,
-            text="Peak analysis ▶",
-            width=130,
-            fg_color="#6f42c1",
-            hover_color="#8957e5",
-            command=self._toggle_peak_analysis_panel,
-        )
-        self._btn_peak_analysis.pack(side="left", padx=(0, 12))
-        attach_tooltip(
-            self._btn_peak_analysis,
-            "Open peak picking and integration for one compound and one count channel.",
-        )
-
         self._count_series_frame = ctk.CTkFrame(row0, fg_color="transparent")
         self._count_series_frame.pack(side="left", fill="x", expand=True)
         self._populate_count_series_widgets()
 
     def _build_compound_table(self) -> None:
-        wrap = ctk.CTkFrame(self)
+        wrap = ctk.CTkFrame(self._layout_parent())
         wrap.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 10))
         wrap.grid_rowconfigure(0, weight=0)
         wrap.grid_rowconfigure(1, weight=1)
@@ -1189,28 +1228,138 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._figure.tight_layout()
         self._canvas.draw()
 
-    def _toggle_peak_analysis_panel(self) -> None:
-        self._peak_panel_visible = not self._peak_panel_visible
-        if self._peak_panel_visible:
-            self._btn_peak_analysis.configure(text="Peak analysis ◀")
-            if self._peak_panel is None and self._config is not None:
-                self._peak_panel = PeakAnalysisPanel(
-                    self,
-                    self._config,
-                    on_result_changed=self._on_peak_analysis_result,
-                    on_view_changed=self._on_peak_analysis_view_changed,
-                    get_figure=lambda: self._figure,
-                    get_target_compounds=self._get_plotted_compounds,
-                    get_plot_color=self._get_plot_color_for_compound,
+    def _ensure_peak_panel(self) -> None:
+        if self._peak_panel is not None or self._config is None or self._peak_panel_slot is None:
+            return
+        self._peak_panel = PeakAnalysisPanel(
+            self._peak_panel_slot,
+            self._config,
+            on_result_changed=self._on_peak_analysis_result,
+            on_view_changed=self._on_peak_analysis_view_changed,
+            get_figure=lambda: self._figure,
+            get_target_compounds=self._get_plotted_compounds,
+            get_plot_color=self._get_plot_color_for_compound,
+            on_analyze_lineage=self._on_analyze_lineage,
+            on_view_lineage=self._on_view_lineage,
+            pedigree_configured=self._config.pedigree_configured(),
+        )
+        self._peak_panel.pack(fill=tk.BOTH, expand=True)
+        self._on_peak_analysis_view_changed()
+
+    def _on_analyze_lineage(self) -> None:
+        """Run lineage analysis in the background; update peak table when done."""
+        from src.core.lcseq_backend import AnalysisEngineError
+        from src.core.lineage_service import analyze_lineage_for_path
+        from src.core.pedigree_backend import pedigree_backend_available
+
+        if self._data_store is None or self._config is None:
+            return
+        if not self._config.pedigree_configured():
+            messagebox.showinfo(
+                "Lineage analysis",
+                "Map BB1..BBn columns in Configure Spreadsheet before running lineage.",
+                parent=self,
+            )
+            return
+        if not pedigree_backend_available():
+            messagebox.showerror(
+                "Lineage analysis",
+                "The Rust lcseq extension is required for lineage analysis.\n\n"
+                "See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
+                parent=self,
+            )
+            return
+        compounds = self._get_plotted_compounds()
+        if len(compounds) != 1:
+            messagebox.showinfo(
+                "Lineage analysis",
+                "Plot exactly one compound in the table, then run Analyze lineage.",
+                parent=self,
+            )
+            return
+        if self._peak_panel is None:
+            return
+        if self._lineage_worker is not None and self._lineage_worker.is_alive():
+            return
+        try:
+            settings = self._peak_panel._build_settings()
+        except ValueError as exc:
+            messagebox.showerror("Lineage analysis", str(exc), parent=self)
+            return
+
+        compound = compounds[0]
+        db_path = Path(self._data_store.db_path)
+        config = self._config
+        cache = self._lineage_session_cache
+        self._peak_panel.set_lineage_busy("Starting lineage analysis…")
+
+        def worker() -> None:
+            try:
+                def progress(step: int, total: int, status: str) -> None:
+                    self.after(0, lambda s=status: self._peak_panel.set_lineage_progress(s))
+
+                result = analyze_lineage_for_path(
+                    db_path,
+                    compound,
+                    config,
+                    settings,
+                    progress_callback=progress,
+                    session_cache=cache,
                 )
-            if self._peak_panel is not None:
-                self._peak_panel.grid(row=1, column=1, rowspan=3, sticky="nsew", padx=(0, 12), pady=(0, 10))
-            self._on_peak_analysis_view_changed()
-        else:
-            self._btn_peak_analysis.configure(text="Peak analysis ▶")
-            if self._peak_panel is not None:
-                self._peak_panel.grid_forget()
-            self._redraw_plot()
+                self.after(0, lambda r=result: self._on_lineage_analysis_finished(r))
+            except AnalysisEngineError as exc:
+                msg = str(exc)
+                self.after(0, lambda m=msg: self._on_lineage_analysis_failed(m))
+            except Exception as exc:
+                logger.error("Lineage analysis failed: %s", exc, exc_info=True)
+                msg = str(exc)
+                self.after(0, lambda m=msg: self._on_lineage_analysis_failed(m))
+
+        self._lineage_worker = threading.Thread(target=worker, daemon=True)
+        self._lineage_worker.start()
+
+    def _on_lineage_analysis_finished(self, result: LineageAnalysisResult) -> None:
+        self._lineage_worker = None
+        if self._peak_panel is None:
+            return
+        self._peak_panel.set_lineage_result(result)
+        self._on_lineage_complete(result)
+
+    def _on_lineage_analysis_failed(self, message: str) -> None:
+        self._lineage_worker = None
+        if self._peak_panel is not None:
+            self._peak_panel.set_lineage_failed(message)
+        messagebox.showerror("Lineage analysis", message, parent=self)
+
+    def _on_view_lineage(self) -> None:
+        """Open scrollable lineage figure viewer for the last analysis."""
+        from src.ui.lineage_analysis_window import open_lineage_viewer_window
+
+        if self._peak_panel is None or self._config is None:
+            return
+        result = self._peak_panel.lineage_result
+        if result is None:
+            messagebox.showinfo(
+                "Lineage viewer",
+                "Run Analyze lineage first to build the lineage figure.",
+                parent=self,
+            )
+            return
+        open_lineage_viewer_window(self, result, self._config)
+
+    def _on_lineage_complete(self, result: LineageAnalysisResult) -> None:
+        """Update peak table with suspected peak IDs after lineage analysis."""
+        if self._peak_panel is None:
+            return
+        if self._peak_panel.batch is None or not self._peak_panel.batch.total_peak_count:
+            return
+        compounds = self._get_plotted_compounds()
+        if len(compounds) != 1:
+            return
+        cid = str(compounds[0].compound_id).strip()
+        self._peak_panel.apply_lineage_labels(result, cid)
+        self._peak_analysis_batch = self._peak_panel.batch
+        self._redraw_plot()
 
     def _get_plotted_compounds(self) -> List[Compound]:
         return [c for c in self._current_compounds if c is not None]
@@ -1253,7 +1402,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         return None
 
     def _plot_legend_visible(self) -> bool:
-        if self._peak_panel_visible and self._peak_panel is not None:
+        if self._peak_panel is not None:
             return self._peak_panel.show_legend
         return True
 

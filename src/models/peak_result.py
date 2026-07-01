@@ -32,6 +32,7 @@ class PickedPeak:
     pct_area: float = 0.0
     left_rt: float = 0.0
     right_rt: float = 0.0
+    suspected_peak_id: Optional[str] = None
 
 
 @dataclass

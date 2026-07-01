@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -12,6 +13,10 @@ import customtkinter as ctk
 
 from src.core.analysis_export import export_figure, export_peaks_batch_csv
 from src.core.lcseq_backend import get_peak_picker_backend
+from src.core.lineage_peak_labels import (
+    apply_lineage_labels_to_batch,
+    is_intended_product_label,
+)
 from src.core.peak_analysis_service import (
     analyze_peaks_batch,
     estimate_baselines_batch,
@@ -20,6 +25,7 @@ from src.core.time_display import convert_time_value
 from src.models.analysis_settings import AnalysisSettings, TimeUnit
 from src.models.compound import Compound
 from src.models.peak_result import PeakAnalysisBatchResult, PeakAnalysisResult
+from src.models.pedigree_result import LineageAnalysisResult
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.widget_tooltip import attach_tooltip
 
@@ -37,6 +43,10 @@ _METRIC_COLUMNS = (
 
 _PEAK_ROW_BG = "#2b2b2b"
 _UNFOCUSED_PEAK_ALPHA = 0.15
+_INTENDED_PRODUCT_TAG = "intended_product"
+_INTENDED_PRODUCT_BG = "#1a5c32"
+_INTENDED_PRODUCT_FG = "#aff7b8"
+_PEAK_PANEL_WIDTH = 320
 
 
 def _blend_hex(fg: str, bg: str, ratio: float) -> str:
@@ -67,6 +77,9 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         get_figure: Callable[[], object],
         get_target_compounds: Callable[[], List[Compound]],
         get_plot_color: Callable[[str], str],
+        on_analyze_lineage: Optional[Callable[[], None]] = None,
+        on_view_lineage: Optional[Callable[[], None]] = None,
+        pedigree_configured: bool = False,
     ) -> None:
         super().__init__(master, fg_color=("gray90", "gray20"))
         self._config = config
@@ -75,11 +88,16 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._get_figure = get_figure
         self._get_target_compounds = get_target_compounds
         self._get_plot_color = get_plot_color
+        self._on_analyze_lineage = on_analyze_lineage
+        self._on_view_lineage = on_view_lineage
+        self._pedigree_configured = pedigree_configured
         self._batch: Optional[PeakAnalysisBatchResult] = None
+        self._lineage_result: Optional[LineageAnalysisResult] = None
+        self._show_suspected_peak_column = False
         self._show_baseline_flag = False
         self._show_integration_flag = False
         self._show_legend_flag = False
-        self._peak_row_meta: Dict[str, Tuple[str, int, str]] = {}
+        self._peak_row_meta: Dict[str, Tuple[str, int, str, Optional[str]]] = {}
         self._color_tags_configured: Set[str] = set()
         self._uses_variants = bool(config.compound_variant_column)
         self._id_heading = config.compound_id_column
@@ -204,12 +222,50 @@ class PeakAnalysisPanel(ctk.CTkFrame):
 
         export_row = ctk.CTkFrame(self, fg_color="transparent")
         export_row.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
-        ctk.CTkButton(export_row, text="Export CSV…", width=100, command=self._on_export_csv).pack(
-            side="left", padx=(0, 6)
+        ctk.CTkButton(export_row, text="Export CSV…", width=72, command=self._on_export_csv).pack(
+            side="left", padx=(0, 4)
         )
-        ctk.CTkButton(export_row, text="Export plot…", width=100, command=self._on_export_plot).pack(
-            side="left"
+        ctk.CTkButton(export_row, text="Export plot…", width=72, command=self._on_export_plot).pack(
+            side="left", padx=(0, 4)
         )
+        self._lineage_btn = ctk.CTkButton(
+            export_row,
+            text="Analyze lineage",
+            width=72,
+            fg_color="#1F6FEB",
+            command=self._on_lineage_clicked,
+        )
+        self._lineage_btn.pack(side="left", padx=(0, 4))
+        self._view_lineage_btn = ctk.CTkButton(
+            export_row,
+            text="View lineage",
+            width=72,
+            fg_color="#238636",
+            state="disabled",
+            command=self._on_view_lineage_clicked,
+        )
+        self._view_lineage_btn.pack(side="left")
+        if not pedigree_configured:
+            self._lineage_btn.configure(state="disabled")
+            self._view_lineage_btn.configure(state="disabled")
+            attach_tooltip(
+                self._lineage_btn,
+                "Map BB1..BBn columns in Configure Spreadsheet to enable lineage analysis.",
+            )
+        elif on_analyze_lineage is None:
+            self._lineage_btn.configure(state="disabled")
+            self._view_lineage_btn.configure(state="disabled")
+        else:
+            attach_tooltip(
+                self._lineage_btn,
+                "Run pedigree evaluation and assign suspected peak IDs to the table.",
+            )
+            attach_tooltip(
+                self._view_lineage_btn,
+                "Open a scrollable lineage figure (run Analyze lineage first).",
+            )
+        if on_view_lineage is None:
+            self._view_lineage_btn.configure(state="disabled")
 
         self._status = ctk.CTkLabel(
             self,
@@ -233,19 +289,20 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             show="headings",
             height=8,
         )
-        for col in self._table_columns:
-            self._tree.heading(col, text=self._column_heading(col))
-            width = 88 if col in ("p_value", "library_id", "compound_id", "variant") else 72
-            self._tree.column(col, width=width, stretch=False)
+        self._apply_tree_columns()
         attach_tooltip(
             self._tree,
             "Rows are color-coded by trace. Click one or more peaks to focus them on the plot; "
-            "click again with nothing selected to show all peaks. RT uses the display time unit.",
+            "click again with nothing selected to show all peaks. RT uses the display time unit. "
+            "After lineage analysis, the intended product row is highlighted in bold green. "
+            "Scroll horizontally if all columns do not fit.",
         )
         vsb = ttk.Scrollbar(table_wrap, orient="vertical", command=self._tree.yview)
-        self._tree.configure(yscrollcommand=vsb.set)
+        xsb = ttk.Scrollbar(table_wrap, orient="horizontal", command=self._tree.xview)
+        self._tree.configure(yscrollcommand=vsb.set, xscrollcommand=xsb.set)
         self._tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
         self._configure_peak_tree_style()
         self._tree.bind("<<TreeviewSelect>>", self._on_peak_table_selection)
 
@@ -262,16 +319,49 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         style.map("PeakAnalysis.Treeview", background=[("selected", "#1f538d")])
         self._tree.configure(style="PeakAnalysis.Treeview")
 
+    def _tree_column_width(self, col: str) -> int:
+        if col in ("p_value", "library_id", "compound_id", "variant"):
+            return 88
+        if col == "suspected_peak_id":
+            return 150
+        return 72
+
+    def _apply_tree_columns(self) -> None:
+        """Apply column headings and fixed widths (horizontal scroll when needed)."""
+        self._tree.configure(columns=self._table_columns)
+        for col in self._table_columns:
+            self._tree.heading(col, text=self._column_heading(col))
+            self._tree.column(
+                col,
+                width=self._tree_column_width(col),
+                stretch=False,
+                minwidth=40,
+            )
+
     def _build_table_columns(self) -> Tuple[str, ...]:
+        base: Tuple[str, ...]
         if self._uses_variants:
-            return ("library_id", "variant", *_METRIC_COLUMNS)
-        return ("compound_id", *_METRIC_COLUMNS)
+            base = ("library_id", "variant", *_METRIC_COLUMNS)
+        else:
+            base = ("compound_id", *_METRIC_COLUMNS)
+        if self._show_suspected_peak_column:
+            return (*base, "suspected_peak_id")
+        return base
+
+    def _ensure_suspected_peak_column(self) -> None:
+        if self._show_suspected_peak_column:
+            return
+        self._show_suspected_peak_column = True
+        self._table_columns = self._build_table_columns()
+        self._apply_tree_columns()
 
     def _column_heading(self, col: str) -> str:
         if col == "library_id" or col == "compound_id":
             return self._id_heading
         if col == "variant":
             return self._variant_heading
+        if col == "suspected_peak_id":
+            return "Suspected peak ID"
         headings = {
             "peak": "#",
             "rt": "RT",
@@ -361,6 +451,73 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             return f"{label} ({entry.variant_label})"
         return label
 
+    @property
+    def lineage_result(self) -> Optional[LineageAnalysisResult]:
+        return self._lineage_result
+
+    def set_lineage_busy(self, message: str) -> None:
+        """Disable lineage actions while a background analysis runs."""
+        self._lineage_btn.configure(state="disabled")
+        self._view_lineage_btn.configure(state="disabled")
+        self._status.configure(text=message, text_color=("gray10", "gray90"))
+
+    def set_lineage_progress(self, message: str) -> None:
+        self._status.configure(text=message, text_color=("gray10", "gray90"))
+
+    def set_lineage_result(self, result: LineageAnalysisResult) -> None:
+        """Store a completed lineage analysis and enable the viewer."""
+        self._lineage_result = result
+        n = len(result.panels)
+        self._lineage_btn.configure(state="normal")
+        self._view_lineage_btn.configure(state="normal")
+        self._status.configure(
+            text=(
+                f"Lineage ready for {result.compound_id} — {n} tier(s). "
+                "Peak IDs updated when peaks are picked. Click View lineage to open the figure."
+            ),
+            text_color=("gray10", "gray90"),
+        )
+
+    def set_lineage_failed(self, message: str) -> None:
+        self._lineage_result = None
+        self._lineage_btn.configure(state="normal")
+        self._view_lineage_btn.configure(state="disabled")
+        self._status.configure(text=message, text_color="#D29922")
+
+    def apply_lineage_labels(self, result: LineageAnalysisResult, compound_id: str) -> None:
+        """Fill suspected peak IDs on the peak table from a lineage analysis result."""
+        if self._batch is None or not self._batch.total_peak_count:
+            return
+        self._batch = apply_lineage_labels_to_batch(
+            self._batch,
+            result,
+            compound_id,
+            stored_time_unit=self._stored_time_unit,
+        )
+        self._ensure_suspected_peak_column()
+        self._populate_table(self._batch)
+        labeled = sum(
+            1
+            for entry in self._batch.results
+            for peak in entry.peaks
+            if peak.suspected_peak_id and peak.suspected_peak_id != "unknown"
+        )
+        unknown = sum(
+            1
+            for entry in self._batch.results
+            for peak in entry.peaks
+            if peak.suspected_peak_id == "unknown"
+        )
+        self._status.configure(
+            text=(
+                f"Lineage labels applied — {labeled} peak(s) matched, "
+                f"{unknown} unknown (tolerance={result.settings.tolerance:g} "
+                f"{result.settings.time_unit})."
+            ),
+            text_color=("gray10", "gray90"),
+        )
+        self._on_result_changed(self._batch)
+
     def _on_pick_peaks(self) -> None:
         try:
             compounds, settings = self._resolve_targets()
@@ -413,23 +570,54 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             self._color_tags_configured.add(tag)
         return tag
 
+    def _ensure_intended_product_tag(self) -> str:
+        if _INTENDED_PRODUCT_TAG not in self._color_tags_configured:
+            bold = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+            self._tree.tag_configure(
+                _INTENDED_PRODUCT_TAG,
+                background=_INTENDED_PRODUCT_BG,
+                foreground=_INTENDED_PRODUCT_FG,
+                font=bold,
+            )
+            self._color_tags_configured.add(_INTENDED_PRODUCT_TAG)
+        return _INTENDED_PRODUCT_TAG
+
+    def _row_tags_for_peak(
+        self,
+        *,
+        color: str,
+        suspected_peak_id: Optional[str],
+        selected: bool,
+    ) -> Tuple[str, ...]:
+        if suspected_peak_id and is_intended_product_label(suspected_peak_id):
+            tags: List[str] = [self._ensure_intended_product_tag()]
+        else:
+            tags = [self._ensure_color_tag(color)]
+        if selected:
+            if "peak_focus" not in self._color_tags_configured:
+                self._tree.tag_configure(
+                    "peak_focus",
+                    background=_blend_hex("#ffffff", _PEAK_ROW_BG, 0.14),
+                )
+                self._color_tags_configured.add("peak_focus")
+            tags.append("peak_focus")
+        return tuple(tags)
+
     def _refresh_peak_row_tags(self) -> None:
         selected = {str(iid) for iid in self._tree.selection()}
-        if "peak_focus" not in self._color_tags_configured:
-            self._tree.tag_configure(
-                "peak_focus",
-                background=_blend_hex("#ffffff", _PEAK_ROW_BG, 0.14),
-            )
-            self._color_tags_configured.add("peak_focus")
         for iid in self._tree.get_children():
             meta = self._peak_row_meta.get(str(iid))
             if meta is None:
                 continue
-            _cid, _pidx, color = meta
-            tags = [self._ensure_color_tag(color)]
-            if str(iid) in selected:
-                tags.append("peak_focus")
-            self._tree.item(iid, tags=tuple(tags))
+            _cid, _pidx, color, suspected = meta
+            self._tree.item(
+                iid,
+                tags=self._row_tags_for_peak(
+                    color=color,
+                    suspected_peak_id=suspected,
+                    selected=str(iid) in selected,
+                ),
+            )
 
     def _peak_row_iid(self, compound_id: str, peak_index: int) -> str:
         safe = str(compound_id).replace("|", "/")
@@ -485,8 +673,20 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             self._populate_table(self._batch)
         self._on_view_changed()
 
+    def _on_lineage_clicked(self) -> None:
+        if self._on_analyze_lineage is not None:
+            self._on_analyze_lineage()
+
+    def _on_view_lineage_clicked(self) -> None:
+        if self._on_view_lineage is not None:
+            self._on_view_lineage()
+
     def _on_clear(self) -> None:
         self._batch = None
+        self._lineage_result = None
+        self._show_suspected_peak_column = False
+        self._table_columns = self._build_table_columns()
+        self._apply_tree_columns()
         self._show_baseline_flag = False
         self._show_integration_flag = False
         self._show_legend_flag = False
@@ -502,6 +702,8 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         )
         self._on_result_changed(None)
         self._on_view_changed()
+        if self._pedigree_configured and self._on_analyze_lineage is not None:
+            self._view_lineage_btn.configure(state="disabled")
 
     def _row_values(self, entry: PeakAnalysisResult, peak) -> tuple:
         id_val = str(entry.primary_compound_id or entry.compound_id).strip()
@@ -514,6 +716,8 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             f"{peak.prominence:.4g}",
             f"{peak.p_value:.2e}",
         )
+        if self._show_suspected_peak_column:
+            metrics = (*metrics, peak.suspected_peak_id or "")
         if self._uses_variants:
             return (id_val, str(entry.variant_label or "").strip(), *metrics)
         return (id_val, *metrics)
@@ -524,17 +728,21 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._peak_row_meta.clear()
         for entry in batch.results:
             color = entry.plot_color
-            tag = self._ensure_color_tag(color)
             cid = str(entry.compound_id).strip()
             for peak in entry.peaks:
                 row_iid = self._peak_row_iid(cid, peak.peak_index)
-                self._peak_row_meta[row_iid] = (cid, peak.peak_index, color)
+                suspected = peak.suspected_peak_id
+                self._peak_row_meta[row_iid] = (cid, peak.peak_index, color, suspected)
                 self._tree.insert(
                     "",
                     "end",
                     iid=row_iid,
                     values=self._row_values(entry, peak),
-                    tags=(tag,),
+                    tags=self._row_tags_for_peak(
+                        color=color,
+                        suspected_peak_id=suspected,
+                        selected=False,
+                    ),
                 )
         self._refresh_peak_row_tags()
 
