@@ -62,7 +62,17 @@ from src.core.pedigree_analysis_store import (
 )
 from src.core.pedigree_backend import pedigree_backend_available
 from src.core.pedigree_export import export_pedigree_csv, export_product_prominence_csv
-from src.core.pedigree_render import graphviz_available, render_pedigree_tree
+from src.core.pedigree_render import (
+    PedigreeTreeRenderOptions,
+    build_default_tree_render_options,
+    build_pedigree_tree_preview_figure,
+    count_visible_pedigree_nodes,
+    graphviz_available,
+    graphviz_install_hint,
+    max_tier_in_records,
+    render_pedigree_tree,
+    suggest_include_failed,
+)
 from src.core.pedigree_service import run_pedigree_analysis_for_path
 from src.models.analysis_settings import AnalysisSettings
 from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeTierSummary
@@ -135,17 +145,28 @@ class LibraryDataWindow(BaseWindow):
         self._signal_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
         self._pedigree_result: Optional[PedigreeAnalysisResult] = None
         self._pedigree_snapshot_path: Optional[Path] = None
-        self._pedigree_tree_photo: Optional[object] = None
         self._pedigree_frame: Optional[ctk.CTkScrollableFrame] = None
         self._pedigree_summary_label: Optional[ctk.CTkLabel] = None
         self._pedigree_status_label: Optional[ctk.CTkLabel] = None
-        self._pedigree_tree_preview: Optional[tk.Label] = None
+        self._pedigree_tree_host: Optional[ctk.CTkFrame] = None
+        self._pedigree_tree_placeholder: Optional[ctk.CTkLabel] = None
+        self._pedigree_tree_plot_host: Optional[tk.Frame] = None
+        self._pedigree_tree_figure: Optional[object] = None
+        self._pedigree_tree_canvas: Optional[object] = None
+        self._pedigree_tree_toolbar: Optional[object] = None
         self._pedigree_channel_var = tk.StringVar(value="")
         self._pedigree_time_unit_var = tk.StringVar(value="seconds")
         self._pedigree_tolerance_var = tk.StringVar(value="30")
         self._pedigree_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
         self._pedigree_isoform_var = tk.StringVar(value="All")
         self._pedigree_variant_choices: List[str] = ["All"]
+        self._pedigree_include_failed_var = tk.BooleanVar(value=True)
+        self._pedigree_show_rt_var = tk.BooleanVar(value=True)
+        self._pedigree_tree_tier_slider: Optional[ctk.CTkSlider] = None
+        self._pedigree_tree_tier_label: Optional[ctk.CTkLabel] = None
+        self._pedigree_tree_dense_note: Optional[ctk.CTkLabel] = None
+        self._pedigree_graphviz_banner: Optional[ctk.CTkLabel] = None
+        self._pedigree_tree_node_count_label: Optional[ctk.CTkLabel] = None
         self._cached_scan: Optional[LibraryScanData] = None
         self._current_snapshot: Optional[LibraryComputationSnapshot] = None
         self._current_snapshot_path: Optional[Path] = None
@@ -886,6 +907,14 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_export_prominence_btn.pack(side="left", padx=(0, 6))
         self._busy_sensitive_widgets.append(self._pedigree_export_prominence_btn)
 
+        ctk.CTkButton(
+            pedigree_actions,
+            text="About figure…",
+            width=120,
+            fg_color="gray40",
+            command=self._on_pedigree_figure_readme,
+        ).pack(side="left", padx=(0, 6))
+
         self._pedigree_save_btn = ctk.CTkButton(
             pedigree_actions,
             text="Save pedigree",
@@ -899,57 +928,163 @@ class LibraryDataWindow(BaseWindow):
 
         pedigree_body = ctk.CTkFrame(pedigree_tab, fg_color="transparent")
         pedigree_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        pedigree_body.grid_columnconfigure(0, weight=1)
-        pedigree_body.grid_columnconfigure(1, weight=2)
+        pedigree_body.grid_columnconfigure(0, weight=0, minsize=300)
+        pedigree_body.grid_columnconfigure(1, weight=1)
         pedigree_body.grid_rowconfigure(0, weight=1)
 
+        pedigree_sidebar = ctk.CTkFrame(pedigree_body, fg_color="transparent")
+        pedigree_sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        pedigree_sidebar.grid_columnconfigure(0, weight=1)
+        pedigree_sidebar.grid_rowconfigure(0, weight=1)
+
         self._pedigree_frame = ctk.CTkScrollableFrame(
-            pedigree_body,
+            pedigree_sidebar,
             label_text="Tier summary",
             label_font=_section_header_font(),
             label_text_color=_SECTION_HEADER_COLOR,
+            width=292,
         )
-        self._pedigree_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self._pedigree_frame.grid(row=0, column=0, sticky="nsew")
+
+        tree_controls = ctk.CTkFrame(pedigree_sidebar, fg_color="transparent")
+        tree_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        tree_controls.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            tree_controls,
+            text="Tree display",
+            font=_section_header_font(),
+            text_color=_SECTION_HEADER_COLOR,
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 4))
+
+        tree_controls_inner = ctk.CTkFrame(tree_controls, corner_radius=8)
+        tree_controls_inner.grid(row=1, column=0, sticky="ew")
+        tree_controls_inner.grid_columnconfigure(0, weight=1)
+
+        self._pedigree_graphviz_banner = ctk.CTkLabel(
+            tree_controls_inner,
+            text="",
+            font=ctk.CTkFont(size=10),
+            text_color="#B8860B",
+            anchor="w",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        )
+        self._pedigree_graphviz_banner.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        self._update_pedigree_graphviz_banner()
+
+        ctk.CTkCheckBox(
+            tree_controls_inner,
+            text="Show failed trim points",
+            variable=self._pedigree_include_failed_var,
+            command=self._on_pedigree_tree_option_changed,
+        ).grid(row=1, column=0, sticky="w", padx=8, pady=2)
+
+        ctk.CTkCheckBox(
+            tree_controls_inner,
+            text="Show chosen RT on passed nodes",
+            variable=self._pedigree_show_rt_var,
+            command=self._on_pedigree_tree_option_changed,
+        ).grid(row=2, column=0, sticky="w", padx=8, pady=2)
+
+        tier_row = ctk.CTkFrame(tree_controls_inner, fg_color="transparent")
+        tier_row.grid(row=3, column=0, sticky="ew", padx=8, pady=(4, 2))
+        tier_row.grid_columnconfigure(0, weight=1)
+
+        self._pedigree_tree_tier_label = ctk.CTkLabel(
+            tier_row,
+            text="Max tier shown: —",
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+        )
+        self._pedigree_tree_tier_label.grid(row=0, column=0, sticky="w")
+
+        max_tier_default = max(0, (self._config.library_cycle_count or 1) - 1)
+        self._pedigree_tree_tier_slider = ctk.CTkSlider(
+            tier_row,
+            from_=0,
+            to=max(max_tier_default, 1),
+            number_of_steps=max(max_tier_default, 1),
+            command=self._on_pedigree_tier_slider_changed,
+        )
+        self._pedigree_tree_tier_slider.set(float(max_tier_default))
+        self._pedigree_tree_tier_slider.grid(row=1, column=0, sticky="ew", pady=(2, 0))
+
+        self._pedigree_tree_dense_note = ctk.CTkLabel(
+            tree_controls_inner,
+            text="",
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="w",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        )
+        self._pedigree_tree_dense_note.grid(row=4, column=0, sticky="ew", padx=8, pady=(2, 0))
+
+        self._pedigree_tree_node_count_label = ctk.CTkLabel(
+            tree_controls_inner,
+            text="",
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="w",
+        )
+        self._pedigree_tree_node_count_label.grid(row=5, column=0, sticky="w", padx=8, pady=(0, 2))
+
+        ctk.CTkButton(
+            tree_controls_inner,
+            text="Refresh tree",
+            width=120,
+            fg_color="gray40",
+            command=self._on_refresh_pedigree_tree,
+        ).grid(row=6, column=0, sticky="w", padx=8, pady=(4, 8))
 
         tree_col = ctk.CTkFrame(pedigree_body, corner_radius=8)
         tree_col.grid(row=0, column=1, sticky="nsew")
         tree_col.grid_columnconfigure(0, weight=1)
         tree_col.grid_rowconfigure(1, weight=1)
 
+        tree_header = ctk.CTkFrame(tree_col, fg_color="transparent")
+        tree_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+        tree_header.grid_columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
-            tree_col,
-            text="Split-tree (root at centre)",
+            tree_header,
+            text="Split-tree figure",
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+        ).grid(row=0, column=0, sticky="w")
 
         ctk.CTkLabel(
-            tree_col,
-            text=(
-                "Green = passed class/compound · Red = synthesis failure · "
-                "Yellow = insufficient sequencing data · Grey = root"
-            ),
-            font=ctk.CTkFont(size=10),
+            tree_header,
+            text="Use the matplotlib toolbar below the figure to pan, zoom, and reset the view.",
+            font=ctk.CTkFont(size=11),
             text_color="gray",
             anchor="w",
-            wraplength=480,
+            wraplength=520,
             justify="left",
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(28, 8))
+        ).grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
-        tree_host = ctk.CTkFrame(tree_col, fg_color=("gray90", "gray17"))
-        tree_host.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
-        tree_host.grid_columnconfigure(0, weight=1)
-        tree_host.grid_rowconfigure(0, weight=1)
+        self._pedigree_tree_host = ctk.CTkFrame(tree_col, fg_color=("gray90", "gray17"))
+        self._pedigree_tree_host.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        self._pedigree_tree_host.grid_columnconfigure(0, weight=1)
+        self._pedigree_tree_host.grid_rowconfigure(0, weight=1)
 
-        self._pedigree_tree_preview = tk.Label(
-            tree_host,
+        self._pedigree_tree_placeholder = ctk.CTkLabel(
+            self._pedigree_tree_host,
             text="Tree image appears after pedigree analysis.",
-            bg=tk_bg,
-            borderwidth=0,
-            wraplength=460,
+            font=ctk.CTkFont(size=12),
+            text_color="gray",
+            wraplength=520,
             justify="center",
         )
-        self._pedigree_tree_preview.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self._pedigree_tree_placeholder.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+
+        self._pedigree_tree_plot_host = tk.Frame(self._pedigree_tree_host, bg=tk_bg)
+        self._pedigree_tree_plot_host.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self._pedigree_tree_plot_host.grid_remove()
+
+        self._on_pedigree_tier_slider_changed(float(max_tier_default))
 
         self._loading_frame = ctk.CTkFrame(shell, corner_radius=12)
         self._loading_frame.grid(row=0, column=0, sticky="nsew")
@@ -2867,7 +3002,13 @@ class LibraryDataWindow(BaseWindow):
         ).grid(row=0, column=1, padx=12, pady=10, sticky="e")
 
     @staticmethod
-    def _make_info_card(parent: ctk.CTkFrame, title: str, body: str) -> ctk.CTkFrame:
+    def _make_info_card(
+        parent: ctk.CTkFrame,
+        title: str,
+        body: str,
+        *,
+        wraplength: int = 760,
+    ) -> ctk.CTkFrame:
         card = ctk.CTkFrame(parent, corner_radius=10)
         card.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
@@ -2881,7 +3022,7 @@ class LibraryDataWindow(BaseWindow):
             text=body,
             font=ctk.CTkFont(size=12),
             anchor="w",
-            wraplength=760,
+            wraplength=wraplength,
             justify="left",
         ).grid(row=1, column=0, padx=14, pady=(0, 12), sticky="w")
         return card
@@ -2938,6 +3079,133 @@ class LibraryDataWindow(BaseWindow):
         if tier_bits:
             parts.append(" · ".join(tier_bits))
         return "\n".join(parts)
+
+    @staticmethod
+    def _load_pedigree_split_tree_readme() -> str:
+        """Bundled scientist readme for the pedigree split-tree figure."""
+        path = Path(__file__).resolve().parent.parent / "help" / "pedigree_split_tree_readme.md"
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+        return "Pedigree split-tree readme not found."
+
+    def _update_pedigree_graphviz_banner(self) -> None:
+        if self._pedigree_graphviz_banner is None:
+            return
+        if graphviz_available():
+            self._pedigree_graphviz_banner.configure(text="")
+            self._pedigree_graphviz_banner.grid_remove()
+        else:
+            hint = graphviz_install_hint()
+            self._pedigree_graphviz_banner.configure(
+                text=f"⚠ {hint}",
+                text_color="#B8860B",
+            )
+            self._pedigree_graphviz_banner.grid()
+
+    def _pedigree_tree_render_options(self) -> PedigreeTreeRenderOptions:
+        max_tier = int(round(self._pedigree_tree_tier_slider.get())) if self._pedigree_tree_tier_slider else 0
+        return PedigreeTreeRenderOptions(
+            max_display_tier=max_tier,
+            include_failed=bool(self._pedigree_include_failed_var.get()),
+            show_rt=bool(self._pedigree_show_rt_var.get()),
+        )
+
+    def _configure_pedigree_tier_slider(self, result: PedigreeAnalysisResult) -> None:
+        if self._pedigree_tree_tier_slider is None:
+            return
+        max_tier = max_tier_in_records(result.records)
+        steps = max(max_tier, 1)
+        self._pedigree_tree_tier_slider.configure(from_=0, to=max_tier, number_of_steps=steps)
+        default_tier = result.max_display_tier
+        if default_tier is None:
+            default_tier = build_default_tree_render_options(
+                result.records,
+                library_cycle_count=result.library_cycle_count,
+            ).max_display_tier
+        tier_val = min(max(int(default_tier or 0), 0), max_tier)
+        self._pedigree_tree_tier_slider.set(float(tier_val))
+        self._on_pedigree_tier_slider_changed(float(tier_val))
+
+    def _update_pedigree_tree_density_note(self, result: PedigreeAnalysisResult) -> None:
+        if self._pedigree_tree_dense_note is None or self._pedigree_tree_node_count_label is None:
+            return
+        opts = self._pedigree_tree_render_options()
+        visible = count_visible_pedigree_nodes(
+            result.records,
+            include_failed=opts.include_failed,
+            max_display_tier=opts.max_display_tier,
+        )
+        self._pedigree_tree_node_count_label.configure(
+            text=f"Visible nodes in figure: {visible:,}"
+        )
+        if not opts.include_failed:
+            with_failed = count_visible_pedigree_nodes(
+                result.records,
+                include_failed=True,
+                max_display_tier=opts.max_display_tier,
+            )
+            if with_failed > visible:
+                self._pedigree_tree_dense_note.configure(
+                    text=(
+                        f"Showing passed nodes only ({visible:,} of {with_failed:,} visible with "
+                        "failed trim points). Enable failed trim points to see red/yellow boundaries."
+                    )
+                )
+                return
+        self._pedigree_tree_dense_note.configure(text="")
+
+    def _on_pedigree_tier_slider_changed(self, value: float) -> None:
+        tier = int(round(float(value)))
+        if self._pedigree_tree_tier_label is not None:
+            self._pedigree_tree_tier_label.configure(text=f"Max tier shown: {tier}")
+        if self._pedigree_result is not None:
+            self._update_pedigree_tree_density_note(self._pedigree_result)
+
+    def _on_pedigree_tree_option_changed(self) -> None:
+        if self._pedigree_result is not None:
+            self._update_pedigree_tree_density_note(self._pedigree_result)
+
+    def _render_pedigree_tree_image(
+        self,
+        result: PedigreeAnalysisResult,
+        tree_path: Path,
+        *,
+        fmt: str = "png",
+    ):
+        """Render split-tree using current display controls."""
+        opts = self._pedigree_tree_render_options()
+        result.max_display_tier = opts.max_display_tier
+        render_out = render_pedigree_tree(
+            result.records,
+            tree_path,
+            fmt=fmt,
+            max_display_tier=opts.max_display_tier,
+            include_failed=opts.include_failed,
+            show_rt=opts.show_rt,
+        )
+        result.tree_image_path = render_out.path
+        result.tree_render_engine = render_out.engine
+        result.tree_render_note = render_out.detail
+        self._update_pedigree_tree_density_note(result)
+        return render_out
+
+    def _on_refresh_pedigree_tree(self) -> None:
+        if self._pedigree_result is None or self._db_path is None:
+            return
+        self._update_pedigree_graphviz_banner()
+        session_dir = session_pedigree_dir(self._db_path)
+        tree_path = session_dir / "pedigree_tree.png"
+        try:
+            self._render_pedigree_tree_image(self._pedigree_result, tree_path)
+            self._show_pedigree_tree_preview(self._pedigree_result)
+            if self._pedigree_status_label is not None:
+                engine = self._pedigree_result.tree_render_engine or "unknown"
+                self._pedigree_status_label.configure(
+                    text=f"Tree refreshed ({engine}).",
+                    text_color=("gray10", "gray90"),
+                )
+        except Exception as exc:
+            messagebox.showerror("Pedigree tree", str(exc), parent=self)
 
     def _on_run_pedigree(self) -> None:
         if self._is_busy():
@@ -3009,13 +3277,20 @@ class LibraryDataWindow(BaseWindow):
                     progress_callback=progress,
                     isoform_label=isoform_label,
                 )
+                tree_opts = build_default_tree_render_options(
+                    result.records,
+                    library_cycle_count=result.library_cycle_count,
+                )
+                result.max_display_tier = tree_opts.max_display_tier
                 session_dir = session_pedigree_dir(db_path)
                 tree_path = session_dir / "pedigree_tree.png"
                 try:
                     render_out = render_pedigree_tree(
                         result.records,
                         tree_path,
-                        max_display_tier=result.max_display_tier,
+                        max_display_tier=tree_opts.max_display_tier,
+                        include_failed=tree_opts.include_failed,
+                        show_rt=tree_opts.show_rt,
                     )
                     result.tree_image_path = render_out.path
                     result.tree_render_engine = render_out.engine
@@ -3023,17 +3298,28 @@ class LibraryDataWindow(BaseWindow):
                 except Exception as exc:
                     logger.error("Pedigree tree render failed: %s", exc, exc_info=True)
                     result.tree_render_note = f"Tree image could not be generated: {exc}"
-                self._schedule_on_main(self._on_pedigree_ready, result)
+                    tree_opts = None
+                self._schedule_on_main(self._on_pedigree_ready, result, tree_opts)
             except Exception as exc:
                 logger.error("Pedigree analysis failed: %s", exc, exc_info=True)
                 self._schedule_on_main(self._on_pedigree_failed, str(exc))
 
         self._start_worker(worker)
 
-    def _on_pedigree_ready(self, result: PedigreeAnalysisResult) -> None:
+    def _on_pedigree_ready(
+        self,
+        result: PedigreeAnalysisResult,
+        tree_opts: Optional[PedigreeTreeRenderOptions] = None,
+    ) -> None:
         self._worker_thread = None
         self._pedigree_result = result
         self._pedigree_snapshot_path = None
+        self._update_pedigree_graphviz_banner()
+        if tree_opts is not None:
+            self._pedigree_include_failed_var.set(tree_opts.include_failed)
+            self._pedigree_show_rt_var.set(tree_opts.show_rt)
+            self._configure_pedigree_tier_slider(result)
+            self._update_pedigree_tree_density_note(result)
         self._display_pedigree_result(result)
         if self._pedigree_status_label is not None:
             status = (
@@ -3083,114 +3369,210 @@ class LibraryDataWindow(BaseWindow):
                     f"failed={total_fail:,}, pruned={total_pruned:,} · "
                     f"engine {result.backend_name}"
                 ),
+                wraplength=_SIDEBAR_WRAP,
             )
-            header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-            row_idx = 1
-            prom = result.product_prominence
-            if prom is not None:
-                prom_card = self._make_product_prominence_card(self._pedigree_frame, prom)
-                prom_card.grid(row=row_idx, column=0, sticky="ew", pady=(0, 8))
-                row_idx += 1
-            for summary in result.tier_summaries:
-                card = self._make_tier_summary_card(self._pedigree_frame, summary)
-                card.grid(row=row_idx, column=0, sticky="ew", pady=4)
-                row_idx += 1
+            header.pack(fill="x", pady=(0, 8))
+            if result.tier_summaries:
+                self._make_tier_summary_panel(self._pedigree_frame, result.tier_summaries)
+            else:
+                ctk.CTkLabel(
+                    self._pedigree_frame,
+                    text="No per-tier counts were returned for this run.",
+                    font=ctk.CTkFont(size=11),
+                    text_color="gray",
+                    anchor="w",
+                    wraplength=_SIDEBAR_WRAP,
+                    justify="left",
+                ).pack(fill="x", pady=4)
         self._show_pedigree_tree_preview(result)
 
-    def _make_product_prominence_card(self, parent, prom) -> ctk.CTkFrame:
-        """Card for pedigree-validated product peak prominence (Phase 5.7)."""
+    def _make_tier_summary_panel(
+        self,
+        parent: ctk.CTkScrollableFrame,
+        summaries: List[PedigreeTierSummary],
+    ) -> ctk.CTkFrame:
+        """Per-tier pass / fail / pruned counts (one row per coupling cycle)."""
         card = ctk.CTkFrame(parent, corner_radius=10)
+        card.pack(fill="x", pady=4)
         card.grid_columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
             card,
-            text="Product peak prominence (pedigree-validated)",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            text="By coupling tier",
+            font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
-        ).grid(row=0, column=0, padx=14, pady=(10, 4), sticky="w")
-        body = (
-            f"Channel {prom.channel}: mean ± SD = {prom.mean:.4g} ± {prom.std_dev:.4g} "
-            f"(n={prom.n_pass_with_prominence} passed compounds, "
-            f"{prom.n_compound_nodes} compound nodes, {prom.n_skipped} skipped).\n\n"
-            "Measured at the pedigree-chosen product RT on each passed full compound. "
-            "Compare with bulk signal-quality metrics, which use the tallest significant "
-            "peak and may not be the product."
-        )
+        ).grid(row=0, column=0, padx=12, pady=(10, 2), sticky="w")
+
         ctk.CTkLabel(
             card,
-            text=body,
-            font=ctk.CTkFont(size=12),
+            text=(
+                "Each tier is one coupling cycle in the pedigree tree. "
+                "Passed = RT-consistent nodes; failed = synthesis dropped; "
+                "pruned = unevaluated because a parent failed."
+            ),
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
             anchor="w",
-            wraplength=720,
+            wraplength=_SIDEBAR_WRAP,
             justify="left",
-        ).grid(row=1, column=0, padx=14, pady=(0, 12), sticky="w")
+        ).grid(row=1, column=0, padx=12, pady=(0, 6), sticky="w")
+
+        table = ctk.CTkFrame(card, fg_color="transparent")
+        table.grid(row=2, column=0, padx=12, pady=(0, 10), sticky="ew")
+        for col, weight in enumerate((0, 1, 1, 1)):
+            table.grid_columnconfigure(col, weight=weight)
+
+        for col, title in enumerate(("Tier", "Pass", "Fail", "Prune")):
+            ctk.CTkLabel(
+                table,
+                text=title,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                anchor="e" if col else "w",
+            ).grid(row=0, column=col, padx=(0 if col == 0 else 4, 0), pady=(0, 4), sticky="ew")
+
+        for row_idx, summary in enumerate(summaries, start=1):
+            values = (
+                str(summary.tier),
+                f"{summary.pass_count:,}",
+                f"{summary.fail_count:,}",
+                f"{summary.pruned_count:,}",
+            )
+            for col, value in enumerate(values):
+                ctk.CTkLabel(
+                    table,
+                    text=value,
+                    font=ctk.CTkFont(size=12, weight="bold" if col else "normal"),
+                    anchor="e" if col else "w",
+                ).grid(
+                    row=row_idx,
+                    column=col,
+                    padx=(0 if col == 0 else 4, 0),
+                    pady=2,
+                    sticky="ew",
+                )
         return card
+
+    def _on_pedigree_figure_readme(self) -> None:
+        """Open bundled scientist readme for the split-tree figure."""
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Pedigree split-tree — about this figure")
+        dialog.geometry("640x520")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+
+        text = ctk.CTkTextbox(
+            dialog,
+            wrap="word",
+            font=ctk.CTkFont(size=12),
+            activate_scrollbars=True,
+        )
+        text.grid(row=0, column=0, sticky="nsew", padx=16, pady=(16, 8))
+        text.insert("1.0", self._load_pedigree_split_tree_readme())
+        text.configure(state="disabled")
+
+        ctk.CTkButton(
+            dialog,
+            text="Close",
+            width=100,
+            command=dialog.destroy,
+        ).grid(row=1, column=0, pady=(0, 16))
+
+        dialog.after(100, dialog.focus_set)
 
     def _on_pedigree_help(self) -> None:
         from src.ui.help_window import open_help_window
 
         open_help_window(self, "pedigree_analysis")
 
-    def _make_tier_summary_card(
-        self,
-        parent: ctk.CTkScrollableFrame,
-        summary: PedigreeTierSummary,
-    ) -> ctk.CTkFrame:
-        card = ctk.CTkFrame(parent, corner_radius=10)
-        card.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            card,
-            text=f"Tier {summary.tier}",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            anchor="w",
-        ).grid(row=0, column=0, columnspan=2, padx=14, pady=(10, 4), sticky="w")
-        for r, (label, value) in enumerate(
-            (
-                ("Passed", str(summary.pass_count)),
-                ("Failed", str(summary.fail_count)),
-                ("Pruned", str(summary.pruned_count)),
-            ),
-            start=1,
-        ):
-            ctk.CTkLabel(card, text=label, text_color="gray", anchor="w").grid(
-                row=r, column=0, padx=14, pady=2, sticky="w"
-            )
-            ctk.CTkLabel(card, text=value, font=ctk.CTkFont(weight="bold"), anchor="e").grid(
-                row=r, column=1, padx=14, pady=2, sticky="e"
-            )
-        ctk.CTkLabel(card, text="").grid(row=4, column=0, pady=4)
-        return card
+    def _clear_pedigree_tree_plot(self) -> None:
+        """Release matplotlib canvas/toolbar used for the interactive tree preview."""
+        if self._pedigree_tree_toolbar is not None:
+            try:
+                self._pedigree_tree_toolbar.destroy()
+            except tk.TclError:
+                pass
+            self._pedigree_tree_toolbar = None
+        if self._pedigree_tree_canvas is not None:
+            try:
+                self._pedigree_tree_canvas.get_tk_widget().destroy()
+            except tk.TclError:
+                pass
+            self._pedigree_tree_canvas = None
+        if self._pedigree_tree_figure is not None:
+            try:
+                import matplotlib.pyplot as plt
+
+                plt.close(self._pedigree_tree_figure)
+            except Exception:
+                pass
+            self._pedigree_tree_figure = None
+
+    def _show_pedigree_tree_placeholder(self, message: str) -> None:
+        self._clear_pedigree_tree_plot()
+        if self._pedigree_tree_plot_host is not None:
+            self._pedigree_tree_plot_host.grid_remove()
+        if self._pedigree_tree_placeholder is not None:
+            self._pedigree_tree_placeholder.configure(text=message)
+            self._pedigree_tree_placeholder.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+
+    def _mount_pedigree_tree_figure(self, figure) -> None:
+        """Embed a matplotlib figure with pan/zoom toolbar in the pedigree tab."""
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+        self._clear_pedigree_tree_plot()
+        if self._pedigree_tree_placeholder is not None:
+            self._pedigree_tree_placeholder.grid_remove()
+        if self._pedigree_tree_plot_host is None:
+            return
+        self._pedigree_tree_plot_host.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+
+        self._pedigree_tree_figure = figure
+        self._pedigree_tree_canvas = FigureCanvasTkAgg(figure, master=self._pedigree_tree_plot_host)
+        self._pedigree_tree_canvas.draw()
+        self._pedigree_tree_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._pedigree_tree_toolbar = NavigationToolbar2Tk(
+            self._pedigree_tree_canvas,
+            self._pedigree_tree_plot_host,
+        )
+        self._pedigree_tree_toolbar.update()
+        self._pedigree_tree_toolbar.pack(side=tk.BOTTOM, fill=tk.X)
 
     def _show_pedigree_tree_preview(self, result: PedigreeAnalysisResult) -> None:
-        if self._pedigree_tree_preview is None:
+        if self._pedigree_tree_host is None:
+            return
+        if not result.records:
+            self._show_pedigree_tree_placeholder("No pedigree nodes to display.")
             return
         image_path = result.tree_image_path
         if image_path is None or not Path(image_path).is_file():
-            self._pedigree_tree_photo = None
-            message = result.tree_render_note or (
-                "Tree image could not be generated. Check logs for details."
-            )
-            self._pedigree_tree_preview.configure(image="", text=message)
-            return
+            if result.tree_render_engine != "matplotlib":
+                message = result.tree_render_note or (
+                    "Tree image could not be generated. Check logs for details."
+                )
+                self._show_pedigree_tree_placeholder(message)
+                return
         try:
-            from PIL import Image, ImageTk
-
-            img = Image.open(image_path)
-            max_w, max_h = 520, 520
-            img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-            self._pedigree_tree_photo = ImageTk.PhotoImage(img)
-            caption = ""
-            if result.tree_render_engine == "matplotlib":
-                caption = result.tree_render_note or ""
-            self._pedigree_tree_preview.configure(
-                image=self._pedigree_tree_photo,
-                text=caption,
+            opts = self._pedigree_tree_render_options()
+            figure = build_pedigree_tree_preview_figure(
+                result.records,
+                image_path,
+                render_engine=result.tree_render_engine,
+                max_display_tier=opts.max_display_tier,
+                include_failed=opts.include_failed,
+                show_rt=opts.show_rt,
             )
+            self._mount_pedigree_tree_figure(figure)
         except Exception as exc:
-            logger.warning("Could not load pedigree tree preview: %s", exc)
-            self._pedigree_tree_preview.configure(
-                image="",
-                text=f"Tree saved at:\n{image_path}",
+            logger.warning("Could not build interactive pedigree tree preview: %s", exc)
+            fallback = (
+                f"Tree saved at:\n{image_path}"
+                if image_path
+                else "Tree preview could not be built."
             )
+            self._show_pedigree_tree_placeholder(fallback)
 
     def _on_export_pedigree_csv(self) -> None:
         if self._pedigree_result is None:
@@ -3229,7 +3611,7 @@ class LibraryDataWindow(BaseWindow):
         if not dest:
             return
         try:
-            export_product_prominence_csv(prom, dest)
+            export_product_prominence_csv(prom, dest, result=self._pedigree_result)
             messagebox.showinfo("Product prominence", f"Saved to:\n{dest}", parent=self)
         except Exception as exc:
             messagebox.showerror("Product prominence", str(exc), parent=self)
@@ -3259,11 +3641,14 @@ class LibraryDataWindow(BaseWindow):
             return
         try:
             fmt = Path(dest).suffix.lstrip(".") or "png"
+            opts = self._pedigree_tree_render_options()
             render_out = render_pedigree_tree(
                 self._pedigree_result.records,
                 Path(dest),
                 fmt=fmt,
-                max_display_tier=self._pedigree_result.max_display_tier,
+                max_display_tier=opts.max_display_tier,
+                include_failed=opts.include_failed,
+                show_rt=opts.show_rt,
             )
             messagebox.showinfo(
                 "Pedigree",
@@ -3327,6 +3712,16 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_result = result
         self._pedigree_snapshot_path = path
         self._sync_pedigree_controls(result)
+        self._update_pedigree_graphviz_banner()
+        self._configure_pedigree_tier_slider(result)
+        if result.max_display_tier is not None:
+            self._pedigree_include_failed_var.set(
+                suggest_include_failed(
+                    result.records,
+                    max_display_tier=result.max_display_tier,
+                )
+            )
+        self._update_pedigree_tree_density_note(result)
         self._display_pedigree_result(result)
         if self._pedigree_status_label is not None:
             self._pedigree_status_label.configure(
@@ -3350,6 +3745,7 @@ class LibraryDataWindow(BaseWindow):
 
     def on_close(self) -> None:
         self._closing = True
+        self._clear_pedigree_tree_plot()
         if self._data_store is not None:
             self._data_store.close()
             self._data_store = None

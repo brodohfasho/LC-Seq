@@ -31,10 +31,13 @@ Same as lineage: count channel, time unit, tolerance, α. Optional **isoform** f
 
 ## Export
 
-- **Export pedigree CSV** — one row per node.
+- **Export pedigree CSV** — one row per node, with **bb_cycle_1** … **bb_cycle_N** columns (BB1 = first coupling / C-terminus through BBn).
+- **Export product prominence CSV** — includes the same per-cycle BB columns for each compound.
 - **Export tree PNG** — save figure (Graphviz or matplotlib).
 - **Save pedigree** — JSON snapshot + tree image for **Load last** / **Browse**.
 
 ## Large libraries
 
 Index databases with 100k+ rows may take several minutes on first run while compounds are parsed.
+
+Use the **About this figure** panel on the Pedigree tab for a full explanation of the split-tree image, colours, and display controls (max tier, passed-only view, Graphviz).

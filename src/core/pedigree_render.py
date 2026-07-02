@@ -22,10 +22,15 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.figure import Figure
 
 from src.models.pedigree_result import PedigreeNodeRecord
 
 logger = logging.getLogger(__name__)
+
+# Above this visible-node count, default to passed-only tree (fewer crossing edges).
+AUTO_PASSED_ONLY_NODE_THRESHOLD = 500
 
 _COLOR_ROOT = "#d0d0d0"
 _COLOR_CLASS = "#cfe8cf"
@@ -50,6 +55,81 @@ class PedigreeTreeRenderResult:
     path: Path
     engine: str
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class PedigreeTreeRenderOptions:
+    """User-facing knobs for split-tree figure layout."""
+
+    max_display_tier: Optional[int]
+    include_failed: bool = True
+    show_rt: bool = True
+
+
+def max_tier_in_records(records: Sequence[PedigreeNodeRecord]) -> int:
+    """Highest tier index present in pedigree node records."""
+    if not records:
+        return 0
+    return max(record.tier for record in records)
+
+
+def count_visible_pedigree_nodes(
+    records: Sequence[PedigreeNodeRecord],
+    *,
+    include_failed: bool = True,
+    max_display_tier: Optional[int] = None,
+) -> int:
+    """Count nodes that would appear in a tree figure with the given options."""
+    return len(
+        visible_pedigree_nodes(
+            records,
+            include_failed=include_failed,
+            max_display_tier=max_display_tier,
+        )
+    )
+
+
+def suggest_include_failed(
+    records: Sequence[PedigreeNodeRecord],
+    *,
+    max_display_tier: Optional[int],
+    threshold: int = AUTO_PASSED_ONLY_NODE_THRESHOLD,
+) -> bool:
+    """Return False when the full trim view would exceed ``threshold`` visible nodes."""
+    with_failed = count_visible_pedigree_nodes(
+        records,
+        include_failed=True,
+        max_display_tier=max_display_tier,
+    )
+    return with_failed <= threshold
+
+
+def default_max_display_tier_for_tree(
+    library_cycle_count: int,
+    records: Sequence[PedigreeNodeRecord],
+) -> int:
+    """Default max tier for tree display (hide final compound ring when possible)."""
+    if library_cycle_count > 0:
+        return max(0, library_cycle_count - 1)
+    return max_tier_in_records(records)
+
+
+def build_default_tree_render_options(
+    records: Sequence[PedigreeNodeRecord],
+    *,
+    library_cycle_count: int,
+    auto_passed_only: bool = True,
+) -> PedigreeTreeRenderOptions:
+    """Initial tree display options after a pedigree run."""
+    max_tier = default_max_display_tier_for_tree(library_cycle_count, records)
+    include_failed = True
+    if auto_passed_only:
+        include_failed = suggest_include_failed(records, max_display_tier=max_tier)
+    return PedigreeTreeRenderOptions(
+        max_display_tier=max_tier,
+        include_failed=include_failed,
+        show_rt=True,
+    )
 
 
 def find_graphviz_dot() -> Optional[Path]:
@@ -196,18 +276,16 @@ def render_pedigree_tree_graphviz(
     return Path(rendered)
 
 
-def render_pedigree_tree_matplotlib(
+def build_pedigree_tree_matplotlib_figure(
     records: Sequence[PedigreeNodeRecord],
-    out_path: Path,
     *,
-    fmt: str = "png",
     max_display_tier: Optional[int] = None,
     include_failed: bool = True,
     show_rt: bool = True,
     dpi: int = 150,
-) -> Path:
+) -> Figure:
     """
-    Matplotlib tier-ring fallback (no Graphviz required).
+    Matplotlib tier-ring figure for in-app pan/zoom (no Graphviz required).
 
     Places each tier on a concentric ring (root at centre), matching the
     split-tree colour scheme used by the Rust renderer.
@@ -326,7 +404,82 @@ def render_pedigree_tree_matplotlib(
         fontsize=11,
         pad=12,
     )
+    return fig
 
+
+def build_pedigree_tree_raster_figure(image_path: Path) -> Figure:
+    """
+    Wrap a rendered tree image (e.g. Graphviz PNG) for matplotlib pan/zoom.
+
+    The on-disk export is raster PNG; zoom reveals pixel detail but supports navigation.
+    """
+    from PIL import Image
+
+    path = Path(image_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Pedigree tree image not found: {path}")
+
+    img = Image.open(path)
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+    arr = np.asarray(img)
+    height, width = arr.shape[0], arr.shape[1]
+    max_inches = 14.0
+    aspect = width / height if height else 1.0
+    if aspect >= 1.0:
+        fig_w = min(max_inches, max(6.0, width / 100.0))
+        fig_h = max(6.0, fig_w / aspect)
+    else:
+        fig_h = min(max_inches, max(6.0, height / 100.0))
+        fig_w = max(6.0, fig_h * aspect)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=100)
+    ax.imshow(arr, interpolation="nearest")
+    ax.set_axis_off()
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    ax.set_title("Pedigree split-tree (Graphviz PNG — use toolbar to pan/zoom)", fontsize=11, pad=8)
+    return fig
+
+
+def build_pedigree_tree_preview_figure(
+    records: Sequence[PedigreeNodeRecord],
+    image_path: Optional[Path],
+    *,
+    render_engine: Optional[str] = None,
+    max_display_tier: Optional[int] = None,
+    include_failed: bool = True,
+    show_rt: bool = True,
+) -> Figure:
+    """Build an interactive matplotlib figure for the pedigree tab preview."""
+    path = Path(image_path) if image_path is not None else None
+    if render_engine == "graphviz" and path is not None and path.is_file():
+        return build_pedigree_tree_raster_figure(path)
+    return build_pedigree_tree_matplotlib_figure(
+        records,
+        max_display_tier=max_display_tier,
+        include_failed=include_failed,
+        show_rt=show_rt,
+    )
+
+
+def render_pedigree_tree_matplotlib(
+    records: Sequence[PedigreeNodeRecord],
+    out_path: Path,
+    *,
+    fmt: str = "png",
+    max_display_tier: Optional[int] = None,
+    include_failed: bool = True,
+    show_rt: bool = True,
+    dpi: int = 150,
+) -> Path:
+    """Save the matplotlib tier-ring pedigree tree to disk."""
+    fig = build_pedigree_tree_matplotlib_figure(
+        records,
+        max_display_tier=max_display_tier,
+        include_failed=include_failed,
+        show_rt=show_rt,
+        dpi=dpi,
+    )
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     image_fmt = (fmt or "png").lower().lstrip(".")
