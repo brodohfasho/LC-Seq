@@ -97,6 +97,8 @@ class LibraryScanData:
     entries_skipped: int = 0
     channel_names: List[str] = field(default_factory=list)
     signal_quality_alpha: Optional[float] = None
+    signal_quality_min_prominence: Optional[float] = None
+    signal_quality_min_pct_area: Optional[float] = None
     signal_quality_by_channel: Dict[str, List] = field(default_factory=dict)
 
     def totals_by_channel(self, channel: str) -> List[float]:
@@ -206,6 +208,8 @@ class MetricComputeOptions:
 
     fraction_count: int = DEFAULT_FRACTION_COUNT
     signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA
+    min_prominence: float = 0.0
+    min_pct_area: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -227,11 +231,15 @@ def _ensure_signal_quality(
     channels: Sequence[str],
     alpha: float,
     *,
+    min_prominence: float = 0.0,
+    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
     """Populate ``scan.signal_quality_by_channel`` when needed."""
     if (
         scan.signal_quality_alpha == alpha
+        and scan.signal_quality_min_prominence == min_prominence
+        and scan.signal_quality_min_pct_area == min_pct_area
         and scan.signal_quality_by_channel
         and all(ch in scan.signal_quality_by_channel for ch in channels)
     ):
@@ -243,9 +251,13 @@ def _ensure_signal_quality(
         scan.entries,
         channels,
         alpha=alpha,
+        min_prominence=min_prominence,
+        min_pct_area=min_pct_area,
         progress_callback=progress_callback,
     )
     scan.signal_quality_alpha = alpha
+    scan.signal_quality_min_prominence = min_prominence
+    scan.signal_quality_min_pct_area = min_pct_area
 
 
 def _signal_stats_for_channel(
@@ -259,11 +271,18 @@ def ensure_scan_signal_quality(
     channels: Sequence[str],
     alpha: float,
     *,
+    min_prominence: float = 0.0,
+    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
     """Populate per-entry signal stats on ``scan`` when needed (cached by α)."""
     _ensure_signal_quality(
-        scan, channels, alpha, progress_callback=progress_callback
+        scan,
+        channels,
+        alpha,
+        min_prominence=min_prominence,
+        min_pct_area=min_pct_area,
+        progress_callback=progress_callback,
     )
 
 
@@ -317,7 +336,13 @@ def _compute_signal_metric(
     *,
     skip_none: bool = False,
 ) -> List[ChannelAggregateStats]:
-    _ensure_signal_quality(scan, channels, options.signal_quality_alpha)
+    _ensure_signal_quality(
+        scan,
+        channels,
+        options.signal_quality_alpha,
+        min_prominence=options.min_prominence,
+        min_pct_area=options.min_pct_area,
+    )
     values: Dict[str, List[float]] = {}
     for name in channels:
         vals: List[float] = []
@@ -704,12 +729,16 @@ def compute_metrics_from_scan(
     channels: Sequence[str],
     fraction_count: int = DEFAULT_FRACTION_COUNT,
     signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    min_prominence: float = 0.0,
+    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> List[MetricResult]:
     """Compute selected metrics from an existing scan (fast aggregation only)."""
     options = MetricComputeOptions(
         fraction_count=fraction_count,
         signal_quality_alpha=signal_quality_alpha,
+        min_prominence=min_prominence,
+        min_pct_area=min_pct_area,
     )
     selected_channels = [name for name in channels if name in scan.channel_names]
     metric_list = list(metric_ids)
@@ -719,6 +748,8 @@ def compute_metrics_from_scan(
             scan,
             selected_channels,
             signal_quality_alpha,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
             progress_callback=progress_callback,
         )
 

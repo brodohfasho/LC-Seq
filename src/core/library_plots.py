@@ -19,10 +19,7 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from src.core.library_metrics import LibraryScanData, PlotResult, entry_total_for_channel
-from src.core.library_signal_quality import (
-    DEFAULT_SIGNAL_QUALITY_ALPHA,
-    attach_signal_quality_to_entries,
-)
+from src.core.library_signal_quality import DEFAULT_SIGNAL_QUALITY_ALPHA
 
 logger = logging.getLogger(__name__)
 
@@ -390,20 +387,27 @@ def _signal_stats_for_channel(
     channel: str,
     signal_quality_alpha: float,
 ) -> List:
-    """Reuse scan signal-quality cache when α matches; otherwise compute once."""
+    """Reuse scan signal-quality cache when parameters match; otherwise compute once."""
+    min_prominence = scan.signal_quality_min_prominence or 0.0
+    min_pct_area = scan.signal_quality_min_pct_area or 0.0
     if (
         scan.signal_quality_alpha is not None
         and abs(scan.signal_quality_alpha - signal_quality_alpha) < 1e-12
+        and scan.signal_quality_min_prominence == min_prominence
+        and scan.signal_quality_min_pct_area == min_pct_area
         and channel in scan.signal_quality_by_channel
     ):
         return list(scan.signal_quality_by_channel[channel])
-    stats = attach_signal_quality_to_entries(
-        scan.entries, [channel], alpha=signal_quality_alpha
+    from src.core.library_metrics import ensure_scan_signal_quality
+
+    ensure_scan_signal_quality(
+        scan,
+        [channel],
+        signal_quality_alpha,
+        min_prominence=min_prominence,
+        min_pct_area=min_pct_area,
     )
-    if scan.signal_quality_alpha is None or scan.signal_quality_alpha != signal_quality_alpha:
-        scan.signal_quality_by_channel[channel] = stats.get(channel, [])
-        scan.signal_quality_alpha = signal_quality_alpha
-    return list(stats.get(channel, []))
+    return list(scan.signal_quality_by_channel.get(channel, []))
 
 
 def _render_signal_histogram(
@@ -559,6 +563,8 @@ def generate_plots(
     *,
     dpi: int = 120,
     signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    min_prominence: float = 0.0,
+    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> List[PlotResult]:
     """
@@ -592,6 +598,8 @@ def generate_plots(
             scan,
             list(signal_channels),
             signal_quality_alpha,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
             progress_callback=progress_callback,
         )
 

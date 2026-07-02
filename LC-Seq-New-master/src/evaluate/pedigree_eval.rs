@@ -1,6 +1,6 @@
 use crate::evaluate::consensus::{consensus, ConsensusResult};
 use crate::library::{NodeKind, Pedigree};
-use crate::peaks::{find_peaks, Peak};
+use crate::peaks::{pick_peaks_with_quality, Peak, PeakPickerConfig, PeakQualityParams};
 use petgraph::graph::NodeIndex;
 use petgraph::Direction;
 use rayon::prelude::*;
@@ -69,7 +69,8 @@ pub fn evaluate(
     pedigree: &Pedigree,
     chromatograms: &HashMap<ChromatogramKey, Chromatogram>,
     tolerance: f64,
-    alpha: f64,
+    picker: &PeakPickerConfig,
+    quality: PeakQualityParams,
 ) -> HashMap<NodeIndex, NodeOutcome> {
     let mut out: HashMap<NodeIndex, NodeOutcome> = HashMap::new();
 
@@ -94,7 +95,14 @@ pub fn evaluate(
         for &ix in roots {
             let node = &pedigree[ix];
             let member = &node.members[0];
-            let peaks = pick_for(&member.positions, chromatograms, alpha);
+            let allow_rescue = quality_rescue_for_node(pedigree, ix);
+            let peaks = pick_for(
+                &member.positions,
+                chromatograms,
+                picker,
+                quality,
+                allow_rescue,
+            );
             let most_significant_pick = peaks
                 .iter()
                 .min_by(|a, b| a.p_value.partial_cmp(&b.p_value).unwrap())
@@ -148,7 +156,16 @@ pub fn evaluate(
         let pass_a: Vec<(NodeIndex, NodeOutcome)> = singletons
             .par_iter()
             .filter_map(|&ix| {
-                evaluate_one(ix, pedigree, &out, chromatograms, tolerance, alpha, &empty_singletons)
+                evaluate_one(
+                    ix,
+                    pedigree,
+                    &out,
+                    chromatograms,
+                    tolerance,
+                    picker,
+                    quality,
+                    &empty_singletons,
+                )
             })
             .collect();
         for (ix, outcome) in pass_a {
@@ -159,7 +176,16 @@ pub fn evaluate(
         let pass_b: Vec<(NodeIndex, NodeOutcome)> = cassettes
             .par_iter()
             .filter_map(|&ix| {
-                evaluate_one(ix, pedigree, &out, chromatograms, tolerance, alpha, &singleton_rt)
+                evaluate_one(
+                    ix,
+                    pedigree,
+                    &out,
+                    chromatograms,
+                    tolerance,
+                    picker,
+                    quality,
+                    &singleton_rt,
+                )
             })
             .collect();
         for (ix, outcome) in pass_b {
@@ -176,7 +202,16 @@ pub fn evaluate(
         let new_outcomes: Vec<(NodeIndex, NodeOutcome)> = tier_nodes
             .par_iter()
             .filter_map(|&ix| {
-                evaluate_one(ix, pedigree, &out, chromatograms, tolerance, alpha, &singleton_rt)
+                evaluate_one(
+                    ix,
+                    pedigree,
+                    &out,
+                    chromatograms,
+                    tolerance,
+                    picker,
+                    quality,
+                    &singleton_rt,
+                )
             })
             .collect();
         for (ix, outcome) in new_outcomes {
@@ -237,6 +272,10 @@ fn build_singleton_rt_map(
     map
 }
 
+fn quality_rescue_for_node(pedigree: &Pedigree, ix: NodeIndex) -> bool {
+    matches!(&pedigree[ix].kind, NodeKind::Class(_))
+}
+
 /// Evaluate a single non-root node. Returns `None` if any parent failed the gate.
 fn evaluate_one(
     ix: NodeIndex,
@@ -244,7 +283,8 @@ fn evaluate_one(
     outcomes_so_far: &HashMap<NodeIndex, NodeOutcome>,
     chromatograms: &HashMap<ChromatogramKey, Chromatogram>,
     tolerance: f64,
-    alpha: f64,
+    picker: &PeakPickerConfig,
+    quality: PeakQualityParams,
     singleton_rt: &HashMap<String, f64>,
 ) -> Option<(NodeIndex, NodeOutcome)> {
     let parents: Vec<NodeIndex> = pedigree
@@ -296,9 +336,12 @@ fn evaluate_one(
         .iter()
         .map(|m| chromatograms.get(&m.positions).cloned().unwrap_or_default())
         .collect();
+    let allow_rescue = quality_rescue_for_node(pedigree, ix);
     let peaks_per_member: Vec<Vec<Peak>> = chroms_per_member
         .iter()
-        .map(|(rt, intensity)| find_peaks(rt, intensity, alpha))
+        .map(|(rt, intensity)| {
+            pick_peaks_with_quality(rt, intensity, picker, quality, allow_rescue)
+        })
         .collect();
 
     let ConsensusResult {
@@ -321,7 +364,13 @@ fn evaluate_one(
         n_replicates,
         n_replicates_with_signal,
         replicates_with_no_signal,
-    } = consensus(&chroms_per_member, &peaks_per_member, threshold, tolerance, alpha);
+    } = consensus(
+        &chroms_per_member,
+        &peaks_per_member,
+        threshold,
+        tolerance,
+        picker.modern_alpha(),
+    );
 
     let outcome = NodeOutcome {
         passed,
@@ -354,10 +403,18 @@ fn evaluate_one(
 fn pick_for(
     truncate_positions: &[String],
     chromatograms: &HashMap<ChromatogramKey, Chromatogram>,
-    alpha: f64,
+    picker: &PeakPickerConfig,
+    quality: PeakQualityParams,
+    allow_null_truncation_rescue: bool,
 ) -> Vec<Peak> {
     match chromatograms.get(truncate_positions) {
-        Some((rt, intensity)) => find_peaks(rt, intensity, alpha),
+        Some((rt, intensity)) => pick_peaks_with_quality(
+            rt,
+            intensity,
+            picker,
+            quality,
+            allow_null_truncation_rescue,
+        ),
         None => Vec::new(),
     }
 }
@@ -439,7 +496,7 @@ mod tests {
         chroms.insert(key(&["AgxNull"]), (rt, intensity));
         chroms.insert(key(&["A"]), flat_chrom(41));
 
-        let out = evaluate(&g, &chroms, 1.0, 1.0);
+        let out = evaluate(&g, &chroms, 1.0, &PeakPickerConfig::modern(1.0), PeakQualityParams::default());
         let root = g.node_indices().find(|&ix| g[ix].tier == 0).unwrap();
         let r = &out[&root];
         assert!(r.passed);
@@ -459,7 +516,7 @@ mod tests {
                 chroms.insert(m.positions.clone(), flat_chrom(20));
             }
         }
-        let out = evaluate(&g, &chroms, 1.0, 1.0);
+        let out = evaluate(&g, &chroms, 1.0, &PeakPickerConfig::modern(1.0), PeakQualityParams::default());
         let root = g.node_indices().find(|&ix| g[ix].tier == 0).unwrap();
         assert!(!out[&root].passed);
         // Every other node either absent (gate failed) or present with passed=false.
@@ -494,7 +551,7 @@ mod tests {
         chroms.insert(key(&["B", "A"]), chrom_with_peak_at(15.0, 30, 9.0));
         chroms.insert(key(&["B", "B"]), chrom_with_peak_at(15.0, 30, 9.0));
 
-        let out = evaluate(&g, &chroms, 2.0, 1.0);
+        let out = evaluate(&g, &chroms, 2.0, &PeakPickerConfig::modern(1.0), PeakQualityParams::default());
 
         // Helpers to find nodes by class key or compound positions.
         let class_node = |key: &[&str]| -> NodeIndex {
@@ -554,7 +611,7 @@ mod tests {
         // BB has parents only {B}; rt=25 is past 20 → passes.
         chroms.insert(key(&["B", "B"]), chrom_with_peak_at(25.0, 40, 9.0));
 
-        let out = evaluate(&g, &chroms, 2.0, 1.0);
+        let out = evaluate(&g, &chroms, 2.0, &PeakPickerConfig::modern(1.0), PeakQualityParams::default());
 
         let compound_node = |positions: &[&str]| -> NodeIndex {
             g.node_indices()
@@ -579,7 +636,7 @@ mod tests {
         let mut chroms = HashMap::new();
         chroms.insert(key(&["AgxNull"]), chrom_with_peak_at(5.0, 30, 9.0));
         chroms.insert(key(&["A"]), flat_chrom(30)); // fails
-        let out = evaluate(&g, &chroms, 1.0, 1.0);
+        let out = evaluate(&g, &chroms, 1.0, &PeakPickerConfig::modern(1.0), PeakQualityParams::default());
         let pruned = passed_only(&out);
         assert_eq!(pruned.len(), 1); // just root
     }

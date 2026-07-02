@@ -192,6 +192,9 @@ class LineageSessionCache:
             chromatogram_map,
             settings.tolerance,
             settings.alpha,
+            min_prominence=settings.min_prominence,
+            min_pct_area=settings.min_pct_area,
+            settings=settings,
         )
         records_by_id: Dict[str, PedigreeNodeRecord] = {r.id: r for r in records}
         cached = CachedPedigreeEvaluation(

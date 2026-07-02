@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
 from src.core.lcseq_backend import get_peak_picker_backend
+from src.core.peak_quality_filter import filter_detected_peaks
+from src.models.analysis_settings import AnalysisSettings
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,8 @@ def compute_entry_signal_stats(
     channel: str,
     *,
     alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    min_prominence: float = 0.0,
+    min_pct_area: float = 0.0,
 ) -> Optional[EntrySignalStats]:
     """
     Compute signal-quality scalars for one scanned entry.
@@ -68,6 +72,13 @@ def compute_entry_signal_stats(
     sigma = float(baseline.sigma)
 
     picked = backend.find_peaks(times, intensity, alpha)
+    quality_settings = AnalysisSettings(
+        count_channel=channel,
+        alpha=alpha,
+        min_prominence=min_prominence,
+        min_pct_area=min_pct_area,
+    )
+    picked = filter_detected_peaks(picked, quality_settings)
     sig_count = len(picked)
     prominences = [float(p.prominence) for p in picked]
     max_prom = max(prominences) if prominences else 0.0
@@ -112,6 +123,8 @@ def attach_signal_quality_to_entries(
     channels: Sequence[str],
     *,
     alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    min_prominence: float = 0.0,
+    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> Dict[str, List[EntrySignalStats]]:
     """
@@ -132,7 +145,13 @@ def attach_signal_quality_to_entries(
 
     for channel in channels:
         for entry in entries:
-            stats = compute_entry_signal_stats(entry, channel, alpha=alpha)
+            stats = compute_entry_signal_stats(
+                entry,
+                channel,
+                alpha=alpha,
+                min_prominence=min_prominence,
+                min_pct_area=min_pct_area,
+            )
             if stats is not None:
                 out[channel].append(stats)
             done += 1

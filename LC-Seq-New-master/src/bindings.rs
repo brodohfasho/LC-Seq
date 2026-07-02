@@ -1,13 +1,35 @@
 use crate::evaluate::consensus::consensus;
 use crate::evaluate::{evaluate, Chromatogram, ChromatogramKey};
 use crate::library::{build_pedigree, NodeKind};
-use crate::peaks::find_peaks;
+use crate::peaks::{
+    find_peaks, pick_peaks_with_quality, GaussianPeakParams, PeakPickerConfig, PeakQualityParams,
+};
 use numpy::PyReadonlyArray1;
 use petgraph::Direction;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use std::collections::HashMap;
+
+fn peak_picker_config_from_py(
+    peak_picking_algorithm: &str,
+    alpha: f64,
+    gaussian_min_height_factor: f64,
+    gaussian_fit_width: f64,
+    gaussian_stddev_threshold: f64,
+    gaussian_minimum_rt: f64,
+) -> PeakPickerConfig {
+    if peak_picking_algorithm == "old_school" {
+        PeakPickerConfig::old_school(GaussianPeakParams {
+            min_height_factor: gaussian_min_height_factor,
+            fit_width: gaussian_fit_width,
+            stddev_threshold: gaussian_stddev_threshold,
+            minimum_rt: gaussian_minimum_rt,
+        })
+    } else {
+        PeakPickerConfig::modern(alpha)
+    }
+}
 
 /// One row of the evaluated pedigree, exposed to Python as an attribute object.
 #[pyclass]
@@ -199,7 +221,7 @@ impl NodeRecord {
 /// list[NodeRecord]
 ///     One record per pedigree node, in petgraph insertion order.
 #[pyfunction]
-#[pyo3(signature = (bbs_per_position, null_token, chromatograms, tolerance, alpha))]
+#[pyo3(signature = (bbs_per_position, null_token, chromatograms, tolerance, alpha, min_prominence=0.0, min_pct_area=0.0, peak_picking_algorithm="modern", gaussian_min_height_factor=0.35, gaussian_fit_width=1.5, gaussian_stddev_threshold=2.0, gaussian_minimum_rt=10.0))]
 pub fn evaluate_library<'py>(
     py: Python<'py>,
     bbs_per_position: Vec<Vec<String>>,
@@ -207,6 +229,13 @@ pub fn evaluate_library<'py>(
     chromatograms: Bound<'py, PyDict>,
     tolerance: f64,
     alpha: f64,
+    min_prominence: f64,
+    min_pct_area: f64,
+    peak_picking_algorithm: &str,
+    gaussian_min_height_factor: f64,
+    gaussian_fit_width: f64,
+    gaussian_stddev_threshold: f64,
+    gaussian_minimum_rt: f64,
 ) -> PyResult<Vec<NodeRecord>> {
     // Materialise the chromatograms into owned Rust data so we can release the GIL.
     let mut chroms: HashMap<ChromatogramKey, Chromatogram> =
@@ -258,7 +287,19 @@ pub fn evaluate_library<'py>(
 
     py.allow_threads(move || {
         let pedigree = build_pedigree(&bbs_per_position, &null_token);
-        let outcomes = evaluate(&pedigree, &chroms, tolerance, alpha);
+        let quality = PeakQualityParams {
+            min_prominence,
+            min_pct_area,
+        };
+        let picker = peak_picker_config_from_py(
+            peak_picking_algorithm,
+            alpha,
+            gaussian_min_height_factor,
+            gaussian_fit_width,
+            gaussian_stddev_threshold,
+            gaussian_minimum_rt,
+        );
+        let outcomes = evaluate(&pedigree, &chroms, tolerance, &picker, quality);
 
         let mut records = Vec::with_capacity(pedigree.node_count());
         for ix in pedigree.node_indices() {
@@ -455,12 +496,20 @@ pub struct ClassDiagnostic {
 /// answer because cassette-monotonicity augmentation lives at the pedigree level, not
 /// the per-class level.
 #[pyfunction]
-#[pyo3(signature = (chromatograms, effective_threshold, tolerance, alpha))]
+#[pyo3(signature = (chromatograms, effective_threshold, tolerance, alpha, min_prominence=0.0, min_pct_area=0.0, allow_null_truncation_rescue=true, peak_picking_algorithm="modern", gaussian_min_height_factor=0.35, gaussian_fit_width=1.5, gaussian_stddev_threshold=2.0, gaussian_minimum_rt=10.0))]
 pub fn diagnose_class<'py>(
     chromatograms: Bound<'py, PyList>,
     effective_threshold: f64,
     tolerance: f64,
     alpha: f64,
+    min_prominence: f64,
+    min_pct_area: f64,
+    allow_null_truncation_rescue: bool,
+    peak_picking_algorithm: &str,
+    gaussian_min_height_factor: f64,
+    gaussian_fit_width: f64,
+    gaussian_stddev_threshold: f64,
+    gaussian_minimum_rt: f64,
 ) -> PyResult<ClassDiagnostic> {
     // Materialize chromatograms into owned Rust data.
     let mut chroms: Vec<Chromatogram> = Vec::with_capacity(chromatograms.len());
@@ -491,13 +540,39 @@ pub fn diagnose_class<'py>(
     }
 
     // Pick peaks per replicate (same picker the evaluator uses).
+    let quality = PeakQualityParams {
+        min_prominence,
+        min_pct_area,
+    };
+    let picker = peak_picker_config_from_py(
+        peak_picking_algorithm,
+        alpha,
+        gaussian_min_height_factor,
+        gaussian_fit_width,
+        gaussian_stddev_threshold,
+        gaussian_minimum_rt,
+    );
     let peaks_per: Vec<Vec<crate::peaks::Peak>> = chroms
         .iter()
-        .map(|(rt, intensity)| find_peaks(rt, intensity, alpha))
+        .map(|(rt, intensity)| {
+            pick_peaks_with_quality(
+                rt,
+                intensity,
+                &picker,
+                quality,
+                allow_null_truncation_rescue,
+            )
+        })
         .collect();
 
     // Run the actual consensus and capture intermediates.
-    let result = consensus(&chroms, &peaks_per, effective_threshold, tolerance, alpha);
+    let result = consensus(
+        &chroms,
+        &peaks_per,
+        effective_threshold,
+        tolerance,
+        picker.modern_alpha(),
+    );
 
     Ok(ClassDiagnostic {
         passed: result.passed,

@@ -126,6 +126,9 @@ def run_pedigree_analysis(
         chromatogram_map,
         settings.tolerance,
         settings.alpha,
+        min_prominence=settings.min_prominence,
+        min_pct_area=settings.min_pct_area,
+        settings=settings,
     )
     tier_summaries = summarize_by_tier(records)
 

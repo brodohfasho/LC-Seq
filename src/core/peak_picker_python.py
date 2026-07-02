@@ -21,6 +21,8 @@ except ImportError:  # pragma: no cover
 DEFAULT_SIGMA: float = 2.0
 MAX_ITER: int = 10
 MIN_BASELINE_POINTS: int = 3
+DEFAULT_ROLLING_HALF_WINDOW: int = 30
+MAX_ROLLING_EXPAND: int = 4
 
 
 @dataclass
@@ -51,9 +53,8 @@ def _median(data: List[float]) -> float:
     return data[n // 2]
 
 
-def estimate_baseline(intensity: Sequence[float]) -> _Baseline:
-    """Sigma-clipped baseline (matches Rust ``peaks/baseline.rs``)."""
-    keep = [float(x) for x in intensity if not math.isnan(x)]
+def _baseline_from_values(keep: List[float]) -> _Baseline:
+    """Sigma-clip a sample set and estimate (μ, σ, dispersion r)."""
     if len(keep) < MIN_BASELINE_POINTS:
         return _Baseline(mu=0.0, sigma=0.0, dispersion_r=None)
     for _ in range(MAX_ITER):
@@ -71,6 +72,63 @@ def estimate_baseline(intensity: Sequence[float]) -> _Baseline:
     sigma = math.sqrt(var)
     dispersion_r = (mu * mu) / (var - mu) if var > mu and mu > 1e-9 else None
     return _Baseline(mu=mu, sigma=sigma, dispersion_r=dispersion_r)
+
+
+def estimate_baseline(intensity: Sequence[float]) -> _Baseline:
+    """Sigma-clipped global baseline (matches Rust ``peaks/baseline.rs``)."""
+    keep = [float(x) for x in intensity if not math.isnan(x)]
+    return _baseline_from_values(keep)
+
+
+def _rolling_baseline_samples(
+    intensity: Sequence[float],
+    center: int,
+    exclude_left: int,
+    exclude_right: int,
+    half_window: int,
+) -> List[float]:
+    """Collect non-NaN intensities in a window around ``center``, excluding the peak valley."""
+    n = len(intensity)
+    start = max(0, center - half_window)
+    end = min(n - 1, center + half_window)
+    samples: List[float] = []
+    for idx in range(start, end + 1):
+        if idx < exclude_left or idx > exclude_right:
+            value = float(intensity[idx])
+            if not math.isnan(value):
+                samples.append(value)
+    return samples
+
+
+def estimate_rolling_baseline(
+    intensity: Sequence[float],
+    peak_idx: int,
+    exclude_left: int,
+    exclude_right: int,
+) -> _Baseline:
+    """Rolling sigma-clipped baseline for one candidate peak (matches Rust ``baseline.rs``)."""
+    if len(intensity) == 0:
+        return _Baseline(mu=0.0, sigma=0.0, dispersion_r=None)
+    n = len(intensity)
+    half = min(DEFAULT_ROLLING_HALF_WINDOW, n // 2)
+    if half == 0 and n >= MIN_BASELINE_POINTS:
+        half = 1
+    for _ in range(MAX_ROLLING_EXPAND + 1):
+        samples = _rolling_baseline_samples(
+            intensity, peak_idx, exclude_left, exclude_right, half
+        )
+        if len(samples) >= MIN_BASELINE_POINTS:
+            return _baseline_from_values(samples)
+        if half >= n // 2:
+            break
+        half = min(half * 2, n // 2)
+    return estimate_baseline(intensity)
+
+
+def _scaled_dispersion(baseline: _Baseline, width: float) -> Optional[float]:
+    if baseline.dispersion_r is not None:
+        return baseline.dispersion_r * width
+    return None
 
 
 def _poisson_upper(k: int, mu: float) -> float:
@@ -184,22 +242,21 @@ def find_peaks(
         raise ValueError("rt and intensity must have the same length")
     if len(rt) < 3:
         return []
-    baseline = estimate_baseline(intensity)
     maxima = _local_maxima(intensity)
     peaks: List[_Peak] = []
     for idx in maxima:
+        left, right = valley_bounds(intensity, idx)
+        baseline = estimate_rolling_baseline(intensity, idx, left, right)
         height = float(intensity[idx])
         if height <= baseline.mu:
             continue
-        left, right = valley_bounds(intensity, idx)
         width = float(right - left + 1)
         area = float(sum(float(intensity[i]) for i in range(left, right + 1)))
         prominence = _compute_prominence(intensity, idx)
         p_height = p_at_least(height, baseline.mu, baseline.dispersion_r)
-        scaled_r = baseline.dispersion_r * width if baseline.dispersion_r else None
-        p_area = p_at_least(area, baseline.mu * width, scaled_r)
+        p_area = p_at_least(area, baseline.mu * width, _scaled_dispersion(baseline, width))
         p_value = min(p_height, p_area)
-        if p_value < alpha / 2.0:
+        if p_height < alpha / 2.0 and p_area < alpha / 2.0:
             peaks.append(
                 _Peak(
                     rt=float(rt[idx]),

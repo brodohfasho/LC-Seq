@@ -43,6 +43,7 @@ class PeakAnalysisResult:
     channel: str
     settings: AnalysisSettings
     peaks: List[PickedPeak] = field(default_factory=list)
+    all_peaks: List[PickedPeak] = field(default_factory=list)
     baseline: Optional[BaselineEstimate] = None
     primary_compound_id: Optional[str] = None
     variant_label: Optional[str] = None

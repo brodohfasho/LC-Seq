@@ -74,6 +74,12 @@ from src.core.pedigree_render import (
     suggest_include_failed,
 )
 from src.core.pedigree_service import run_pedigree_analysis_for_path
+from src.core.del_cycle_tree import (
+    DelCycleTreeData,
+    DelCycleTreeView,
+    build_del_cycle_tree_for_path,
+    render_del_cycle_tree_figure,
+)
 from src.models.analysis_settings import AnalysisSettings
 from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeTierSummary
 from src.models.spreadsheet_config import SpreadsheetConfig
@@ -85,6 +91,11 @@ logger = logging.getLogger(__name__)
 _TAB_METRICS = "Summary metrics"
 _TAB_PLOTS = "Visualizations"
 _TAB_PEDIGREE = "Pedigree"
+
+_TREE_VIZ_PEDIGREE = "Pedigree tier-ring"
+_TREE_VIZ_DEL_FULL = "DEL cycle (full tree)"
+_TREE_VIZ_DEL_BRANCH = "DEL cycle (BB1 branch)"
+_TREE_VIZ_MODES = (_TREE_VIZ_PEDIGREE, _TREE_VIZ_DEL_FULL, _TREE_VIZ_DEL_BRANCH)
 
 _SIDEBAR_WRAP = 280
 _PLOT_PREVIEW_MAX_WIDTH = 820
@@ -143,6 +154,8 @@ class LibraryDataWindow(BaseWindow):
         self._plot_vars: Dict[str, tk.BooleanVar] = {}
         self._fraction_count_var = tk.StringVar(value=str(DEFAULT_FRACTION_COUNT))
         self._signal_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._signal_min_prominence_var = tk.StringVar(value="5")
+        self._signal_min_pct_area_var = tk.StringVar(value="3")
         self._pedigree_result: Optional[PedigreeAnalysisResult] = None
         self._pedigree_snapshot_path: Optional[Path] = None
         self._pedigree_frame: Optional[ctk.CTkScrollableFrame] = None
@@ -158,6 +171,13 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_time_unit_var = tk.StringVar(value="seconds")
         self._pedigree_tolerance_var = tk.StringVar(value="30")
         self._pedigree_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._pedigree_picker_algorithm_var = tk.StringVar(value="modern")
+        self._pedigree_gaussian_height_var = tk.StringVar(value="0.35")
+        self._pedigree_gaussian_fit_width_var = tk.StringVar(value="30")
+        self._pedigree_gaussian_stddev_var = tk.StringVar(value="2")
+        self._pedigree_gaussian_min_rt_var = tk.StringVar(value="600")
+        self._pedigree_modern_widgets: List[ctk.CTkBaseClass] = []
+        self._pedigree_old_school_widgets: List[ctk.CTkBaseClass] = []
         self._pedigree_isoform_var = tk.StringVar(value="All")
         self._pedigree_variant_choices: List[str] = ["All"]
         self._pedigree_include_failed_var = tk.BooleanVar(value=True)
@@ -167,6 +187,15 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_tree_dense_note: Optional[ctk.CTkLabel] = None
         self._pedigree_graphviz_banner: Optional[ctk.CTkLabel] = None
         self._pedigree_tree_node_count_label: Optional[ctk.CTkLabel] = None
+        self._pedigree_tree_viz_mode_var = tk.StringVar(value=_TREE_VIZ_PEDIGREE)
+        self._pedigree_del_branch_var = tk.StringVar(value="")
+        self._pedigree_del_color_rt_var = tk.BooleanVar(value=False)
+        self._del_cycle_tree_data: Optional[DelCycleTreeData] = None
+        self._pedigree_tree_viz_mode_menu: Optional[ctk.CTkOptionMenu] = None
+        self._pedigree_del_branch_menu: Optional[ctk.CTkOptionMenu] = None
+        self._pedigree_tree_header_label: Optional[ctk.CTkLabel] = None
+        self._pedigree_tier_controls_frame: Optional[ctk.CTkFrame] = None
+        self._pedigree_del_controls_frame: Optional[ctk.CTkFrame] = None
         self._cached_scan: Optional[LibraryScanData] = None
         self._current_snapshot: Optional[LibraryComputationSnapshot] = None
         self._current_snapshot_path: Optional[Path] = None
@@ -452,9 +481,29 @@ class LibraryDataWindow(BaseWindow):
         attach_tooltip(
             alpha_entry,
             "α for significant-peak metrics and signal plots. A local maximum counts as "
-            "significant only when the peak picker's height or area p-value is below α "
+            "significant only when both height and area p-values are below α/2 "
             "(same engine as Chromatogram Visualizer). Lower α → fewer significant peaks.",
         )
+        ctk.CTkLabel(params, text="Min prominence", font=ctk.CTkFont(size=12, weight="bold")).pack(
+            anchor="w", pady=(6, 0)
+        )
+        prom_entry = ctk.CTkEntry(params, textvariable=self._signal_min_prominence_var)
+        prom_entry.pack(fill="x", pady=(2, 0))
+        attach_tooltip(
+            prom_entry,
+            "Drop detected peaks below this prominence (0 = off). Also used by pedigree analysis.",
+        )
+        ctk.CTkLabel(params, text="Min % area", font=ctk.CTkFont(size=12, weight="bold")).pack(
+            anchor="w", pady=(6, 0)
+        )
+        pct_entry = ctk.CTkEntry(params, textvariable=self._signal_min_pct_area_var)
+        pct_entry.pack(fill="x", pady=(2, 0))
+        attach_tooltip(
+            pct_entry,
+            "Drop detected peaks below this share of total detected peak area (0 = off). "
+            "Also used by pedigree analysis.",
+        )
+        self._busy_sensitive_widgets.extend([prom_entry, pct_entry])
 
         ctk.CTkLabel(
             panel,
@@ -564,13 +613,81 @@ class LibraryDataWindow(BaseWindow):
             text="Seconds",
             variable=self._pedigree_time_unit_var,
             value="seconds",
+            command=self._on_pedigree_time_unit_changed,
         ).pack(side="left", padx=(0, 8))
         ctk.CTkRadioButton(
             unit_btns,
             text="Minutes",
             variable=self._pedigree_time_unit_var,
             value="minutes",
+            command=self._on_pedigree_time_unit_changed,
         ).pack(side="left")
+
+        ctk.CTkLabel(
+            pedigree_box, text="Peak picking", font=ctk.CTkFont(size=11, weight="bold")
+        ).pack(anchor="w", pady=(6, 0))
+        picker_menu = ctk.CTkOptionMenu(
+            pedigree_box,
+            variable=self._pedigree_picker_algorithm_var,
+            values=["modern", "old_school"],
+            command=lambda _v: self._sync_pedigree_picker_widgets(),
+        )
+        picker_menu.pack(fill="x", pady=(2, 4))
+        self._busy_sensitive_widgets.append(picker_menu)
+        attach_tooltip(
+            picker_menu,
+            "Modern: NB/Poisson significance. Old-school: scipy height gate + Gaussian fits.",
+        )
+
+        picker_cols = ctk.CTkFrame(pedigree_box, fg_color="transparent")
+        picker_cols.pack(fill="x", pady=(2, 4))
+        picker_cols.grid_columnconfigure(0, weight=1, uniform="pedpicker")
+        picker_cols.grid_columnconfigure(1, weight=1, uniform="pedpicker")
+
+        modern_col = ctk.CTkFrame(picker_cols, fg_color=("gray85", "gray25"), corner_radius=6)
+        modern_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        old_col = ctk.CTkFrame(picker_cols, fg_color=("gray85", "gray25"), corner_radius=6)
+        old_col.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        ped_modern_hdr = ctk.CTkLabel(
+            modern_col, text="Modern", font=ctk.CTkFont(size=10, weight="bold")
+        )
+        ped_modern_hdr.pack(anchor="w", padx=6, pady=(6, 2))
+        ped_alpha_lbl = ctk.CTkLabel(modern_col, text="Peak significance α")
+        ped_alpha_lbl.pack(anchor="w", padx=6)
+        ped_alpha_entry = ctk.CTkEntry(modern_col, textvariable=self._pedigree_alpha_var)
+        ped_alpha_entry.pack(fill="x", padx=6, pady=(2, 8))
+        self._busy_sensitive_widgets.append(ped_alpha_entry)
+        self._pedigree_modern_widgets.extend([ped_modern_hdr, ped_alpha_lbl, ped_alpha_entry])
+
+        ped_old_hdr = ctk.CTkLabel(
+            old_col, text="Old-school", font=ctk.CTkFont(size=10, weight="bold")
+        )
+        ped_old_hdr.pack(anchor="w", padx=6, pady=(6, 2))
+        self._pedigree_old_school_widgets.append(ped_old_hdr)
+
+        def _ped_old_field(parent, label: str, var: tk.StringVar) -> None:
+            lbl = ctk.CTkLabel(parent, text=label, font=ctk.CTkFont(size=10))
+            lbl.pack(anchor="w", padx=6)
+            entry = ctk.CTkEntry(parent, textvariable=var)
+            entry.pack(fill="x", padx=6, pady=(0, 4))
+            self._busy_sensitive_widgets.append(entry)
+            self._pedigree_old_school_widgets.extend([lbl, entry])
+
+        _ped_old_field(old_col, "Min height factor", self._pedigree_gaussian_height_var)
+        _ped_old_field(old_col, "Gaussian fit width", self._pedigree_gaussian_fit_width_var)
+        _ped_old_field(old_col, "Max Gaussian σ", self._pedigree_gaussian_stddev_var)
+        _ped_old_field(old_col, "Minimum RT", self._pedigree_gaussian_min_rt_var)
+
+        ctk.CTkButton(
+            pedigree_box,
+            text="Restore defaults",
+            height=24,
+            fg_color="gray40",
+            command=self._restore_pedigree_picker_defaults,
+        ).pack(fill="x", pady=(0, 4))
+
+        self._sync_pedigree_picker_widgets()
 
         ctk.CTkLabel(pedigree_box, text="Tolerance", font=ctk.CTkFont(size=11, weight="bold")).pack(
             anchor="w", pady=(6, 0)
@@ -578,13 +695,6 @@ class LibraryDataWindow(BaseWindow):
         tol_entry = ctk.CTkEntry(pedigree_box, textvariable=self._pedigree_tolerance_var)
         tol_entry.pack(fill="x", pady=(2, 4))
         self._busy_sensitive_widgets.append(tol_entry)
-
-        ctk.CTkLabel(pedigree_box, text="Peak significance α", font=ctk.CTkFont(size=11, weight="bold")).pack(
-            anchor="w"
-        )
-        alpha_entry = ctk.CTkEntry(pedigree_box, textvariable=self._pedigree_alpha_var)
-        alpha_entry.pack(fill="x", pady=(2, 4))
-        self._busy_sensitive_widgets.append(alpha_entry)
 
         if self._config.compound_variant_column:
             ctk.CTkLabel(pedigree_box, text="Isoform", font=ctk.CTkFont(size=11, weight="bold")).pack(
@@ -673,8 +783,44 @@ class LibraryDataWindow(BaseWindow):
             "30" if self._config.analysis_time_unit == "seconds" else "0.5"
         )
         self._pedigree_alpha_var.set(str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._pedigree_picker_algorithm_var.set("modern")
+        self._apply_pedigree_gaussian_defaults(self._config.analysis_time_unit)
         self._pedigree_isoform_var.set("All")
         self._pedigree_variant_choices = self._collect_variant_choices()
+        self._sync_pedigree_picker_widgets()
+
+    def _apply_pedigree_gaussian_defaults(self, time_unit: str) -> None:
+        unit = "minutes" if time_unit == "minutes" else "seconds"
+        g = AnalysisSettings.default_gaussian_params(unit)  # type: ignore[arg-type]
+        self._pedigree_gaussian_height_var.set(str(g["gaussian_min_height_factor"]))
+        self._pedigree_gaussian_fit_width_var.set(str(g["gaussian_fit_width"]))
+        self._pedigree_gaussian_stddev_var.set(str(g["gaussian_stddev_threshold"]))
+        self._pedigree_gaussian_min_rt_var.set(str(g["gaussian_minimum_rt"]))
+
+    def _restore_pedigree_picker_defaults(self) -> None:
+        self._pedigree_alpha_var.set(str(AnalysisSettings.default_modern_alpha()))
+        self._apply_pedigree_gaussian_defaults(self._pedigree_time_unit_var.get())
+        self._sync_pedigree_picker_widgets()
+
+    def _on_pedigree_time_unit_changed(self) -> None:
+        self._apply_pedigree_gaussian_defaults(self._pedigree_time_unit_var.get())
+        tol = "30" if self._pedigree_time_unit_var.get() == "seconds" else "0.5"
+        self._pedigree_tolerance_var.set(tol)
+
+    def _sync_pedigree_picker_widgets(self) -> None:
+        old_school = self._pedigree_picker_algorithm_var.get() == "old_school"
+        modern_state = "disabled" if old_school else "normal"
+        old_state = "normal" if old_school else "disabled"
+        for widget in self._pedigree_modern_widgets:
+            try:
+                widget.configure(state=modern_state)
+            except Exception:
+                pass
+        for widget in self._pedigree_old_school_widgets:
+            try:
+                widget.configure(state=old_state)
+            except Exception:
+                pass
 
     def _collect_variant_choices(self) -> List[str]:
         """Distinct isoform labels from the active database."""
@@ -962,6 +1108,21 @@ class LibraryDataWindow(BaseWindow):
         tree_controls_inner.grid(row=1, column=0, sticky="ew")
         tree_controls_inner.grid_columnconfigure(0, weight=1)
 
+        ctk.CTkLabel(
+            tree_controls_inner,
+            text="Visualization",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+
+        self._pedigree_tree_viz_mode_menu = ctk.CTkOptionMenu(
+            tree_controls_inner,
+            variable=self._pedigree_tree_viz_mode_var,
+            values=list(_TREE_VIZ_MODES),
+            command=self._on_tree_viz_mode_changed,
+        )
+        self._pedigree_tree_viz_mode_menu.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+
         self._pedigree_graphviz_banner = ctk.CTkLabel(
             tree_controls_inner,
             text="",
@@ -971,25 +1132,29 @@ class LibraryDataWindow(BaseWindow):
             wraplength=_SIDEBAR_WRAP,
             justify="left",
         )
-        self._pedigree_graphviz_banner.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
+        self._pedigree_graphviz_banner.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
         self._update_pedigree_graphviz_banner()
 
+        self._pedigree_tier_controls_frame = ctk.CTkFrame(tree_controls_inner, fg_color="transparent")
+        self._pedigree_tier_controls_frame.grid(row=3, column=0, sticky="ew")
+        self._pedigree_tier_controls_frame.grid_columnconfigure(0, weight=1)
+
         ctk.CTkCheckBox(
-            tree_controls_inner,
+            self._pedigree_tier_controls_frame,
             text="Show failed trim points",
             variable=self._pedigree_include_failed_var,
             command=self._on_pedigree_tree_option_changed,
-        ).grid(row=1, column=0, sticky="w", padx=8, pady=2)
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=2)
 
         ctk.CTkCheckBox(
-            tree_controls_inner,
+            self._pedigree_tier_controls_frame,
             text="Show chosen RT on passed nodes",
             variable=self._pedigree_show_rt_var,
             command=self._on_pedigree_tree_option_changed,
-        ).grid(row=2, column=0, sticky="w", padx=8, pady=2)
+        ).grid(row=1, column=0, sticky="w", padx=8, pady=2)
 
-        tier_row = ctk.CTkFrame(tree_controls_inner, fg_color="transparent")
-        tier_row.grid(row=3, column=0, sticky="ew", padx=8, pady=(4, 2))
+        tier_row = ctk.CTkFrame(self._pedigree_tier_controls_frame, fg_color="transparent")
+        tier_row.grid(row=2, column=0, sticky="ew", padx=8, pady=(4, 2))
         tier_row.grid_columnconfigure(0, weight=1)
 
         self._pedigree_tree_tier_label = ctk.CTkLabel(
@@ -1011,6 +1176,32 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_tree_tier_slider.set(float(max_tier_default))
         self._pedigree_tree_tier_slider.grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
+        self._pedigree_del_controls_frame = ctk.CTkFrame(tree_controls_inner, fg_color="transparent")
+        self._pedigree_del_controls_frame.grid(row=4, column=0, sticky="ew")
+        self._pedigree_del_controls_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            self._pedigree_del_controls_frame,
+            text="BB1 branch",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=(4, 2))
+
+        self._pedigree_del_branch_menu = ctk.CTkOptionMenu(
+            self._pedigree_del_controls_frame,
+            variable=self._pedigree_del_branch_var,
+            values=["—"],
+            command=lambda _v: self._on_del_branch_changed(),
+        )
+        self._pedigree_del_branch_menu.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+
+        ctk.CTkCheckBox(
+            self._pedigree_del_controls_frame,
+            text="Color product leaves by RT",
+            variable=self._pedigree_del_color_rt_var,
+            command=self._on_del_tree_option_changed,
+        ).grid(row=2, column=0, sticky="w", padx=8, pady=(0, 4))
+
         self._pedigree_tree_dense_note = ctk.CTkLabel(
             tree_controls_inner,
             text="",
@@ -1020,7 +1211,7 @@ class LibraryDataWindow(BaseWindow):
             wraplength=_SIDEBAR_WRAP,
             justify="left",
         )
-        self._pedigree_tree_dense_note.grid(row=4, column=0, sticky="ew", padx=8, pady=(2, 0))
+        self._pedigree_tree_dense_note.grid(row=5, column=0, sticky="ew", padx=8, pady=(2, 0))
 
         self._pedigree_tree_node_count_label = ctk.CTkLabel(
             tree_controls_inner,
@@ -1029,7 +1220,7 @@ class LibraryDataWindow(BaseWindow):
             text_color="gray",
             anchor="w",
         )
-        self._pedigree_tree_node_count_label.grid(row=5, column=0, sticky="w", padx=8, pady=(0, 2))
+        self._pedigree_tree_node_count_label.grid(row=6, column=0, sticky="w", padx=8, pady=(0, 2))
 
         ctk.CTkButton(
             tree_controls_inner,
@@ -1037,7 +1228,9 @@ class LibraryDataWindow(BaseWindow):
             width=120,
             fg_color="gray40",
             command=self._on_refresh_pedigree_tree,
-        ).grid(row=6, column=0, sticky="w", padx=8, pady=(4, 8))
+        ).grid(row=7, column=0, sticky="w", padx=8, pady=(4, 8))
+
+        self._sync_tree_viz_mode_widgets()
 
         tree_col = ctk.CTkFrame(pedigree_body, corner_radius=8)
         tree_col.grid(row=0, column=1, sticky="nsew")
@@ -1050,10 +1243,21 @@ class LibraryDataWindow(BaseWindow):
 
         ctk.CTkLabel(
             tree_header,
-            text="Split-tree figure",
+            text="Tree figure",
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
         ).grid(row=0, column=0, sticky="w")
+
+        self._pedigree_tree_header_label = ctk.CTkLabel(
+            tree_header,
+            text="Pedigree tier-ring or DEL-cycle positional split tree.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            anchor="w",
+            wraplength=520,
+            justify="left",
+        )
+        self._pedigree_tree_header_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
 
         ctk.CTkLabel(
             tree_header,
@@ -1063,7 +1267,7 @@ class LibraryDataWindow(BaseWindow):
             anchor="w",
             wraplength=520,
             justify="left",
-        ).grid(row=1, column=0, sticky="ew", pady=(2, 0))
+        ).grid(row=2, column=0, sticky="ew", pady=(2, 0))
 
         self._pedigree_tree_host = ctk.CTkFrame(tree_col, fg_color=("gray90", "gray17"))
         self._pedigree_tree_host.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -1258,11 +1462,22 @@ class LibraryDataWindow(BaseWindow):
         }
         return [pid for pid in self._get_selected_plot_ids() if pid in signal_ids]
 
-    def _signal_quality_is_cached(self, channels: List[str], alpha: float) -> bool:
+    def _signal_quality_is_cached(
+        self,
+        channels: List[str],
+        alpha: float,
+        *,
+        min_prominence: float = 0.0,
+        min_pct_area: float = 0.0,
+    ) -> bool:
         scan = self._cached_scan
         if scan is None or scan.signal_quality_alpha is None:
             return False
         if abs(scan.signal_quality_alpha - alpha) >= 1e-12:
+            return False
+        if (scan.signal_quality_min_prominence or 0.0) != min_prominence:
+            return False
+        if (scan.signal_quality_min_pct_area or 0.0) != min_pct_area:
             return False
         return all(ch in scan.signal_quality_by_channel for ch in channels)
 
@@ -1296,8 +1511,12 @@ class LibraryDataWindow(BaseWindow):
         signal_metrics = [mid for mid in metric_ids if mid in SIGNAL_QUALITY_METRIC_IDS]
         channels = self._get_selected_channels()
         alpha = self._parse_signal_alpha()
+        min_prominence, min_pct_area = self._peek_peak_quality_params()
         if signal_metrics and alpha is not None and self._signal_quality_is_cached(
-            channels, alpha
+            channels,
+            alpha,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
         ):
             signal_note = (
                 "Signal metrics are selected, but per-entry peak analysis was already "
@@ -1325,8 +1544,12 @@ class LibraryDataWindow(BaseWindow):
         signal_plots = self._selected_signal_plot_ids()
         channels = self._get_selected_channels()
         alpha = self._parse_signal_alpha()
+        min_prominence, min_pct_area = self._peek_peak_quality_params()
         if signal_plots and alpha is not None and self._signal_quality_is_cached(
-            channels, alpha
+            channels,
+            alpha,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
         ):
             signal_note = (
                 "Signal plots are selected, but per-entry peak analysis is already cached "
@@ -1401,8 +1624,12 @@ class LibraryDataWindow(BaseWindow):
             )
         if needs_metrics:
             signal_metrics = [mid for mid in metric_ids if mid in SIGNAL_QUALITY_METRIC_IDS]
+            min_prominence, min_pct_area = self._peek_peak_quality_params()
             if signal_metrics and not self._signal_quality_is_cached(
-                channels, self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
+                channels,
+                self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA,
+                min_prominence=min_prominence,
+                min_pct_area=min_pct_area,
             ):
                 notes.append(
                     "• Calculate selected metrics, including per-entry peak analysis for "
@@ -1413,7 +1640,13 @@ class LibraryDataWindow(BaseWindow):
         if needs_plots:
             signal_plots = self._selected_signal_plot_ids()
             alpha = self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
-            if signal_plots and not self._signal_quality_is_cached(channels, alpha):
+            min_prominence, min_pct_area = self._peek_peak_quality_params()
+            if signal_plots and not self._signal_quality_is_cached(
+                channels,
+                alpha,
+                min_prominence=min_prominence,
+                min_pct_area=min_pct_area,
+            ):
                 notes.append(
                     "• Generate selected plots, including peak analysis for signal plots "
                     "(may take a long time)."
@@ -1521,7 +1754,10 @@ class LibraryDataWindow(BaseWindow):
         kind = "index" if self._index_db_mode else "full"
         fraction_count = self._parse_fraction_count()
         signal_alpha = self._parse_signal_alpha()
-        assert fraction_count is not None and signal_alpha is not None
+        quality = self._parse_peak_quality_params()
+        if fraction_count is None or signal_alpha is None or quality is None:
+            return
+        min_prominence, min_pct_area = quality
 
         needs_scan, needs_metrics, needs_plots, _ = self._assess_report_prerequisites(
             metric_ids, channels
@@ -1575,6 +1811,8 @@ class LibraryDataWindow(BaseWindow):
                         channels=channels,
                         fraction_count=fraction_count,
                         signal_quality_alpha=signal_alpha,
+                        min_prominence=min_prominence,
+                        min_pct_area=min_pct_area,
                         progress_callback=metrics_progress,
                     )
                     self._raise_if_cancelled()
@@ -1603,6 +1841,8 @@ class LibraryDataWindow(BaseWindow):
                         channels,
                         plot_dir,
                         signal_quality_alpha=signal_alpha,
+                        min_prominence=min_prominence,
+                        min_pct_area=min_pct_area,
                         progress_callback=plot_progress,
                     )
                     self._raise_if_cancelled()
@@ -1774,6 +2014,52 @@ class LibraryDataWindow(BaseWindow):
             )
             return None
         return value
+
+    def _parse_peak_quality_params(self) -> Optional[tuple[float, float]]:
+        try:
+            min_prominence = float(self._signal_min_prominence_var.get().strip())
+        except ValueError:
+            messagebox.showerror(
+                "Library Data",
+                "Min prominence must be a number (0 = off).",
+                parent=self,
+            )
+            return None
+        try:
+            min_pct_area = float(self._signal_min_pct_area_var.get().strip())
+        except ValueError:
+            messagebox.showerror(
+                "Library Data",
+                "Min % area must be a number (0 = off).",
+                parent=self,
+            )
+            return None
+        if min_prominence < 0:
+            messagebox.showerror(
+                "Library Data",
+                "Min prominence must be >= 0.",
+                parent=self,
+            )
+            return None
+        if min_pct_area < 0 or min_pct_area > 100:
+            messagebox.showerror(
+                "Library Data",
+                "Min % area must be between 0 and 100.",
+                parent=self,
+            )
+            return None
+        return min_prominence, min_pct_area
+
+    def _peek_peak_quality_params(self) -> tuple[float, float]:
+        """Read peak quality fields without validation dialogs (for cache checks)."""
+        try:
+            min_prominence = float(self._signal_min_prominence_var.get().strip())
+            min_pct_area = float(self._signal_min_pct_area_var.get().strip())
+        except ValueError:
+            return 0.0, 0.0
+        if min_prominence < 0 or min_pct_area < 0 or min_pct_area > 100:
+            return 0.0, 0.0
+        return min_prominence, min_pct_area
 
     def _is_busy(self) -> bool:
         return self._worker_thread is not None and self._worker_thread.is_alive()
@@ -2047,8 +2333,10 @@ class LibraryDataWindow(BaseWindow):
             return
         fraction_count = self._parse_fraction_count()
         signal_alpha = self._parse_signal_alpha()
-        if fraction_count is None or signal_alpha is None:
+        quality = self._parse_peak_quality_params()
+        if fraction_count is None or signal_alpha is None or quality is None:
             return
+        min_prominence, min_pct_area = quality
 
         self._show_loading_page(
             "Calculating metrics",
@@ -2076,6 +2364,8 @@ class LibraryDataWindow(BaseWindow):
                     channels=channels,
                     fraction_count=fraction_count,
                     signal_quality_alpha=signal_alpha,
+                    min_prominence=min_prominence,
+                    min_pct_area=min_pct_area,
                     progress_callback=metrics_progress,
                 )
                 snapshot = LibraryComputationSnapshot(
@@ -2176,8 +2466,10 @@ class LibraryDataWindow(BaseWindow):
             )
             return
         signal_alpha = self._parse_signal_alpha()
-        if signal_alpha is None:
+        quality = self._parse_peak_quality_params()
+        if signal_alpha is None or quality is None:
             return
+        min_prominence, min_pct_area = quality
         entry_count = self._cached_scan.entries_used or self._cached_scan.entries_attempted
         if not self._confirm_plot_generation(entry_count, plot_ids):
             return
@@ -2206,6 +2498,8 @@ class LibraryDataWindow(BaseWindow):
                     channels,
                     plot_dir,
                     signal_quality_alpha=signal_alpha,
+                    min_prominence=min_prominence,
+                    min_pct_area=min_pct_area,
                     progress_callback=plot_progress,
                 )
                 self._raise_if_cancelled()
@@ -2470,8 +2764,10 @@ class LibraryDataWindow(BaseWindow):
             )
             return
         alpha = self._parse_signal_alpha()
-        if alpha is None:
+        quality = self._parse_peak_quality_params()
+        if alpha is None or quality is None:
             return
+        min_prominence, min_pct_area = quality
         dest = filedialog.asksaveasfilename(
             parent=self,
             title="Export per-entry signal CSV",
@@ -2499,6 +2795,8 @@ class LibraryDataWindow(BaseWindow):
                     scan.entries,
                     channels,
                     alpha=alpha,
+                    min_prominence=min_prominence,
+                    min_pct_area=min_pct_area,
                     progress_callback=export_progress,
                 )
                 export_per_entry_signal_csv(stats, dest, alpha=alpha)
@@ -3054,20 +3352,61 @@ class LibraryDataWindow(BaseWindow):
             return None
         isoform = self._pedigree_isoform_var.get().strip() or "All"
         variants = None if isoform == "All" else [isoform]
+        quality = self._parse_peak_quality_params()
+        if quality is None:
+            return None
+        min_prominence, min_pct_area = quality
+        algorithm = self._pedigree_picker_algorithm_var.get()
+        if algorithm not in ("modern", "old_school"):
+            messagebox.showerror("Pedigree", "Invalid peak picking algorithm.", parent=self)
+            return None
+        try:
+            gaussian_min_height_factor = float(self._pedigree_gaussian_height_var.get().strip())
+            gaussian_fit_width = float(self._pedigree_gaussian_fit_width_var.get().strip())
+            gaussian_stddev_threshold = float(self._pedigree_gaussian_stddev_var.get().strip())
+            gaussian_minimum_rt = float(self._pedigree_gaussian_min_rt_var.get().strip())
+        except ValueError:
+            messagebox.showerror(
+                "Pedigree", "Old-school peak picker parameters must be numbers.", parent=self
+            )
+            return None
+        stored_unit = (
+            "minutes" if self._config and self._config.analysis_time_unit == "minutes" else "seconds"
+        )
         return AnalysisSettings(
             count_channel=channel,
             time_unit=time_unit,  # type: ignore[arg-type]
+            chromatogram_time_unit=stored_unit,  # type: ignore[arg-type]
+            peak_picking_algorithm=algorithm,  # type: ignore[arg-type]
             alpha=alpha,
             tolerance=tolerance,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
             selected_variants=variants,
+            gaussian_min_height_factor=gaussian_min_height_factor,
+            gaussian_fit_width=gaussian_fit_width,
+            gaussian_stddev_threshold=gaussian_stddev_threshold,
+            gaussian_minimum_rt=gaussian_minimum_rt,
         )
 
     def _format_pedigree_summary(self, result: PedigreeAnalysisResult) -> str:
+        picker_label = (
+            "old-school Gaussian"
+            if result.settings.uses_old_school_peak_picker
+            else "modern NB"
+        )
         parts = [
             f"{result.n_chromatograms:,} chromatograms · channel {result.channel} · "
-            f"α={result.settings.alpha:g} · tolerance={result.settings.tolerance:g} "
+            f"picker={picker_label} · tolerance={result.settings.tolerance:g} "
             f"{result.settings.time_unit}"
         ]
+        if result.settings.uses_modern_peak_picker:
+            parts[0] += f" · α={result.settings.alpha:g}"
+        if result.settings.min_prominence > 0 or result.settings.min_pct_area > 0:
+            parts.append(
+                f"quality: prom≥{result.settings.min_prominence:g}, "
+                f"%area≥{result.settings.min_pct_area:g}"
+            )
         if result.isoform_label != "All":
             parts.append(f"isoform={result.isoform_label}")
         tier_bits = []
@@ -3165,6 +3504,232 @@ class LibraryDataWindow(BaseWindow):
         if self._pedigree_result is not None:
             self._update_pedigree_tree_density_note(self._pedigree_result)
 
+    def _is_del_tree_viz_mode(self) -> bool:
+        mode = self._pedigree_tree_viz_mode_var.get()
+        return mode in (_TREE_VIZ_DEL_FULL, _TREE_VIZ_DEL_BRANCH)
+
+    def _is_del_branch_viz_mode(self) -> bool:
+        return self._pedigree_tree_viz_mode_var.get() == _TREE_VIZ_DEL_BRANCH
+
+    def _sync_tree_viz_mode_widgets(self) -> None:
+        del_mode = self._is_del_tree_viz_mode()
+        branch_mode = self._is_del_branch_viz_mode()
+        if self._pedigree_tier_controls_frame is not None:
+            if del_mode:
+                self._pedigree_tier_controls_frame.grid_remove()
+            else:
+                self._pedigree_tier_controls_frame.grid()
+        if self._pedigree_del_controls_frame is not None:
+            if del_mode:
+                self._pedigree_del_controls_frame.grid()
+            else:
+                self._pedigree_del_controls_frame.grid_remove()
+        if self._pedigree_del_branch_menu is not None:
+            state = "normal" if branch_mode else "disabled"
+            self._pedigree_del_branch_menu.configure(state=state)
+        if self._pedigree_graphviz_banner is not None and del_mode:
+            self._pedigree_graphviz_banner.grid_remove()
+        elif not del_mode:
+            self._update_pedigree_graphviz_banner()
+        if self._pedigree_tree_header_label is not None:
+            if del_mode:
+                self._pedigree_tree_header_label.configure(
+                    text=(
+                        "DEL-cycle positional tree (legacy Null Tree layout). "
+                        "Powder blue = verified branch; coral = pruned."
+                    )
+                )
+            else:
+                self._pedigree_tree_header_label.configure(
+                    text="Pedigree tier-ring or DEL-cycle positional split tree."
+                )
+
+    def _on_tree_viz_mode_changed(self, _value: Optional[str] = None) -> None:
+        self._sync_tree_viz_mode_widgets()
+        self._refresh_tree_display()
+
+    def _on_del_branch_changed(self) -> None:
+        if self._del_cycle_tree_data is not None and self._is_del_branch_viz_mode():
+            self._show_del_cycle_tree_preview(self._del_cycle_tree_data)
+
+    def _on_del_tree_option_changed(self) -> None:
+        if self._del_cycle_tree_data is not None and self._is_del_tree_viz_mode():
+            self._show_del_cycle_tree_preview(self._del_cycle_tree_data)
+
+    def _update_del_branch_choices(self, data: DelCycleTreeData) -> None:
+        null = data.null_token
+        choices = [name for name in data.bb1_names if name != null]
+        if not choices:
+            choices = ["—"]
+        if self._pedigree_del_branch_menu is not None:
+            self._pedigree_del_branch_menu.configure(values=choices)
+        current = self._pedigree_del_branch_var.get().strip()
+        if current not in choices:
+            self._pedigree_del_branch_var.set(choices[0])
+
+    def _update_del_tree_status_note(self, data: DelCycleTreeData) -> None:
+        if self._pedigree_tree_node_count_label is None:
+            return
+        self._pedigree_tree_node_count_label.configure(
+            text=(
+                f"DEL rows: {data.n_rows:,} · verified products: {data.n_verified:,} · "
+                f"RT source: {data.rt_source} · threshold: {data.rt_threshold:g}"
+            )
+        )
+        if self._pedigree_tree_dense_note is not None:
+            self._pedigree_tree_dense_note.configure(
+                text=(
+                    "Full tree shows root → BB1 → BB2. Branch plots expand one BB1 "
+                    "through all coupling cycles."
+                )
+            )
+
+    def _refresh_tree_display(self) -> None:
+        if self._is_del_tree_viz_mode():
+            self._refresh_del_cycle_tree()
+        elif self._pedigree_result is not None:
+            self._show_pedigree_tree_preview(self._pedigree_result)
+
+    def _refresh_del_cycle_tree(self) -> None:
+        if self._is_busy():
+            return
+        if self._data_store is None or self._config is None:
+            return
+        if not self._config.pedigree_configured():
+            messagebox.showinfo(
+                "DEL-cycle tree",
+                "Map BB1..BBn columns in Configure Spreadsheet before building the tree.",
+                parent=self,
+            )
+            return
+        settings = self._parse_pedigree_settings()
+        if settings is None:
+            return
+        channel = self._pedigree_channel_var.get().strip()
+        if not channel:
+            messagebox.showinfo("DEL-cycle tree", "Select a channel first.", parent=self)
+            return
+
+        self._show_loading_page(
+            "Building DEL-cycle tree",
+            "Loading compounds, then resolving RTs (run pedigree first for faster builds)…",
+        )
+        assert self._db_path is not None
+        db_path = self._db_path
+        config = self._config
+        pedigree_result = self._pedigree_result
+        isoform = self._pedigree_isoform_var.get().strip() or "All"
+        rt_threshold = float(settings.tolerance)
+        time_unit = settings.time_unit
+        color_by_rt = bool(self._pedigree_del_color_rt_var.get())
+        view_mode = self._pedigree_tree_viz_mode_var.get()
+        branch_bb1 = self._pedigree_del_branch_var.get().strip()
+
+        def worker() -> None:
+            try:
+                def progress(step: int, total: int, status: str) -> None:
+                    if total == 1000:
+                        fraction = step / 1000.0
+                    else:
+                        fraction = step / total if total > 0 else 0.0
+                    self._thread_loading_progress(
+                        min(0.95, fraction),
+                        status or "Building DEL-cycle tree…",
+                    )
+
+                data = build_del_cycle_tree_for_path(
+                    db_path,
+                    config,
+                    settings,
+                    channel,
+                    time_unit,  # type: ignore[arg-type]
+                    rt_threshold=rt_threshold,
+                    pedigree_result=pedigree_result,
+                    isoform_label=isoform,
+                    progress_callback=progress,
+                )
+                view = (
+                    DelCycleTreeView.BRANCH
+                    if view_mode == _TREE_VIZ_DEL_BRANCH
+                    else DelCycleTreeView.FULL
+                )
+                selected_branch = branch_bb1
+                if view == DelCycleTreeView.BRANCH:
+                    null = data.null_token
+                    branches = [name for name in data.bb1_names if name != null]
+                    if selected_branch not in branches and branches:
+                        selected_branch = branches[0]
+                self._thread_loading_progress(0.96, "Rendering tree figure…")
+                figure = render_del_cycle_tree_figure(
+                    data,
+                    view=view,
+                    branch_bb1=selected_branch if view == DelCycleTreeView.BRANCH else None,
+                    color_by_rt=color_by_rt,
+                )
+                self._schedule_on_main(
+                    self._on_del_cycle_tree_ready,
+                    data,
+                    figure,
+                    selected_branch,
+                )
+            except Exception as exc:
+                logger.error("DEL-cycle tree build failed: %s", exc, exc_info=True)
+                self._schedule_on_main(self._on_del_cycle_tree_failed, str(exc))
+
+        self._start_worker(worker)
+
+    def _on_del_cycle_tree_ready(
+        self,
+        data: DelCycleTreeData,
+        figure: object,
+        selected_branch: str,
+    ) -> None:
+        self._worker_thread = None
+        self._del_cycle_tree_data = data
+        self._update_del_branch_choices(data)
+        if selected_branch:
+            self._pedigree_del_branch_var.set(selected_branch)
+        self._update_del_tree_status_note(data)
+        self._mount_pedigree_tree_figure(figure)
+        if self._pedigree_status_label is not None:
+            self._pedigree_status_label.configure(
+                text=(
+                    f"DEL-cycle tree ready — {data.n_verified:,} verified of "
+                    f"{len(data.verified_sequences):,} products (RT: {data.rt_source})."
+                ),
+                text_color=("gray10", "gray90"),
+            )
+        self._hide_loading_page()
+        self._update_action_states()
+
+    def _on_del_cycle_tree_failed(self, message: str) -> None:
+        self._worker_thread = None
+        self._hide_loading_page()
+        self._show_pedigree_tree_placeholder(message)
+        if self._pedigree_status_label is not None:
+            self._pedigree_status_label.configure(text=message, text_color="#D29922")
+        messagebox.showerror("DEL-cycle tree", message, parent=self)
+        self._update_action_states()
+
+    def _show_del_cycle_tree_preview(self, data: DelCycleTreeData) -> None:
+        try:
+            view = (
+                DelCycleTreeView.BRANCH
+                if self._is_del_branch_viz_mode()
+                else DelCycleTreeView.FULL
+            )
+            branch = self._pedigree_del_branch_var.get().strip()
+            figure = render_del_cycle_tree_figure(
+                data,
+                view=view,
+                branch_bb1=branch if view == DelCycleTreeView.BRANCH else None,
+                color_by_rt=bool(self._pedigree_del_color_rt_var.get()),
+            )
+            self._update_del_tree_status_note(data)
+            self._mount_pedigree_tree_figure(figure)
+        except Exception as exc:
+            self._show_pedigree_tree_placeholder(str(exc))
+
     def _render_pedigree_tree_image(
         self,
         result: PedigreeAnalysisResult,
@@ -3190,6 +3755,9 @@ class LibraryDataWindow(BaseWindow):
         return render_out
 
     def _on_refresh_pedigree_tree(self) -> None:
+        if self._is_del_tree_viz_mode():
+            self._refresh_del_cycle_tree()
+            return
         if self._pedigree_result is None or self._db_path is None:
             return
         self._update_pedigree_graphviz_banner()
@@ -3384,7 +3952,7 @@ class LibraryDataWindow(BaseWindow):
                     wraplength=_SIDEBAR_WRAP,
                     justify="left",
                 ).pack(fill="x", pady=4)
-        self._show_pedigree_tree_preview(result)
+        self._refresh_tree_display()
 
     def _make_tier_summary_panel(
         self,

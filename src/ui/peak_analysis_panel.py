@@ -22,7 +22,14 @@ from src.core.peak_analysis_service import (
     estimate_baselines_batch,
 )
 from src.core.time_display import convert_time_value
-from src.models.analysis_settings import AnalysisSettings, TimeUnit
+from src.models.analysis_settings import (
+    AnalysisSettings,
+    DEFAULT_GAUSSIAN_MIN_HEIGHT_FACTOR,
+    DEFAULT_MIN_PCT_AREA,
+    DEFAULT_MIN_PROMINENCE,
+    DEFAULT_MODERN_ALPHA,
+    TimeUnit,
+)
 from src.models.compound import Compound
 from src.models.peak_result import PeakAnalysisBatchResult, PeakAnalysisResult
 from src.models.pedigree_result import LineageAnalysisResult, LineageBatchResult
@@ -167,15 +174,141 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         )
         self._time_unit_var.trace_add("write", self._on_time_unit_changed)
 
-        ctk.CTkLabel(settings, text="Significance (α):").grid(row=2, column=0, sticky="w", pady=2)
-        self._alpha_entry = ctk.CTkEntry(settings, width=100)
-        self._alpha_entry.insert(0, "0.001")
-        self._alpha_entry.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=2)
+        ctk.CTkLabel(settings, text="Peak picking:").grid(row=2, column=0, sticky="w", pady=2)
+        self._picker_algorithm_var = tk.StringVar(value="modern")
+        picker_menu = ctk.CTkOptionMenu(
+            settings,
+            variable=self._picker_algorithm_var,
+            values=["modern", "old_school"],
+            width=160,
+            command=lambda _v: self._sync_picker_option_states(),
+        )
+        picker_menu.grid(row=2, column=1, sticky="ew", padx=(6, 0), pady=2)
+        attach_tooltip(
+            picker_menu,
+            "Modern: NB/Poisson significance on local maxima. "
+            "Old-school: scipy height gate + Gaussian centroid (legacy notebooks).",
+        )
+
+        self._modern_picker_widgets: List[ctk.CTkBaseClass] = []
+        self._old_school_picker_widgets: List[ctk.CTkBaseClass] = []
+
+        picker_cols = ctk.CTkFrame(settings, fg_color="transparent")
+        picker_cols.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 2))
+        picker_cols.grid_columnconfigure(0, weight=1, uniform="picker")
+        picker_cols.grid_columnconfigure(1, weight=1, uniform="picker")
+
+        self._modern_col = ctk.CTkFrame(picker_cols, fg_color=("gray85", "gray25"), corner_radius=6)
+        self._modern_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self._old_col = ctk.CTkFrame(picker_cols, fg_color=("gray85", "gray25"), corner_radius=6)
+        self._old_col.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        self._modern_header = ctk.CTkLabel(
+            self._modern_col, text="Modern", font=ctk.CTkFont(size=11, weight="bold")
+        )
+        self._modern_header.pack(anchor="w", padx=6, pady=(6, 4))
+        self._alpha_label = ctk.CTkLabel(self._modern_col, text="Significance (α):")
+        self._alpha_label.pack(anchor="w", padx=6)
+        self._alpha_entry = ctk.CTkEntry(self._modern_col, width=120)
+        self._alpha_entry.insert(0, str(DEFAULT_MODERN_ALPHA))
+        self._alpha_entry.pack(anchor="w", padx=6, pady=(2, 8))
         attach_tooltip(
             self._alpha_entry,
-            "Significance threshold (α). Peaks with p-value below α are kept. "
-            "Smaller α = stricter (fewer peaks). Default 0.001.",
+            "Both height and area p-values must be below α/2. Smaller α = stricter.",
         )
+        self._modern_picker_widgets.extend(
+            [self._modern_header, self._alpha_label, self._alpha_entry]
+        )
+
+        self._old_header = ctk.CTkLabel(
+            self._old_col, text="Old-school", font=ctk.CTkFont(size=11, weight="bold")
+        )
+        self._old_header.pack(anchor="w", padx=6, pady=(6, 4))
+
+        def _old_row(parent, label: str, entry: ctk.CTkEntry, tooltip: str) -> ctk.CTkLabel:
+            lbl = ctk.CTkLabel(parent, text=label, font=ctk.CTkFont(size=10))
+            lbl.pack(anchor="w", padx=6)
+            entry.pack(anchor="w", padx=6, pady=(0, 4))
+            attach_tooltip(entry, tooltip)
+            self._old_school_picker_widgets.extend([lbl, entry])
+            return lbl
+
+        unit = self.display_time_unit
+        g_defaults = AnalysisSettings.default_gaussian_params(unit)
+
+        self._gaussian_height_entry = ctk.CTkEntry(self._old_col, width=120)
+        self._gaussian_height_entry.insert(0, str(DEFAULT_GAUSSIAN_MIN_HEIGHT_FACTOR))
+        _old_row(
+            self._old_col,
+            "Min height factor:",
+            self._gaussian_height_entry,
+            "Min apex height as fraction of trace max (legacy 0.35).",
+        )
+
+        self._gaussian_fit_width_entry = ctk.CTkEntry(self._old_col, width=120)
+        self._gaussian_fit_width_entry.insert(0, str(g_defaults["gaussian_fit_width"]))
+        _old_row(
+            self._old_col,
+            "Gaussian fit width:",
+            self._gaussian_fit_width_entry,
+            "±RT window for each Gaussian fit (same unit as Time unit).",
+        )
+
+        self._gaussian_stddev_entry = ctk.CTkEntry(self._old_col, width=120)
+        self._gaussian_stddev_entry.insert(0, str(g_defaults["gaussian_stddev_threshold"]))
+        _old_row(
+            self._old_col,
+            "Max Gaussian σ:",
+            self._gaussian_stddev_entry,
+            "Reject fits with σ at or above this value (legacy 2 min).",
+        )
+
+        self._gaussian_min_rt_entry = ctk.CTkEntry(self._old_col, width=120)
+        self._gaussian_min_rt_entry.insert(0, str(g_defaults["gaussian_minimum_rt"]))
+        _old_row(
+            self._old_col,
+            "Minimum RT:",
+            self._gaussian_min_rt_entry,
+            "Skip candidates before this RT (legacy 10 min).",
+        )
+        self._old_school_picker_widgets.extend([self._old_header])
+
+        restore_row = ctk.CTkFrame(settings, fg_color="transparent")
+        restore_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        ctk.CTkButton(
+            restore_row,
+            text="Restore defaults",
+            width=120,
+            height=24,
+            fg_color="gray40",
+            command=self._restore_picker_defaults,
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            settings,
+            text="Quality filters (both modes)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 2))
+
+        ctk.CTkLabel(settings, text="Min prominence:").grid(row=6, column=0, sticky="w", pady=2)
+        self._min_prominence_entry = ctk.CTkEntry(settings, width=100)
+        self._min_prominence_entry.insert(0, str(DEFAULT_MIN_PROMINENCE))
+        self._min_prominence_entry.grid(row=6, column=1, sticky="w", padx=(6, 0), pady=2)
+        attach_tooltip(
+            self._min_prominence_entry,
+            "Minimum peak prominence (counts). Set 0 to disable.",
+        )
+
+        ctk.CTkLabel(settings, text="Min % area:").grid(row=7, column=0, sticky="w", pady=2)
+        self._min_pct_area_entry = ctk.CTkEntry(settings, width=100)
+        self._min_pct_area_entry.insert(0, str(DEFAULT_MIN_PCT_AREA))
+        self._min_pct_area_entry.grid(row=7, column=1, sticky="w", padx=(6, 0), pady=2)
+        attach_tooltip(
+            self._min_pct_area_entry,
+            "Minimum percent of total detected peak area. Set 0 to disable.",
+        )
+
+        self._sync_picker_option_states()
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=2, column=0, sticky="ew", padx=8, pady=4)
@@ -432,20 +565,96 @@ class PeakAnalysisPanel(ctk.CTkFrame):
     def _display_rt(self, rt_stored: float) -> float:
         return convert_time_value(rt_stored, self._stored_time_unit, self.display_time_unit)
 
+    def _set_entry_value(self, entry: ctk.CTkEntry, value: str) -> None:
+        entry.configure(state="normal")
+        entry.delete(0, "end")
+        entry.insert(0, value)
+
+    def _restore_picker_defaults(self) -> None:
+        """Reset picker parameters to legacy notebook / app defaults."""
+        unit = self.display_time_unit
+        g = AnalysisSettings.default_gaussian_params(unit)
+        self._set_entry_value(self._alpha_entry, str(DEFAULT_MODERN_ALPHA))
+        self._set_entry_value(
+            self._gaussian_height_entry, str(g["gaussian_min_height_factor"])
+        )
+        self._set_entry_value(self._gaussian_fit_width_entry, str(g["gaussian_fit_width"]))
+        self._set_entry_value(
+            self._gaussian_stddev_entry, str(g["gaussian_stddev_threshold"])
+        )
+        self._set_entry_value(self._gaussian_min_rt_entry, str(g["gaussian_minimum_rt"]))
+        self._set_entry_value(self._min_prominence_entry, str(DEFAULT_MIN_PROMINENCE))
+        self._set_entry_value(self._min_pct_area_entry, str(DEFAULT_MIN_PCT_AREA))
+        self._sync_picker_option_states()
+
+    def _sync_picker_option_states(self) -> None:
+        old_school = self._picker_algorithm_var.get() == "old_school"
+        modern_state = "disabled" if old_school else "normal"
+        old_state = "normal" if old_school else "disabled"
+        for widget in self._modern_picker_widgets:
+            try:
+                widget.configure(state=modern_state)
+            except Exception:
+                pass
+        for widget in self._old_school_picker_widgets:
+            try:
+                widget.configure(state=old_state)
+            except Exception:
+                pass
+
+    def _on_time_unit_changed(self, *_args) -> None:
+        unit = self.display_time_unit
+        g = AnalysisSettings.default_gaussian_params(unit)
+        self._set_entry_value(self._gaussian_fit_width_entry, str(g["gaussian_fit_width"]))
+        self._set_entry_value(
+            self._gaussian_stddev_entry, str(g["gaussian_stddev_threshold"])
+        )
+        self._set_entry_value(self._gaussian_min_rt_entry, str(g["gaussian_minimum_rt"]))
+        self._sync_picker_option_states()
+        if self._batch is not None and self._batch.total_peak_count:
+            self._populate_table(self._batch)
+        self._on_view_changed()
+
     def _build_settings(self) -> AnalysisSettings:
         try:
             alpha = float(self._alpha_entry.get().strip())
         except ValueError as exc:
             raise ValueError("Significance (α) must be a number") from exc
+        try:
+            min_prominence = float(self._min_prominence_entry.get().strip())
+        except ValueError as exc:
+            raise ValueError("Min prominence must be a number") from exc
+        try:
+            min_pct_area = float(self._min_pct_area_entry.get().strip())
+        except ValueError as exc:
+            raise ValueError("Min % area must be a number") from exc
+        try:
+            gaussian_min_height_factor = float(self._gaussian_height_entry.get().strip())
+            gaussian_fit_width = float(self._gaussian_fit_width_entry.get().strip())
+            gaussian_stddev_threshold = float(self._gaussian_stddev_entry.get().strip())
+            gaussian_minimum_rt = float(self._gaussian_min_rt_entry.get().strip())
+        except ValueError as exc:
+            raise ValueError("Old-school peak picker parameters must be numbers") from exc
         channel = self._channel_var.get().strip()
         if not channel or channel == "(none)":
             raise ValueError("Select a count channel")
         tol = 30.0 if self._time_unit_var.get() == "seconds" else 0.5
+        algorithm = self._picker_algorithm_var.get()
+        if algorithm not in ("modern", "old_school"):
+            raise ValueError("Peak picking algorithm must be modern or old_school")
         return AnalysisSettings(
             count_channel=channel,
             time_unit=self._time_unit_var.get(),  # type: ignore[arg-type]
+            chromatogram_time_unit=self._stored_time_unit,
+            peak_picking_algorithm=algorithm,  # type: ignore[arg-type]
             alpha=alpha,
             tolerance=tol,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
+            gaussian_min_height_factor=gaussian_min_height_factor,
+            gaussian_fit_width=gaussian_fit_width,
+            gaussian_stddev_threshold=gaussian_stddev_threshold,
+            gaussian_minimum_rt=gaussian_minimum_rt,
         )
 
     def _resolve_targets(self) -> tuple[List[Compound], AnalysisSettings]:
@@ -710,11 +919,6 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             self._baseline_btn.configure(text="Show baseline")
             messagebox.showerror("Baseline", str(exc), parent=self.winfo_toplevel())
             return
-        self._on_view_changed()
-
-    def _on_time_unit_changed(self, *_args) -> None:
-        if self._batch is not None and self._batch.total_peak_count:
-            self._populate_table(self._batch)
         self._on_view_changed()
 
     def _on_peak_help(self) -> None:

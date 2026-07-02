@@ -74,8 +74,8 @@ def load_all_compounds(
             compounds.append(compound)
         if progress_callback is not None and (i % 250 == 0 or i == total):
             progress_callback(
-                0,
-                4,
+                i,
+                total,
                 f"Loading library compounds… {i:,} / {total:,}",
             )
 
@@ -152,6 +152,9 @@ def analyze_lineage(
             chromatogram_map,
             settings.tolerance,
             settings.alpha,
+            min_prominence=settings.min_prominence,
+            min_pct_area=settings.min_pct_area,
+            settings=settings,
         )
         records_by_id = {r.id: r for r in records}
     else:

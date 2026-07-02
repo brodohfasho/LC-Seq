@@ -4,17 +4,30 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
 
 from src.core.lcseq_backend import AnalysisEngineError, is_native_backend_available
 from src.core.pedigree_adapter import Chromatogram, ChromatogramKey
+from src.models.analysis_settings import AnalysisSettings
 from src.models.pedigree_result import PedigreeNodeRecord
 
 logger = logging.getLogger(__name__)
 
 ChromatogramInput = Tuple[np.ndarray, np.ndarray]
+
+
+def picker_kwargs_from_settings(settings: AnalysisSettings) -> Dict[str, Any]:
+    """Keyword arguments for lcseq peak-picker mode (modern vs old-school)."""
+    factor, fit_width, stddev_thr, min_rt = settings.gaussian_picker_params()
+    return {
+        "peak_picking_algorithm": settings.peak_picking_algorithm,
+        "gaussian_min_height_factor": factor,
+        "gaussian_fit_width": fit_width,
+        "gaussian_stddev_threshold": stddev_thr,
+        "gaussian_minimum_rt": min_rt,
+    }
 
 
 class PedigreeBackend(Protocol):
@@ -27,6 +40,10 @@ class PedigreeBackend(Protocol):
         chromatograms: Dict[ChromatogramKey, ChromatogramInput],
         tolerance: float,
         alpha: float,
+        min_prominence: float = 0.0,
+        min_pct_area: float = 0.0,
+        *,
+        settings: Optional[AnalysisSettings] = None,
     ) -> List[PedigreeNodeRecord]: ...
 
     def diagnose_class(
@@ -35,6 +52,11 @@ class PedigreeBackend(Protocol):
         effective_threshold: float,
         tolerance: float,
         alpha: float,
+        min_prominence: float = 0.0,
+        min_pct_area: float = 0.0,
+        allow_null_truncation_rescue: bool = True,
+        *,
+        settings: Optional[AnalysisSettings] = None,
     ): ...
 
 
@@ -87,6 +109,10 @@ class NativePedigreeBackend:
         chromatograms: Dict[ChromatogramKey, ChromatogramInput],
         tolerance: float,
         alpha: float,
+        min_prominence: float = 0.0,
+        min_pct_area: float = 0.0,
+        *,
+        settings: Optional[AnalysisSettings] = None,
     ) -> List[PedigreeNodeRecord]:
         import lcseq
 
@@ -94,13 +120,35 @@ class NativePedigreeBackend:
             key: (np.asarray(rt, dtype=np.float64), np.asarray(intensity, dtype=np.float64))
             for key, (rt, intensity) in chromatograms.items()
         }
-        native = lcseq.evaluate_library(
-            bbs_per_position=bbs_per_position,
-            null_token=null_token,
-            chromatograms=py_chroms,
-            tolerance=tolerance,
-            alpha=alpha,
-        )
+        picker_kwargs: Dict[str, Any] = {}
+        if settings is not None:
+            picker_kwargs = picker_kwargs_from_settings(settings)
+        try:
+            native = lcseq.evaluate_library(
+                bbs_per_position=bbs_per_position,
+                null_token=null_token,
+                chromatograms=py_chroms,
+                tolerance=tolerance,
+                alpha=alpha,
+                min_prominence=min_prominence,
+                min_pct_area=min_pct_area,
+                **picker_kwargs,
+            )
+        except TypeError as exc:
+            if settings is not None and settings.uses_old_school_peak_picker:
+                raise AnalysisEngineError(
+                    "Old-school pedigree peak picking requires a rebuilt lcseq extension. "
+                    "See docs/DEVELOPER_SETUP.md (maturin develop in LC-Seq-New-master)."
+                ) from exc
+            native = lcseq.evaluate_library(
+                bbs_per_position=bbs_per_position,
+                null_token=null_token,
+                chromatograms=py_chroms,
+                tolerance=tolerance,
+                alpha=alpha,
+                min_prominence=min_prominence,
+                min_pct_area=min_pct_area,
+            )
         return [_record_from_native(node) for node in native]
 
     def diagnose_class(
@@ -109,6 +157,11 @@ class NativePedigreeBackend:
         effective_threshold: float,
         tolerance: float,
         alpha: float,
+        min_prominence: float = 0.0,
+        min_pct_area: float = 0.0,
+        allow_null_truncation_rescue: bool = True,
+        *,
+        settings: Optional[AnalysisSettings] = None,
     ):
         import lcseq
 
@@ -116,7 +169,35 @@ class NativePedigreeBackend:
             (np.asarray(rt, dtype=np.float64), np.asarray(intensity, dtype=np.float64))
             for rt, intensity in replicates
         ]
-        return lcseq.diagnose_class(payload, effective_threshold, tolerance, alpha)
+        picker_kwargs: Dict[str, Any] = {}
+        if settings is not None:
+            picker_kwargs = picker_kwargs_from_settings(settings)
+        try:
+            return lcseq.diagnose_class(
+                payload,
+                effective_threshold,
+                tolerance,
+                alpha,
+                min_prominence=min_prominence,
+                min_pct_area=min_pct_area,
+                allow_null_truncation_rescue=allow_null_truncation_rescue,
+                **picker_kwargs,
+            )
+        except TypeError as exc:
+            if settings is not None and settings.uses_old_school_peak_picker:
+                raise AnalysisEngineError(
+                    "Old-school lineage peak picking requires a rebuilt lcseq extension. "
+                    "See docs/DEVELOPER_SETUP.md."
+                ) from exc
+            return lcseq.diagnose_class(
+                payload,
+                effective_threshold,
+                tolerance,
+                alpha,
+                min_prominence=min_prominence,
+                min_pct_area=min_pct_area,
+                allow_null_truncation_rescue=allow_null_truncation_rescue,
+            )
 
 
 _cached_pedigree_backend: Optional[PedigreeBackend] = None

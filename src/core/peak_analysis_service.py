@@ -5,8 +5,14 @@ from __future__ import annotations
 
 from typing import List
 
-from src.core.lcseq_backend import AnalysisEngineError, get_peak_picker_backend
+from src.core.lcseq_backend import (
+    AnalysisEngineError,
+    find_peaks_for_settings,
+    get_peak_picker_backend,
+    prepare_rt_for_settings,
+)
 from src.core.peak_picker_python import nearest_index, valley_bounds
+from src.core.peak_quality_filter import apply_peak_quality_filter
 from src.models.analysis_settings import AnalysisSettings
 from src.models.compound import Compound
 from src.models.peak_result import PeakAnalysisBatchResult, PeakAnalysisResult, PickedPeak
@@ -53,26 +59,31 @@ def analyze_peaks(
     if len(times) < 3:
         raise AnalysisEngineError("Need at least 3 time points for peak picking")
 
-    rt = [float(t) for t in times]
+    rt = prepare_rt_for_settings(times, settings, stored_time_unit=settings.stored_time_unit)
     intensity = [float(c) for c in counts]
 
-    backend = get_peak_picker_backend()
-    peaks = backend.find_peaks(rt, intensity, settings.alpha)
-    _add_integration_bounds_from_intensity(rt, intensity, peaks)
+    all_peaks = find_peaks_for_settings(rt, intensity, settings)
+    _add_integration_bounds_from_intensity(rt, intensity, all_peaks)
+    _apply_pct_area(all_peaks)
 
-    baseline = backend.estimate_baseline(intensity)
-    _apply_pct_area(peaks)
-
-    return PeakAnalysisResult(
+    baseline = get_peak_picker_backend().estimate_baseline(intensity)
+    backend_name = (
+        "old-school (Gaussian)"
+        if settings.uses_old_school_peak_picker
+        else get_peak_picker_backend().info().name
+    )
+    result = PeakAnalysisResult(
         compound_id=compound.compound_id,
         channel=settings.count_channel,
         settings=settings,
-        peaks=peaks,
+        peaks=[],
+        all_peaks=all_peaks,
         baseline=baseline,
         primary_compound_id=compound.primary_compound_id,
         variant_label=compound.variant_label,
-        backend_name=backend.info().name,
+        backend_name=backend_name,
     )
+    return apply_peak_quality_filter(result, allow_null_truncation_rescue=False)
 
 
 def estimate_baseline_for_compound(

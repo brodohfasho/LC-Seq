@@ -1,22 +1,22 @@
 //! Peak picking with NB significance testing.
 //!
 //! Pipeline:
-//! 1. Sigma-clip baseline → (μ, σ, dispersion r).
-//! 2. Find local maxima (strict-left, ≥-right; plateau aware).
-//! 3. For each maximum, walk to the first local minimum on each side → boundaries.
+//! 1. Find local maxima (strict-left, ≥-right; plateau aware).
+//! 2. For each maximum, walk to the first local minimum on each side → boundaries.
+//! 3. Estimate a rolling sigma-clipped baseline in a window around the apex (excluding
+//!    the peak valley) → local (μ, σ, dispersion r).
 //! 4. Compute height, area over the window, prominence.
-//! 5. Run dual upper-tail tests against the baseline:
+//! 5. Run dual upper-tail tests against the local baseline:
 //!    - height_test: `P(X ≥ height | NB(r, p_bg))`
 //!    - area_test:   `P(X ≥ area   | NB(width × r, p_bg))` (sum of width iid NBs)
 //!
-//!    Accept the peak if `min(p_height, p_area) < α / 2` — Bonferroni correction for
-//!    two tests at family-wise level α. Conservative for positively-correlated tests
-//!    (height and area share the apex bin) but it gives the user-stated α as an upper
-//!    bound on the per-peak false-positive rate.
+//!    Accept the peak if **both** `p_height` and `p_area` are below `α / 2` — Bonferroni
+//!    correction for two independent tests at family-wise level α. The reported p-value
+//!    is `min(p_height, p_area)` for display.
 //!
 //! Returns peaks in ascending rt order with the surviving p-value attached.
 
-use crate::peaks::baseline::{estimate_baseline, Baseline};
+use crate::peaks::baseline::{estimate_rolling_baseline, Baseline};
 use crate::peaks::significance::p_at_least;
 
 /// A picked peak with statistics. `intensity` is the peak height, `area` is the
@@ -47,16 +47,16 @@ pub fn find_peaks(rt: &[f64], intensity: &[f64], alpha: f64) -> Vec<Peak> {
         return Vec::new();
     }
 
-    let baseline = estimate_baseline(intensity);
     let maxima = local_maxima(intensity);
 
     let mut peaks = Vec::with_capacity(maxima.len());
     for idx in maxima {
+        let (left, right) = valley_bounds(intensity, idx);
+        let baseline = estimate_rolling_baseline(intensity, idx, left, right);
         let height = intensity[idx];
         if height <= baseline.mu {
             continue;
         }
-        let (left, right) = valley_bounds(intensity, idx);
         let width = (right - left + 1) as f64;
         let area: f64 = intensity[left..=right].iter().sum();
         let prominence = compute_prominence(intensity, idx);
@@ -65,8 +65,8 @@ pub fn find_peaks(rt: &[f64], intensity: &[f64], alpha: f64) -> Vec<Peak> {
         let p_area = p_at_least(area, baseline.mu * width, scaled_dispersion(&baseline, width));
         let p_value = p_height.min(p_area);
 
-        // Bonferroni correction for two tests at family-wise level alpha.
-        if p_value < alpha / 2.0 {
+        // Both height and area must be significant (Bonferroni at alpha / 2 each).
+        if p_height < alpha / 2.0 && p_area < alpha / 2.0 {
             peaks.push(Peak {
                 rt: rt[idx],
                 intensity: height,
@@ -110,7 +110,7 @@ fn local_maxima(intensity: &[f64]) -> Vec<usize> {
 
 /// Walk left/right from the peak until intensity stops descending. The endpoints are
 /// the valley positions or the array edges.
-fn valley_bounds(intensity: &[f64], peak_idx: usize) -> (usize, usize) {
+pub(crate) fn valley_bounds(intensity: &[f64], peak_idx: usize) -> (usize, usize) {
     let n = intensity.len();
     let mut left = peak_idx;
     while left > 0 && intensity[left - 1] < intensity[left] {
@@ -123,7 +123,7 @@ fn valley_bounds(intensity: &[f64], peak_idx: usize) -> (usize, usize) {
     (left, right)
 }
 
-fn compute_prominence(intensity: &[f64], peak_idx: usize) -> f64 {
+pub(crate) fn compute_prominence(intensity: &[f64], peak_idx: usize) -> f64 {
     let h = intensity[peak_idx];
     let mut left_min = h;
     let mut k = peak_idx;
@@ -247,5 +247,45 @@ mod tests {
     #[should_panic]
     fn mismatched_length_panics() {
         let _ = find_peaks(&[0.0, 1.0, 2.0], &[0.0, 1.0], 0.001);
+    }
+
+    #[test]
+    fn rolling_baseline_finds_late_peak_after_early_elution() {
+        // Early general elution (~45 counts) then a flat late baseline (~3) with one real peak.
+        let rt: Vec<f64> = (0..120).map(|i| i as f64).collect();
+        let mut intensity = vec![45.0; 40];
+        intensity.extend(std::iter::repeat_n(3.0, 80));
+        intensity[85] = 120.0;
+        intensity[84] = 40.0;
+        intensity[86] = 40.0;
+        let peaks = find_peaks(&rt, &intensity, 0.001);
+        assert!(
+            peaks.iter().any(|p| (p.rt - 85.0).abs() < 1e-6),
+            "expected late peak after early elution, picks={:?}",
+            peaks
+        );
+    }
+
+    #[test]
+    fn rolling_baseline_filters_tail_wiggles_on_low_global_mu() {
+        // Brief early hump, then a very flat tail where tiny wiggles should not all pass.
+        let rt: Vec<f64> = (0..80).map(|i| i as f64).collect();
+        let mut intensity = vec![30.0; 15];
+        intensity.extend(std::iter::repeat_n(1.0, 65));
+        for i in (50..80).step_by(7) {
+            intensity[i] = 3.0;
+        }
+        intensity[60] = 80.0;
+        let peaks = find_peaks(&rt, &intensity, 0.001);
+        assert!(
+            peaks.iter().any(|p| (p.rt - 60.0).abs() < 1e-6),
+            "expected real late peak, picks={:?}",
+            peaks
+        );
+        assert!(
+            peaks.len() <= 2,
+            "expected tail wiggles to be mostly filtered, picks={:?}",
+            peaks
+        );
     }
 }

@@ -6,10 +6,20 @@
 //! survivors. The dispersion `r` is then estimated by method of moments from the
 //! baseline region — `r = μ²/(σ² − μ)`. If the data is under-dispersed (σ² ≤ μ),
 //! we return `None` and the caller falls back to Poisson.
+//!
+//! Peak picking uses a **rolling** baseline: for each candidate apex, μ and r are
+//! estimated from a local window around the peak (excluding the peak valley) so that
+//! drifting early elution does not dominate late-region significance tests.
 
 const DEFAULT_SIGMA: f64 = 2.0;
 const MAX_ITER: usize = 10;
 const MIN_BASELINE_POINTS: usize = 3;
+
+/// Half-width (in datapoints) of the rolling baseline window on each side of a peak apex.
+pub const DEFAULT_ROLLING_HALF_WINDOW: usize = 30;
+
+/// Maximum number of window expansions before falling back to the global baseline.
+const MAX_ROLLING_EXPAND: u32 = 4;
 
 /// Background statistics inferred from the chromatogram.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,9 +32,73 @@ pub struct Baseline {
 
 /// Sigma-clip the chromatogram to its baseline region and estimate (μ, σ, dispersion).
 pub fn estimate_baseline(intensity: &[f64]) -> Baseline {
-    let mut keep: Vec<f64> = intensity.iter().copied().filter(|x| !x.is_nan()).collect();
+    let keep: Vec<f64> = intensity.iter().copied().filter(|x| !x.is_nan()).collect();
+    baseline_from_values(keep)
+}
+
+/// Rolling baseline for one candidate peak: sigma-clip within a local window, excluding
+/// the peak's valley-bounded region so the peak does not inflate its own background.
+pub fn estimate_rolling_baseline(
+    intensity: &[f64],
+    peak_idx: usize,
+    exclude_left: usize,
+    exclude_right: usize,
+) -> Baseline {
+    if intensity.is_empty() {
+        return Baseline {
+            mu: 0.0,
+            sigma: 0.0,
+            dispersion_r: None,
+        };
+    }
+    let n = intensity.len();
+    let mut half = DEFAULT_ROLLING_HALF_WINDOW.min(n / 2);
+    if half == 0 && n >= MIN_BASELINE_POINTS {
+        half = 1;
+    }
+    for _ in 0..=MAX_ROLLING_EXPAND {
+        let samples = rolling_baseline_samples(intensity, peak_idx, exclude_left, exclude_right, half);
+        if samples.len() >= MIN_BASELINE_POINTS {
+            return baseline_from_values(samples);
+        }
+        if half >= n / 2 {
+            break;
+        }
+        half = (half * 2).min(n / 2);
+    }
+    estimate_baseline(intensity)
+}
+
+fn rolling_baseline_samples(
+    intensity: &[f64],
+    center: usize,
+    exclude_left: usize,
+    exclude_right: usize,
+    half_window: usize,
+) -> Vec<f64> {
+    let n = intensity.len();
+    let start = center.saturating_sub(half_window);
+    let end = (center + half_window).min(n.saturating_sub(1));
+    (start..=end)
+        .filter(|&idx| idx < exclude_left || idx > exclude_right)
+        .filter_map(|idx| {
+            let x = intensity[idx];
+            if x.is_nan() {
+                None
+            } else {
+                Some(x)
+            }
+        })
+        .collect()
+}
+
+fn baseline_from_values(mut keep: Vec<f64>) -> Baseline {
     if keep.len() < MIN_BASELINE_POINTS {
-        return Baseline { mu: 0.0, sigma: 0.0, dispersion_r: None };
+        return Baseline {
+            mu: 0.0,
+            sigma: 0.0,
+            dispersion_r: None,
+        };
     }
     for _ in 0..MAX_ITER {
         let n = keep.len() as f64;
@@ -46,7 +120,11 @@ pub fn estimate_baseline(intensity: &[f64]) -> Baseline {
     } else {
         None
     };
-    Baseline { mu, sigma, dispersion_r }
+    Baseline {
+        mu,
+        sigma,
+        dispersion_r,
+    }
 }
 
 fn median(data: &mut [f64]) -> f64 {
@@ -102,5 +180,36 @@ mod tests {
         let b = estimate_baseline(&[]);
         assert_eq!(b.mu, 0.0);
         assert!(b.dispersion_r.is_none());
+    }
+
+    #[test]
+    fn rolling_baseline_uses_local_flat_region() {
+        // Early high elution, late flat baseline ~3 with a peak at index 80.
+        let mut intensity = vec![45.0; 40];
+        intensity.extend(std::iter::repeat_n(3.0, 60));
+        intensity[80] = 100.0;
+        let global = estimate_baseline(&intensity);
+        assert!(
+            global.mu > 10.0,
+            "global μ should be inflated by early elution, got {}",
+            global.mu
+        );
+        let local = estimate_rolling_baseline(&intensity, 80, 79, 81);
+        assert!(
+            local.mu < 8.0,
+            "rolling μ near the late peak should reflect local baseline, got {}",
+            local.mu
+        );
+    }
+
+    #[test]
+    fn rolling_baseline_excludes_peak_valley() {
+        let intensity = vec![3.0, 4.0, 3.0, 2.0, 3.0, 4.0, 100.0, 4.0, 3.0, 2.0, 3.0, 4.0, 3.0];
+        let local = estimate_rolling_baseline(&intensity, 6, 5, 7);
+        assert!(
+            local.mu < 8.0,
+            "peak valley should be excluded from local baseline, got μ={}",
+            local.mu
+        );
     }
 }

@@ -53,6 +53,38 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH
 
 The app runs with a **Python fallback** picker (same algorithm, requires `scipy`). The Peak Analysis panel shows `Engine: Python fallback` until the Rust extension is built.
 
+On startup, LC-Seq runs a **parity check** between the installed `lcseq` extension and the Python reference picker. If they disagree (for example after pulling new Rust code without rebuilding), peak picking automatically falls back to Python so results stay correct.
+
+## Rebuild after changing `LC-Seq-New-master`
+
+Whenever Rust peak-picking code changes:
+
+1. **Close LC-Seq** (and any Python process importing `lcseq`) so the `.pyd` is not locked.
+2. Rebuild:
+
+```powershell
+cd LC-Seq-New-master
+..\venv\Scripts\maturin.exe develop --release
+```
+
+3. Verify parity:
+
+```powershell
+..\venv\Scripts\python.exe -m pytest ..\tests\test_lcseq_backend_parity.py -q
+```
+
+If maturin reports `The process cannot access the file because it is being used by another process`, the app is still running — close it and retry.
+
+## Feature split: what still requires Rust
+
+| Feature | Python fallback | Rust required |
+|---------|-----------------|---------------|
+| Peak picking (single compound) | Yes | Optional (faster) |
+| Library signal quality / SNR | Yes | Optional |
+| Pedigree / lineage consensus | No | **Yes** |
+
+Pedigree and lineage analysis call `lcseq.evaluate_library` / `diagnose_class` directly. Those have no Python port yet. Building the extension remains required for those workflows.
+
 ## Graphviz (pedigree split-tree export in Library Data)
 
 Full-library pedigree analysis can export a split-tree PNG/SVG/PDF. Install:

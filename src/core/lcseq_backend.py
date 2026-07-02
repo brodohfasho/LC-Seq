@@ -7,10 +7,11 @@ import logging
 from dataclasses import dataclass
 from typing import List, Optional, Protocol, Sequence, Tuple
 
+from src.core.peak_picker_gaussian import find_peaks_gaussian
 from src.core.peak_picker_python import estimate_baseline as py_estimate_baseline
 from src.core.peak_picker_python import find_peaks as py_find_peaks
 from src.core.time_display import convert_time_series
-from src.models.analysis_settings import TimeUnit
+from src.models.analysis_settings import AnalysisSettings, TimeUnit
 from src.models.peak_result import BaselineEstimate, PickedPeak
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,89 @@ class PythonLcseqBackend:
         return BaselineEstimate(mu=b.mu, sigma=b.sigma, dispersion_r=b.dispersion_r)
 
 
+def find_peaks_for_settings(
+    rt: Sequence[float],
+    intensity: Sequence[float],
+    settings: AnalysisSettings,
+) -> List[PickedPeak]:
+    """Pick peaks using the algorithm selected in ``settings``."""
+    if settings.uses_old_school_peak_picker:
+        factor, fit_width, stddev_thr, min_rt = settings.gaussian_picker_params()
+        raw = find_peaks_gaussian(
+            rt,
+            intensity,
+            min_height_threshold_factor=factor,
+            fit_width=fit_width,
+            stddev_threshold=stddev_thr,
+            minimum_rt=min_rt,
+        )
+        return _attach_integration_bounds(rt, raw)
+
+    backend = get_peak_picker_backend()
+    return backend.find_peaks(rt, intensity, settings.alpha)
+
+
+def prepare_rt_for_settings(
+    times: Sequence[float],
+    settings: AnalysisSettings,
+    *,
+    stored_time_unit: TimeUnit,
+) -> List[float]:
+    """Convert chromatogram times to ``settings.time_unit`` when needed."""
+    rt = [float(t) for t in times]
+    if stored_time_unit != settings.time_unit:
+        return convert_time_series(rt, stored_time_unit, settings.time_unit)
+    return rt
+
+
 _cached_backend: Optional[PeakPickerBackend] = None
+
+# Canonical probe: late peak on a low local baseline after high early elution.
+# Stale lcseq builds that still use a global Poisson picker fail this check.
+_PARITY_PROBE_RT = [float(i) for i in range(120)]
+_PARITY_PROBE_INTENSITY = [45.0] * 40 + [3.0] * 80
+_PARITY_PROBE_INTENSITY[85] = 120.0
+_PARITY_PROBE_INTENSITY[84] = 40.0
+_PARITY_PROBE_INTENSITY[86] = 40.0
+_PARITY_PROBE_ALPHA = 0.001
+
+
+def _native_peak_picker_matches_python() -> bool:
+    """Return True when the installed lcseq picker matches the Python reference."""
+    try:
+        import numpy as np
+        from lcseq import find_peaks as native_find_peaks
+    except ImportError:
+        return False
+
+    py_raw = py_find_peaks(_PARITY_PROBE_RT, _PARITY_PROBE_INTENSITY, _PARITY_PROBE_ALPHA)
+    native = native_find_peaks(
+        np.asarray(_PARITY_PROBE_RT, dtype=np.float64),
+        np.asarray(_PARITY_PROBE_INTENSITY, dtype=np.float64),
+        _PARITY_PROBE_ALPHA,
+    )
+    if len(py_raw) != len(native):
+        logger.error(
+            "lcseq peak picker parity failed: expected %d peaks, native returned %d",
+            len(py_raw),
+            len(native),
+        )
+        return False
+    for py_peak, native_peak in zip(py_raw, native):
+        if abs(float(py_peak.rt) - float(native_peak.rt)) > 1e-6:
+            logger.error(
+                "lcseq peak picker parity failed: rt mismatch %.6f vs %.6f",
+                py_peak.rt,
+                native_peak.rt,
+            )
+            return False
+        if abs(float(py_peak.p_value) - float(native_peak.p_value)) > 1e-6:
+            logger.error(
+                "lcseq peak picker parity failed: p-value mismatch at rt %.1f",
+                py_peak.rt,
+            )
+            return False
+    return True
 
 
 def is_native_backend_available() -> bool:
@@ -150,12 +233,19 @@ def get_peak_picker_backend() -> PeakPickerBackend:
     global _cached_backend
     if _cached_backend is not None:
         return _cached_backend
-    if is_native_backend_available():
+    if is_native_backend_available() and _native_peak_picker_matches_python():
         _cached_backend = NativeLcseqBackend()
         logger.info("Using Rust lcseq analysis engine")
     else:
+        if is_native_backend_available():
+            logger.warning(
+                "lcseq extension is installed but failed peak-picker parity check; "
+                "using Python fallback. Rebuild LC-Seq-New-master with maturin "
+                "(close the app first) — see docs/DEVELOPER_SETUP.md."
+            )
+        else:
+            logger.warning("lcseq Rust extension not found; using Python fallback")
         _cached_backend = PythonLcseqBackend()
-        logger.warning("lcseq Rust extension not found; using Python fallback")
     return _cached_backend
 
 

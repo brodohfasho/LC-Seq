@@ -5,7 +5,7 @@
 
 use lcseq::evaluate::{evaluate, Chromatogram, ChromatogramKey, NodeOutcome};
 use lcseq::library::{build_pedigree, NodeKind};
-use lcseq::peaks::find_peaks;
+use lcseq::peaks::{find_peaks, PeakPickerConfig, PeakQualityParams};
 use petgraph::graph::NodeIndex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -126,7 +126,13 @@ fn evaluate_real_fixture() {
         g.node_count()
     );
 
-    let outcomes = evaluate(&g, &chroms, TOLERANCE_S, ALPHA);
+    let outcomes = evaluate(
+        &g,
+        &chroms,
+        TOLERANCE_S,
+        &PeakPickerConfig::modern(ALPHA),
+        PeakQualityParams::default(),
+    );
     print_eval_results(&g, &outcomes);
 
     // Root must have a peak — its chromatogram is non-trivial.

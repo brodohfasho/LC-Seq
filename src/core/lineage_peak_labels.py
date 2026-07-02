@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import List, Optional, Sequence, Tuple
 
+from src.core.peak_quality_filter import apply_peak_quality_filter
 from src.core.plot_text import sanitize_plot_text
 from src.core.time_display import convert_time_value
 from src.models.analysis_settings import TimeUnit
@@ -53,7 +54,6 @@ def suspected_id_for_panel(
 def is_intended_product_label(suspected_peak_id: Optional[str]) -> bool:
     """Return True when a peak label denotes the lineage intended product."""
     return bool(suspected_peak_id and suspected_peak_id.startswith("intended product"))
-
 
 def lineage_rt_assignments(
     result: LineageAnalysisResult,
@@ -111,29 +111,33 @@ def label_peaks_from_lineage(
     *,
     stored_time_unit: TimeUnit,
 ) -> PeakAnalysisResult:
-    """Return a copy of ``entry`` with ``suspected_peak_id`` set on each peak."""
+    """Label all detected peaks and rebuild the displayed list (with null rescue)."""
     if result.channel != entry.channel:
         return entry
 
-    assignments = lineage_rt_assignments(result)
-    if not assignments:
-        labeled = [replace(peak, suspected_peak_id="unknown") for peak in entry.peaks]
-        return replace(entry, peaks=labeled)
+    source = list(entry.all_peaks) if entry.all_peaks else list(entry.peaks)
+    if not source:
+        return entry
 
+    assignments = lineage_rt_assignments(result)
     lineage_unit: TimeUnit = result.settings.time_unit
     tolerance = float(result.settings.tolerance)
-    labeled_peaks: List[PickedPeak] = []
-    for peak in entry.peaks:
-        label = match_peak_to_assignment(
-            peak.rt,
-            assignments,
-            stored_time_unit=stored_time_unit,
-            lineage_time_unit=lineage_unit,
-            tolerance=tolerance,
-        )
-        labeled_peaks.append(replace(peak, suspected_peak_id=label))
+    labeled_all: List[PickedPeak] = []
+    for peak in source:
+        if not assignments:
+            label = "unknown"
+        else:
+            label = match_peak_to_assignment(
+                peak.rt,
+                assignments,
+                stored_time_unit=stored_time_unit,
+                lineage_time_unit=lineage_unit,
+                tolerance=tolerance,
+            )
+        labeled_all.append(replace(peak, suspected_peak_id=label))
 
-    return replace(entry, peaks=labeled_peaks)
+    interim = replace(entry, all_peaks=labeled_all, peaks=labeled_all)
+    return apply_peak_quality_filter(interim, allow_null_truncation_rescue=True)
 
 
 def apply_lineage_labels_to_batch(

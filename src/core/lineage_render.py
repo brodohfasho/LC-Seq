@@ -21,7 +21,9 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 from src.core.pedigree_adapter import Chromatogram
+from src.core.lcseq_backend import find_peaks_for_settings
 from src.core.pedigree_backend import get_pedigree_backend
+from src.models.analysis_settings import AnalysisSettings
 from src.core.plot_text import configure_plot_fonts, sanitize_plot_text
 from src.models.pedigree_result import LineageAnalysisResult, LineagePanel
 
@@ -49,7 +51,7 @@ def _legend_handles() -> Tuple[list, list]:
             color="gray",
             markeredgecolor="black",
             markeredgewidth=0.4,
-            label="NB-significant peak",
+            label="detected peak",
         ),
         Line2D(
             [0],
@@ -165,6 +167,7 @@ def plot_class_panel(
     xlim: Optional[Tuple[float, float]] = None,
     time_unit: str = "seconds",
     show_xlabel: bool = True,
+    settings: Optional[AnalysisSettings] = None,
 ) -> None:
     """Draw one equivalence-class panel on ``ax``."""
     backend = get_pedigree_backend()
@@ -172,9 +175,13 @@ def plot_class_panel(
         (np.asarray(rt, dtype=np.float64), np.asarray(intensity, dtype=np.float64))
         for rt, intensity in replicates
     ]
-    diag = backend.diagnose_class(rep_list, effective_threshold, tolerance, alpha)
-
-    import lcseq
+    diag = backend.diagnose_class(
+        rep_list,
+        effective_threshold,
+        tolerance,
+        alpha,
+        settings=settings,
+    )
 
     n_rep = len(rep_list)
     cmap = plt.get_cmap("tab10" if n_rep <= 10 else "tab20")
@@ -195,7 +202,16 @@ def plot_class_panel(
         )
         if is_excluded:
             continue
-        peaks = lcseq.find_peaks(rt, intensity, alpha)
+        if settings is not None:
+            peaks = find_peaks_for_settings(
+                [float(x) for x in rt],
+                [float(y) for y in intensity],
+                settings,
+            )
+        else:
+            import lcseq
+
+            peaks = lcseq.find_peaks(rt, intensity, alpha)
         if peaks:
             ax.plot(
                 [p.rt for p in peaks],
@@ -476,6 +492,7 @@ def render_lineage_figure(
                 xlim=xlim,
                 time_unit=settings.time_unit,
                 show_xlabel=(idx == n - 1),
+                settings=settings,
             )
         else:
             bb_label = ", ".join(panel.class_bbs) if panel.class_bbs else "(root)"
@@ -491,6 +508,7 @@ def render_lineage_figure(
                 xlim=xlim,
                 time_unit=settings.time_unit,
                 show_xlabel=(idx == n - 1),
+                settings=settings,
             )
 
     setattr(fig, _LINEAGE_LAYOUT_ATTR, True)
