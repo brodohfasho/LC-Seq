@@ -47,6 +47,49 @@ def session_plots_dir(database_path: Path) -> Path:
     return directory
 
 
+def session_scan_path(database_path: Path) -> Path:
+    """Pickle path for the in-session library scan cache."""
+    stem = sanitize_database_stem(database_path.stem)
+    directory = get_library_data_dir() / ".session" / stem
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "scan.pkl"
+
+
+def save_session_scan(scan: "LibraryScanData", database_path: Path) -> None:
+    """Persist the parsed library scan for reuse within and across sessions."""
+    import pickle
+
+    from src.core.library_metrics import LibraryScanData
+
+    path = session_scan_path(database_path)
+    try:
+        with path.open("wb") as handle:
+            pickle.dump(scan, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        logger.info("Saved session library scan to %s", path)
+    except OSError as exc:
+        logger.warning("Could not save session library scan: %s", exc)
+
+
+def load_session_scan(database_path: Path) -> Optional["LibraryScanData"]:
+    """Load a previously saved session scan, if present."""
+    import pickle
+
+    from src.core.library_metrics import LibraryScanData
+
+    path = session_scan_path(database_path)
+    if not path.is_file():
+        return None
+    try:
+        with path.open("rb") as handle:
+            scan = pickle.load(handle)
+        if not isinstance(scan, LibraryScanData):
+            return None
+        return scan
+    except (OSError, pickle.PickleError, TypeError) as exc:
+        logger.warning("Could not load session library scan from %s: %s", path, exc)
+        return None
+
+
 def _channel_stats_to_dict(ch: ChannelAggregateStats) -> Dict[str, Any]:
     return {
         "count_name": ch.count_name,

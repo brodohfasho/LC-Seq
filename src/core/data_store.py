@@ -635,6 +635,103 @@ class DataStore:
         logger.debug(f"Bulk inserted {added}/{len(compounds)} compounds")
         return added
     
+    @staticmethod
+    def _compound_from_row(
+        row: sqlite3.Row,
+        *,
+        data_points: Optional[List[ChromatographicDataPoint]] = None,
+    ) -> Compound:
+        """Build a ``Compound`` from a ``compounds`` table row."""
+        compound_id = str(row["compound_id"])
+        metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        keys = row.keys()
+        primary_db = (
+            row["primary_compound_id"] if "primary_compound_id" in keys else None
+        )
+        variant_db = (
+            row["compound_variant"] if "compound_variant" in keys else None
+        )
+        prim = (
+            str(primary_db).strip()
+            if primary_db is not None and str(primary_db).strip()
+            else compound_id
+        )
+        var: Optional[str] = None
+        if variant_db is not None and str(variant_db).strip():
+            var = str(variant_db).strip()
+        return Compound(
+            compound_id=compound_id,
+            primary_compound_id=prim,
+            variant_label=var,
+            metadata=metadata,
+            data_points=list(data_points or []),
+        )
+
+    def _load_data_points(self, compound_id: str) -> List[ChromatographicDataPoint]:
+        """Load parsed chromatogram points for one compound."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT time, count_name, count_value
+            FROM data_points
+            WHERE compound_id = ?
+            ORDER BY time
+            """,
+            (compound_id,),
+        )
+        data_points_dict: Dict[float, Dict[str, float]] = {}
+        for dp_row in cursor.fetchall():
+            time = dp_row["time"]
+            count_name = dp_row["count_name"]
+            count_value = dp_row["count_value"]
+            if time not in data_points_dict:
+                data_points_dict[time] = {}
+            data_points_dict[time][count_name] = count_value
+        return [
+            ChromatographicDataPoint(time=time, counts=counts)
+            for time, counts in sorted(data_points_dict.items())
+        ]
+
+    def get_compound_metadata(self, compound_id: str) -> Optional[Compound]:
+        """Return compound identity and metadata without loading chromatogram points."""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT * FROM compounds WHERE compound_id = ?",
+                (compound_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return self._compound_from_row(row)
+        except Exception as e:
+            logger.error("Error getting compound metadata %s: %s", compound_id, e, exc_info=True)
+            return None
+
+    def load_compound_metadata_map(
+        self,
+        compound_ids: Sequence[str],
+        *,
+        chunk_size: int = 500,
+    ) -> Dict[str, Compound]:
+        """Load metadata-only compounds for many IDs (no ``data_points`` query)."""
+        if not compound_ids:
+            return {}
+        out: Dict[str, Compound] = {}
+        cursor = self.conn.cursor()
+        ids = list(compound_ids)
+        for start in range(0, len(ids), chunk_size):
+            chunk = ids[start : start + chunk_size]
+            placeholders = ", ".join(["?"] * len(chunk))
+            cursor.execute(
+                f"SELECT * FROM compounds WHERE compound_id IN ({placeholders})",
+                chunk,
+            )
+            for row in cursor.fetchall():
+                compound = self._compound_from_row(row)
+                out[str(compound.compound_id)] = compound
+        return out
+
     def get_compound(self, compound_id: str) -> Optional[Compound]:
         """
         Get a compound by ID.
@@ -654,58 +751,9 @@ class DataStore:
             
             if not row:
                 return None
-            
-            # Parse metadata
-            metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
-            
-            # Get data points
-            cursor.execute("""
-                SELECT time, count_name, count_value
-                FROM data_points
-                WHERE compound_id = ?
-                ORDER BY time
-            """, (compound_id,))
-            
-            # Group data points by time
-            data_points_dict: Dict[float, Dict[str, float]] = {}
-            for dp_row in cursor.fetchall():
-                time = dp_row["time"]
-                count_name = dp_row["count_name"]
-                count_value = dp_row["count_value"]
-                
-                if time not in data_points_dict:
-                    data_points_dict[time] = {}
-                data_points_dict[time][count_name] = count_value
-            
-            # Create ChromatographicDataPoint objects
-            data_points = [
-                ChromatographicDataPoint(time=time, counts=counts)
-                for time, counts in sorted(data_points_dict.items())
-            ]
-            
-            keys = row.keys()
-            primary_db = (
-                row["primary_compound_id"] if "primary_compound_id" in keys else None
-            )
-            variant_db = (
-                row["compound_variant"] if "compound_variant" in keys else None
-            )
-            prim = (
-                str(primary_db).strip()
-                if primary_db is not None and str(primary_db).strip()
-                else compound_id
-            )
-            var: Optional[str] = None
-            if variant_db is not None and str(variant_db).strip():
-                var = str(variant_db).strip()
 
-            return Compound(
-                compound_id=compound_id,
-                primary_compound_id=prim,
-                variant_label=var,
-                metadata=metadata,
-                data_points=data_points,
-            )
+            data_points = self._load_data_points(compound_id)
+            return self._compound_from_row(row, data_points=data_points)
             
         except Exception as e:
             logger.error(f"Error getting compound {compound_id}: {e}", exc_info=True)

@@ -450,10 +450,15 @@ def build_pedigree_tree_preview_figure(
     include_failed: bool = True,
     show_rt: bool = True,
 ) -> Figure:
-    """Build an interactive matplotlib figure for the pedigree tab preview."""
-    path = Path(image_path) if image_path is not None else None
-    if render_engine == "graphviz" and path is not None and path.is_file():
-        return build_pedigree_tree_raster_figure(path)
+    """
+    Build an interactive matplotlib figure for the pedigree tab preview.
+
+    The in-app preview always uses the matplotlib tier-ring renderer so tree
+    display options (include failed, max tier, show RT) apply immediately.
+    ``image_path`` / ``render_engine`` are ignored here; Graphviz exports remain
+    available via Export tree and the saved session PNG.
+    """
+    _ = image_path, render_engine
     return build_pedigree_tree_matplotlib_figure(
         records,
         max_display_tier=max_display_tier,

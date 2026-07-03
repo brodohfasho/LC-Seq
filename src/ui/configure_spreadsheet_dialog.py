@@ -7,10 +7,16 @@ import customtkinter as ctk
 import logging
 import random
 import pandas as pd
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Dict
 
 from src.ui.base_window import BaseWindow
 from src.core.spreadsheet_loader import SpreadsheetLoader
+from src.core.bb_index_csv import (
+    detect_building_blocks_from_dataframe,
+    format_validation_report,
+    parse_bb_index_file,
+    validate_bb_index_map,
+)
 from src.core.config_manager import ConfigManager
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.utils.data_parser import DataParser
@@ -98,6 +104,9 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self.null_token: str = "AgxNull"
         self.analysis_time_unit: str = "seconds"
         self.bb_position_columns: List[str] = ["", "", "", ""]
+        self.bb_index_map: Dict[str, int] = {}
+        self.bb_index_csv_path: Optional[str] = None
+        self.bb_index_validated: bool = False
         self._bb_column_menus: List[ctk.CTkOptionMenu] = []
         self._bb_column_labels: List[ctk.CTkLabel] = []
         
@@ -160,6 +169,12 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                         self.bb_position_columns = [str(c or "") for c in bb] + [""] * (
                             4 - len(bb)
                         )
+                    saved_index = getattr(existing_config, "bb_index_map", None) or {}
+                    if saved_index:
+                        self.bb_index_map = {str(k): int(v) for k, v in saved_index.items()}
+                        raw_path = getattr(existing_config, "bb_index_csv_path", None)
+                        self.bb_index_csv_path = str(raw_path).strip() if raw_path else None
+                        self.bb_index_validated = True
                     vcol = getattr(existing_config, "compound_variant_column", None)
                     if vcol and str(vcol).strip() and str(vcol) in self.available_columns:
                         self.selected_variant_column = str(vcol).strip()
@@ -761,6 +776,73 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             unit_fr, text="Minutes", variable=self._analysis_time_unit_var, value="minutes"
         ).pack(side="left", padx=4)
 
+        index_hdr = ctk.CTkLabel(
+            parent,
+            text="Building-block display index (optional)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        index_hdr.grid(row=row, column=0, columnspan=2, padx=20, pady=(14, 4), sticky="w")
+        row += 1
+        ctk.CTkLabel(
+            parent,
+            text=(
+                "CSV with two columns: building-block name and display index. "
+                "Leave empty to assign indices automatically (A→Z). "
+                "Null token uses index 0 when omitted from the CSV."
+            ),
+            font=ctk.CTkFont(size=11),
+            wraplength=950,
+            justify="left",
+        ).grid(row=row, column=0, columnspan=2, padx=20, pady=(0, 6), sticky="w")
+        row += 1
+
+        index_btn_fr = ctk.CTkFrame(parent, fg_color="transparent")
+        index_btn_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
+        row += 1
+        ctk.CTkButton(
+            index_btn_fr,
+            text="Choose index CSV…",
+            width=160,
+            command=self._on_browse_bb_index_csv,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            index_btn_fr,
+            text="Clear (use auto index)",
+            width=160,
+            fg_color="gray40",
+            command=self._on_clear_bb_index_csv,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            index_btn_fr,
+            text="Validate index vs spreadsheet",
+            width=200,
+            command=self._on_validate_bb_index_csv,
+        ).pack(side="left")
+
+        self._bb_index_path_label = ctk.CTkLabel(
+            parent,
+            text="Index source: automatic (alphabetical)",
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+            justify="left",
+            wraplength=950,
+        )
+        self._bb_index_path_label.grid(row=row, column=0, columnspan=2, padx=20, pady=(4, 2), sticky="w")
+        row += 1
+
+        self._bb_index_validation_box = ctk.CTkTextbox(parent, height=120, wrap="word")
+        self._bb_index_validation_box.grid(
+            row=row, column=0, columnspan=2, padx=20, pady=(0, 8), sticky="ew"
+        )
+        self._bb_index_validation_box.insert(
+            "1.0",
+            "Upload an index CSV and click “Validate index vs spreadsheet” to compare "
+            "against building blocks detected in the BB columns above.",
+        )
+        self._bb_index_validation_box.configure(state="disabled")
+        row += 1
+        self._refresh_bb_index_path_label()
+
         self.accept_button = ctk.CTkButton(
             parent,
             text="Accept configuration",
@@ -784,6 +866,11 @@ class ConfigureSpreadsheetDialog(BaseWindow):
     def _read_pedigree_fields_from_ui(self) -> None:
         if not hasattr(self, "_cycle_count_var"):
             return
+        prior_pedigree = (
+            self.library_cycle_count,
+            self.null_token,
+            tuple(self.bb_position_columns),
+        )
         self.library_cycle_count = int(self._cycle_count_var.get())
         self.null_token = self._null_token_entry.get().strip() or "AgxNull"
         self.analysis_time_unit = self._analysis_time_unit_var.get()
@@ -795,6 +882,137 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             v = self._bb_column_vars[i].get()
             cols.append("" if v == "(none)" else v)
         self.bb_position_columns = cols
+        if prior_pedigree != (
+            self.library_cycle_count,
+            self.null_token,
+            tuple(self.bb_position_columns),
+        ):
+            self.bb_index_validated = False
+
+    def _refresh_bb_index_path_label(self) -> None:
+        if not hasattr(self, "_bb_index_path_label"):
+            return
+        if self.bb_index_map:
+            path_note = self.bb_index_csv_path or "(loaded index map)"
+            self._bb_index_path_label.configure(
+                text=f"Index source: CSV — {path_note} ({len(self.bb_index_map)} entries)"
+            )
+        else:
+            self._bb_index_path_label.configure(
+                text="Index source: automatic (alphabetical)"
+            )
+
+    def _set_bb_index_validation_text(self, text: str, *, ok: Optional[bool] = None) -> None:
+        if not hasattr(self, "_bb_index_validation_box"):
+            return
+        self._bb_index_validation_box.configure(state="normal")
+        self._bb_index_validation_box.delete("1.0", "end")
+        self._bb_index_validation_box.insert("1.0", text)
+        self._bb_index_validation_box.configure(state="disabled")
+        if ok is True:
+            color = ("#1a7f37", "#3fb950")
+        elif ok is False:
+            color = ("#cf222e", "#f85149")
+        else:
+            color = ("gray10", "gray90")
+        self._bb_index_validation_box.configure(text_color=color)
+
+    def _on_browse_bb_index_csv(self) -> None:
+        from tkinter import filedialog
+
+        self._read_pedigree_fields_from_ui()
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Select building-block index file",
+            filetypes=[
+                ("Index files", "*.csv;*.xlsx"),
+                ("CSV files", "*.csv"),
+                ("Excel files", "*.xlsx"),
+                ("All files", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        index_map, errors = parse_bb_index_file(path)
+        if errors:
+            self.bb_index_map = {}
+            self.bb_index_csv_path = None
+            self.bb_index_validated = False
+            self._refresh_bb_index_path_label()
+            self._set_bb_index_validation_text(
+                "Could not read CSV:\n" + "\n".join(errors),
+                ok=False,
+            )
+            return
+        self.bb_index_map = index_map
+        self.bb_index_csv_path = path
+        self.bb_index_validated = False
+        self._refresh_bb_index_path_label()
+        self._set_bb_index_validation_text(
+            f"Loaded {len(index_map)} index entries from CSV.\n"
+            "Click “Validate index vs spreadsheet” to compare against this library.",
+        )
+
+    def _on_clear_bb_index_csv(self) -> None:
+        self._read_pedigree_fields_from_ui()
+        self.bb_index_map = {}
+        self.bb_index_csv_path = None
+        self.bb_index_validated = False
+        self._refresh_bb_index_path_label()
+        self._set_bb_index_validation_text(
+            "Using automatic alphabetical indexing for split-tree labels.",
+        )
+
+    def _on_validate_bb_index_csv(self) -> None:
+        from tkinter import messagebox
+
+        self._read_pedigree_fields_from_ui()
+        if not self.bb_index_map:
+            messagebox.showinfo(
+                "Building-block index",
+                "Choose an index CSV first, or use Clear to rely on automatic indexing.",
+                parent=self,
+            )
+            return
+        preview = SpreadsheetConfig(
+            compound_id_column=self.selected_compound_id_column or "id",
+            chromatographic_data_column=self.selected_chromatographic_data_column or "data",
+            delimiters=self.delimiters or [","],
+            time_column_index=0,
+            count_column_indices=[1],
+            count_names=["Count"],
+            null_token=self.null_token,
+            library_cycle_count=self.library_cycle_count,
+            bb_position_columns=self.bb_position_columns.copy(),
+        )
+        if not preview.pedigree_configured():
+            messagebox.showinfo(
+                "Building-block index",
+                "Map all BB1..BBn columns for the selected cycle count before validating.",
+                parent=self,
+            )
+            return
+        df = self.loader.get_data()
+        if df is None:
+            self._show_error("Spreadsheet data is not available.")
+            return
+        detected = detect_building_blocks_from_dataframe(
+            df,
+            bb_columns=preview.active_bb_position_columns(),
+            null_token=self.null_token,
+        )
+        result = validate_bb_index_map(
+            self.bb_index_map,
+            detected,
+            null_token=self.null_token,
+        )
+        report = format_validation_report(result)
+        self.bb_index_validated = result.ok
+        self._set_bb_index_validation_text(report, ok=result.ok)
+        if result.ok:
+            messagebox.showinfo("Building-block index", result.summary, parent=self)
+        else:
+            messagebox.showwarning("Building-block index", result.summary, parent=self)
 
     def _wizard_tab_index(self) -> int:
         name = self.tabview.get()
@@ -1755,6 +1973,13 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         
         self._read_pedigree_fields_from_ui()
 
+        if self.bb_index_map and not self.bb_index_validated:
+            self._show_error(
+                "Validate the building-block index CSV against this spreadsheet "
+                '("Validate index vs spreadsheet" on step 5) before accepting.'
+            )
+            return
+
         try:
             # Create complete configuration
             config = SpreadsheetConfig(
@@ -1769,6 +1994,8 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 null_token=self.null_token,
                 library_cycle_count=self.library_cycle_count,
                 bb_position_columns=self.bb_position_columns.copy(),
+                bb_index_map=dict(self.bb_index_map),
+                bb_index_csv_path=self.bb_index_csv_path,
                 analysis_time_unit=self.analysis_time_unit,
             )
             
@@ -1987,6 +2214,18 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.bb_position_columns = [str(c or "") for c in bb[:4]]
         else:
             self.bb_position_columns = ["", "", "", ""]
+        saved_index = getattr(config, "bb_index_map", None) or {}
+        if saved_index:
+            self.bb_index_map = {str(k): int(v) for k, v in saved_index.items()}
+            raw_path = getattr(config, "bb_index_csv_path", None)
+            self.bb_index_csv_path = str(raw_path).strip() if raw_path else None
+            self.bb_index_validated = True
+        else:
+            self.bb_index_map = {}
+            self.bb_index_csv_path = None
+            self.bb_index_validated = False
+        if hasattr(self, "_refresh_bb_index_path_label"):
+            self._refresh_bb_index_path_label()
         if vcol and str(vcol).strip() and str(vcol).strip() in self.available_columns:
             self.selected_variant_column = str(vcol).strip()
             self.variant_var.set(self.selected_variant_column)
@@ -2052,6 +2291,8 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 null_token=self.null_token,
                 library_cycle_count=self.library_cycle_count,
                 bb_position_columns=self.bb_position_columns.copy(),
+                bb_index_map=dict(self.bb_index_map),
+                bb_index_csv_path=self.bb_index_csv_path,
                 analysis_time_unit=self.analysis_time_unit,
             )
             applied.__post_init__()

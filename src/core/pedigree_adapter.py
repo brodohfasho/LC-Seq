@@ -13,8 +13,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from src.core.library_metrics import LibraryScanData, ScannedEntry
 from src.core.time_display import convert_time_series
 from src.models.analysis_settings import TimeUnit
+from src.models.chromatographic_data_point import ChromatographicDataPoint
 from src.models.compound import Compound
 from src.models.spreadsheet_config import SpreadsheetConfig
 
@@ -131,3 +133,124 @@ def build_chromatogram_map(
         intensity = np.asarray(counts, dtype=np.float64)
         out[key] = (rt, intensity)
     return out
+
+
+def infer_bbs_per_position_from_map(
+    chromatogram_map: Dict[ChromatogramKey, Chromatogram],
+    config: SpreadsheetConfig,
+) -> List[List[str]]:
+    """Union of observed BB names at each N→C position from chromatogram keys."""
+    n = config.library_cycle_count
+    sets: List[set[str]] = [set() for _ in range(n)]
+    null = config.null_token
+    for positions in chromatogram_map:
+        if len(positions) != n:
+            continue
+        for index, bb in enumerate(positions):
+            if bb != null:
+                sets[index].add(bb)
+    return [sorted(s) for s in sets]
+
+
+def compound_from_scan_entry(
+    entry: ScannedEntry,
+    metadata_stub: Compound,
+) -> Compound:
+    """Rebuild a ``Compound`` with chromatogram points taken from a scan entry."""
+    channel_names = list(entry.counts_by_channel.keys())
+    data_points = [
+        ChromatographicDataPoint(
+            time=float(entry.times[index]),
+            counts={
+                name: float(entry.counts_by_channel[name][index])
+                for name in channel_names
+            },
+        )
+        for index in range(len(entry.times))
+    ]
+    return Compound(
+        compound_id=metadata_stub.compound_id,
+        primary_compound_id=metadata_stub.primary_compound_id,
+        variant_label=metadata_stub.variant_label,
+        metadata=metadata_stub.metadata,
+        data_points=data_points,
+    )
+
+
+def build_chromatogram_map_from_scan(
+    scan: LibraryScanData,
+    metadata_by_id: Dict[str, Compound],
+    channel: str,
+    config: SpreadsheetConfig,
+    *,
+    time_unit: TimeUnit = "seconds",
+    selected_variants: Optional[List[str]] = None,
+) -> Tuple[Dict[ChromatogramKey, Chromatogram], List[Compound]]:
+    """
+    Build pedigree chromatogram inputs from a library scan plus metadata stubs.
+
+    Returns the chromatogram map and metadata-only compounds included after
+    variant filtering (for prominence and reporting counts).
+    """
+    stored_unit: TimeUnit = (
+        "minutes" if config.analysis_time_unit == "minutes" else "seconds"
+    )
+    filtered_stubs = filter_compounds_by_variant(
+        list(metadata_by_id.values()),
+        selected_variants,
+    )
+    allowed_ids = {str(compound.compound_id) for compound in filtered_stubs}
+    stub_by_id = {str(compound.compound_id): compound for compound in filtered_stubs}
+
+    out: Dict[ChromatogramKey, Chromatogram] = {}
+    included_stubs: List[Compound] = []
+    seen_ids: set[str] = set()
+
+    for entry in scan.entries:
+        compound_id = str(entry.compound_id)
+        if compound_id not in allowed_ids:
+            continue
+        stub = stub_by_id.get(compound_id)
+        if stub is None:
+            continue
+        key = truncate_positions_from_metadata(stub, config)
+        if key is None:
+            continue
+        values = entry.counts_by_channel.get(channel)
+        if not values or not entry.times:
+            continue
+        times = [float(value) for value in entry.times]
+        counts = [float(value) for value in values]
+        if stored_unit != time_unit:
+            times = convert_time_series(times, stored_unit, time_unit)
+        out[key] = (
+            np.asarray(times, dtype=np.float64),
+            np.asarray(counts, dtype=np.float64),
+        )
+        if compound_id not in seen_ids:
+            included_stubs.append(stub)
+            seen_ids.add(compound_id)
+
+    return out, included_stubs
+
+
+def compounds_with_scan_chromatograms(
+    scan: LibraryScanData,
+    metadata_stubs: Sequence[Compound],
+    *,
+    selected_variants: Optional[List[str]] = None,
+) -> List[Compound]:
+    """Attach scan chromatogram series to metadata stubs for downstream prominence."""
+    filtered = filter_compounds_by_variant(list(metadata_stubs), selected_variants)
+    allowed_ids = {str(compound.compound_id) for compound in filtered}
+    stub_by_id = {str(compound.compound_id): compound for compound in filtered}
+    compounds: List[Compound] = []
+    for entry in scan.entries:
+        compound_id = str(entry.compound_id)
+        if compound_id not in allowed_ids:
+            continue
+        stub = stub_by_id.get(compound_id)
+        if stub is None:
+            continue
+        compounds.append(compound_from_scan_entry(entry, stub))
+    return compounds

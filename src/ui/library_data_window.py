@@ -10,6 +10,7 @@ import os
 import shutil
 import threading
 import tkinter as tk
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -21,6 +22,19 @@ from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager
 from src.core.data_store import DataStore
 from src.core.library_report import generate_library_report_pdf
+from src.core.library_report_assets import (
+    build_del_cycle_report_figures,
+    build_pedigree_tier_report_figure,
+    merge_report_pedigree_figures,
+    session_report_assets_dir,
+)
+from src.core.library_report_models import (
+    LibraryReportAuditTrail,
+    LibraryReportOptions,
+    LibraryReportPedigreeFigures,
+    LibraryReportPrerequisites,
+    LibraryReportSectionStatus,
+)
 from src.core.library_metrics import (
     DEFAULT_FRACTION_COUNT,
     ChannelAggregateStats,
@@ -38,7 +52,9 @@ from src.core.library_metrics_store import (
     database_paths_match,
     get_latest_snapshot_path,
     get_library_data_dir,
+    load_session_scan,
     load_snapshot,
+    save_session_scan,
     save_snapshot,
     session_plots_dir,
     snapshot_plots_dir,
@@ -78,12 +94,16 @@ from src.core.del_cycle_tree import (
     DelCycleTreeData,
     DelCycleTreeView,
     build_del_cycle_tree_for_path,
+    export_del_cycle_csv,
     render_del_cycle_tree_figure,
 )
+from src.core.del_cycle_tree.bb_index_scheme import format_bb_branch_label
+from src.core.del_cycle_tree.render import COLOR_MODE_NOTEBOOK, COLOR_MODE_PEDIGREE
 from src.models.analysis_settings import AnalysisSettings
 from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeTierSummary
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
+from src.ui.library_report_dialog import LibraryReportDialogResult, show_library_report_dialog
 from src.ui.widget_tooltip import attach_tooltip
 
 logger = logging.getLogger(__name__)
@@ -101,6 +121,68 @@ _SIDEBAR_WRAP = 280
 _PLOT_PREVIEW_MAX_WIDTH = 820
 _PLOT_LIST_BUTTON_HEIGHT = 52
 _SECTION_HEADER_COLOR = ("#0969da", "#58a6ff")
+_MAIN_SIDEBAR_MINSIZE = 240
+_MAIN_CONTENT_MINSIZE = 520
+_PEDIGREE_SUMMARY_MINSIZE = 200
+_PEDIGREE_TREE_MINSIZE = 420
+_PEDIGREE_CONTROLS_MINSIZE = 160
+_PLOT_LIST_MINSIZE = 180
+_PLOT_PREVIEW_MINSIZE = 360
+
+
+def _paned_sash_bg() -> str:
+    """Background color for tk.PanedWindow sash handles."""
+    return "#3d3d3d" if ctk.get_appearance_mode() == "Dark" else "#c0c0c0"
+
+
+def _create_horizontal_paned(
+    parent: ctk.CTkFrame,
+    *,
+    left_minsize: int,
+    right_minsize: int,
+) -> Tuple[tk.PanedWindow, ctk.CTkFrame, ctk.CTkFrame]:
+    """Return a horizontal paned window with CTk hosts for left and right panes."""
+    paned = tk.PanedWindow(
+        parent,
+        orient=tk.HORIZONTAL,
+        sashwidth=8,
+        sashrelief=tk.RAISED,
+        opaqueresize=True,
+        bg=_paned_sash_bg(),
+        bd=0,
+        showhandle=False,
+    )
+    paned.pack(fill="both", expand=True)
+    left = ctk.CTkFrame(paned, fg_color="transparent")
+    right = ctk.CTkFrame(paned, fg_color="transparent")
+    paned.add(left, minsize=left_minsize, stretch="always")
+    paned.add(right, minsize=right_minsize, stretch="always")
+    return paned, left, right
+
+
+def _create_vertical_paned(
+    parent: ctk.CTkFrame,
+    *,
+    top_minsize: int,
+    bottom_minsize: int,
+) -> Tuple[tk.PanedWindow, ctk.CTkFrame, ctk.CTkFrame]:
+    """Return a vertical paned window with CTk hosts for top and bottom panes."""
+    paned = tk.PanedWindow(
+        parent,
+        orient=tk.VERTICAL,
+        sashwidth=8,
+        sashrelief=tk.RAISED,
+        opaqueresize=True,
+        bg=_paned_sash_bg(),
+        bd=0,
+        showhandle=False,
+    )
+    paned.pack(fill="both", expand=True)
+    top = ctk.CTkFrame(paned, fg_color="transparent")
+    bottom = ctk.CTkFrame(paned, fg_color="transparent")
+    paned.add(top, minsize=top_minsize, stretch="always")
+    paned.add(bottom, minsize=bottom_minsize, stretch="always")
+    return paned, top, bottom
 
 
 class LibraryOperationCancelled(Exception):
@@ -109,6 +191,11 @@ class LibraryOperationCancelled(Exception):
 
 def _section_header_font() -> ctk.CTkFont:
     """Section header font (must be created after a Tk root exists)."""
+    return ctk.CTkFont(size=14, weight="bold")
+
+
+def _primary_action_font() -> ctk.CTkFont:
+    """Primary action button font (must be created after a Tk root exists)."""
     return ctk.CTkFont(size=14, weight="bold")
 
 
@@ -170,6 +257,7 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_channel_var = tk.StringVar(value="")
         self._pedigree_time_unit_var = tk.StringVar(value="seconds")
         self._pedigree_tolerance_var = tk.StringVar(value="30")
+        self._pedigree_del_pass_pct_var = tk.StringVar(value="0")
         self._pedigree_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
         self._pedigree_picker_algorithm_var = tk.StringVar(value="modern")
         self._pedigree_gaussian_height_var = tk.StringVar(value="0.35")
@@ -190,12 +278,21 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_tree_viz_mode_var = tk.StringVar(value=_TREE_VIZ_PEDIGREE)
         self._pedigree_del_branch_var = tk.StringVar(value="")
         self._pedigree_del_color_rt_var = tk.BooleanVar(value=False)
+        self._pedigree_del_color_pedigree_var = tk.BooleanVar(value=False)
         self._del_cycle_tree_data: Optional[DelCycleTreeData] = None
         self._pedigree_tree_viz_mode_menu: Optional[ctk.CTkOptionMenu] = None
         self._pedigree_del_branch_menu: Optional[ctk.CTkOptionMenu] = None
+        self._del_branch_label_to_name: Dict[str, str] = {}
         self._pedigree_tree_header_label: Optional[ctk.CTkLabel] = None
         self._pedigree_tier_controls_frame: Optional[ctk.CTkFrame] = None
         self._pedigree_del_controls_frame: Optional[ctk.CTkFrame] = None
+        self._body_paned: Optional[tk.PanedWindow] = None
+        self._pedigree_body_paned: Optional[tk.PanedWindow] = None
+        self._pedigree_left_paned: Optional[tk.PanedWindow] = None
+        self._plots_body_paned: Optional[tk.PanedWindow] = None
+        self._metrics_sidebar: Optional[ctk.CTkScrollableFrame] = None
+        self._plots_sidebar: Optional[ctk.CTkScrollableFrame] = None
+        self._pedigree_sidebar: Optional[ctk.CTkScrollableFrame] = None
         self._cached_scan: Optional[LibraryScanData] = None
         self._current_snapshot: Optional[LibraryComputationSnapshot] = None
         self._current_snapshot_path: Optional[Path] = None
@@ -207,8 +304,7 @@ class LibraryDataWindow(BaseWindow):
         self._loading_cancel_btn: Optional[ctk.CTkButton] = None
 
         self.minsize(1000, 620)
-        self.grid_columnconfigure(0, weight=3, uniform="library_body")
-        self.grid_columnconfigure(1, weight=7, uniform="library_body")
+        self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
         cfg = config_manager.load_default_config()
@@ -247,8 +343,7 @@ class LibraryDataWindow(BaseWindow):
         self._init_pedigree_settings()
 
         self._build_top_bar(str(db_path))
-        self._build_left_sidebar()
-        self._build_right_content()
+        self._build_body_shell()
 
         if n_compounds == 0:
             self._show_empty_library_message()
@@ -258,6 +353,8 @@ class LibraryDataWindow(BaseWindow):
         self._update_action_states()
         self.after(150, self._apply_maximized_state)
         self.after(300, self._sync_tabview_height)
+        self.after(400, self._set_initial_paned_positions)
+        self.after(400, self._try_restore_session_scan)
         logger.info(
             "Library Data opened (compounds=%s, index_db=%s)",
             n_compounds,
@@ -274,6 +371,7 @@ class LibraryDataWindow(BaseWindow):
                 self.attributes("-zoomed", True)
             except tk.TclError:
                 pass
+        self.after(100, self._set_initial_paned_positions)
 
     def _ui_is_active(self) -> bool:
         if self._closing:
@@ -308,16 +406,43 @@ class LibraryDataWindow(BaseWindow):
             main._library_data_window = None
 
     def _build_top_bar(self, db_path: str) -> None:
-        """Single compact header row: title + database context."""
+        """Header row: title, global actions, and database context."""
         bar = ctk.CTkFrame(self, fg_color=("gray92", "gray18"))
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=16, pady=(10, 8))
-        bar.grid_columnconfigure(1, weight=1)
+        bar.grid(row=0, column=0, sticky="ew", padx=16, pady=(10, 8))
+        bar.grid_columnconfigure(2, weight=1)
+
+        title_row = ctk.CTkFrame(bar, fg_color="transparent")
+        title_row.grid(row=0, column=0, padx=(12, 16), pady=8, sticky="w")
 
         ctk.CTkLabel(
-            bar,
+            title_row,
             text="Library Data",
             font=ctk.CTkFont(size=20, weight="bold"),
-        ).grid(row=0, column=0, padx=(12, 16), pady=8, sticky="w")
+        ).pack(side="left", padx=(0, 16))
+
+        self._scan_btn = ctk.CTkButton(
+            title_row,
+            text="Run library scan",
+            width=150,
+            height=32,
+            font=_primary_action_font(),
+            fg_color="#238636",
+            hover_color="#2ea043",
+            command=self._on_run_library_scan,
+        )
+        self._scan_btn.pack(side="left", padx=(0, 8))
+        self._busy_sensitive_widgets.append(self._scan_btn)
+
+        self._export_report_btn = ctk.CTkButton(
+            title_row,
+            text="Generate report…",
+            width=150,
+            height=32,
+            fg_color="gray40",
+            command=self._on_export_report,
+        )
+        self._export_report_btn.pack(side="left")
+        self._busy_sensitive_widgets.append(self._export_report_btn)
 
         kind = "Index" if self._index_db_mode else "Full"
         fname = Path(db_path).name
@@ -328,90 +453,189 @@ class LibraryDataWindow(BaseWindow):
             font=ctk.CTkFont(size=12),
             anchor="e",
             justify="right",
-        ).grid(row=0, column=1, padx=12, pady=8, sticky="e")
+        ).grid(row=0, column=2, padx=12, pady=8, sticky="e")
 
-    def _build_left_sidebar(self) -> None:
-        """Left column (~30%): parameters, metrics/plot selection, and actions."""
-        shell = ctk.CTkFrame(self, corner_radius=10)
+    def _build_body_shell(self) -> None:
+        """Resizable split between the left option sidebar and tab content."""
+        host = ctk.CTkFrame(self, fg_color="transparent")
+        host.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        host.grid_columnconfigure(0, weight=1)
+        host.grid_rowconfigure(0, weight=1)
+
+        self._body_paned, sidebar_host, content_host = _create_horizontal_paned(
+            host,
+            left_minsize=_MAIN_SIDEBAR_MINSIZE,
+            right_minsize=_MAIN_CONTENT_MINSIZE,
+        )
+        self._build_left_sidebar(sidebar_host)
+        self._build_right_content(content_host)
+
+    def _set_initial_paned_positions(self) -> None:
+        """Place paned-window sashes after the first layout pass."""
+        if not self._ui_is_active():
+            return
+        try:
+            if self._body_paned is not None:
+                total = self._body_paned.winfo_width()
+                if total > _MAIN_SIDEBAR_MINSIZE + _MAIN_CONTENT_MINSIZE:
+                    self._body_paned.sash_place(0, int(total * 0.28), 0)
+            if self._pedigree_body_paned is not None:
+                total = self._pedigree_body_paned.winfo_width()
+                if total > _PEDIGREE_SUMMARY_MINSIZE + _PEDIGREE_TREE_MINSIZE:
+                    self._pedigree_body_paned.sash_place(
+                        0,
+                        min(300, int(total * 0.30)),
+                        0,
+                    )
+            if self._pedigree_left_paned is not None:
+                total = self._pedigree_left_paned.winfo_height()
+                if total > _PEDIGREE_SUMMARY_MINSIZE + _PEDIGREE_CONTROLS_MINSIZE:
+                    self._pedigree_left_paned.sash_place(
+                        0,
+                        min(280, int(total * 0.55)),
+                        0,
+                    )
+            if self._plots_body_paned is not None:
+                total = self._plots_body_paned.winfo_width()
+                if total > _PLOT_LIST_MINSIZE + _PLOT_PREVIEW_MINSIZE:
+                    self._plots_body_paned.sash_place(
+                        0,
+                        min(220, int(total * 0.22)),
+                        0,
+                    )
+        except tk.TclError:
+            pass
+
+    def _build_left_sidebar(self, parent: ctk.CTkFrame) -> None:
+        """Left column: tab-specific analysis options."""
+        shell = ctk.CTkFrame(parent, corner_radius=10)
         self._control_panel = shell
-        shell.grid(row=1, column=0, sticky="nsew", padx=(16, 8), pady=(0, 12))
+        shell.pack(fill="both", expand=True, padx=(0, 8))
         shell.grid_rowconfigure(0, weight=1)
         shell.grid_columnconfigure(0, weight=1)
 
-        panel = ctk.CTkScrollableFrame(
-            shell,
-            label_text="Analysis options",
+        stack = ctk.CTkFrame(shell, fg_color="transparent")
+        stack.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        stack.grid_rowconfigure(0, weight=1)
+        stack.grid_columnconfigure(0, weight=1)
+        self._sidebar_stack = stack
+
+        self._metrics_sidebar = ctk.CTkScrollableFrame(
+            stack,
+            label_text="Summary metrics",
             label_font=_section_header_font(),
             label_text_color=_SECTION_HEADER_COLOR,
         )
-        panel.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
-        panel.grid_columnconfigure(0, weight=1)
+        self._plots_sidebar = ctk.CTkScrollableFrame(
+            stack,
+            label_text="Visualizations",
+            label_font=_section_header_font(),
+            label_text_color=_SECTION_HEADER_COLOR,
+        )
+        self._pedigree_sidebar = ctk.CTkScrollableFrame(
+            stack,
+            label_text="Pedigree",
+            label_font=_section_header_font(),
+            label_text_color=_SECTION_HEADER_COLOR,
+        )
+        for panel in (self._metrics_sidebar, self._plots_sidebar, self._pedigree_sidebar):
+            panel.grid_columnconfigure(0, weight=1)
 
+        self._build_metrics_sidebar_content(self._metrics_sidebar)
+        self._build_plots_sidebar_content(self._plots_sidebar)
+        self._build_pedigree_sidebar_content(self._pedigree_sidebar)
+        self._show_sidebar_for_tab(_TAB_METRICS)
+
+        self._status_label = ctk.CTkLabel(
+            shell,
+            text="No scan loaded.",
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="w",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        )
+        self._status_label.grid(row=1, column=0, padx=12, pady=(4, 10), sticky="w")
+
+    def _show_sidebar_for_tab(self, tab_name: str) -> None:
+        panels = {
+            _TAB_METRICS: self._metrics_sidebar,
+            _TAB_PLOTS: self._plots_sidebar,
+            _TAB_PEDIGREE: self._pedigree_sidebar,
+        }
+        for name, panel in panels.items():
+            if panel is None:
+                continue
+            if name == tab_name:
+                panel.grid(row=0, column=0, sticky="nsew")
+            else:
+                panel.grid_remove()
+
+    def _on_main_tab_changed(self) -> None:
+        if self._content_tabview is None:
+            return
+        try:
+            self._show_sidebar_for_tab(self._content_tabview.get())
+        except (ValueError, tk.TclError):
+            pass
+
+    def _pack_save_load_row(
+        self,
+        parent: ctk.CTkFrame,
+        *,
+        save_command: Callable[[], None],
+        load_command: Callable[[], None],
+        browse_command: Callable[[], None],
+    ) -> Tuple[ctk.CTkButton, ctk.CTkButton, ctk.CTkButton]:
+        save_btn = ctk.CTkButton(parent, text="Save results", command=save_command)
+        save_btn.pack(fill="x", pady=(0, 4))
+        self._busy_sensitive_widgets.append(save_btn)
+
+        row_btns = ctk.CTkFrame(parent, fg_color="transparent")
+        row_btns.pack(fill="x", pady=(0, 4))
+        load_btn = ctk.CTkButton(
+            row_btns, text="Load last", width=90, fg_color="gray40", command=load_command
+        )
+        load_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        browse_btn = ctk.CTkButton(
+            row_btns, text="Browse…", width=90, fg_color="gray40", command=browse_command
+        )
+        browse_btn.pack(side="left", expand=True, fill="x")
+        self._busy_sensitive_widgets.extend([load_btn, browse_btn])
+        return save_btn, load_btn, browse_btn
+
+    def _build_metrics_sidebar_content(self, panel: ctk.CTkScrollableFrame) -> None:
         row = 0
-
         actions = ctk.CTkFrame(panel, fg_color="transparent")
         actions.grid(row=row, column=0, sticky="ew", padx=8, pady=(4, 12))
         row += 1
 
-        self._scan_btn = ctk.CTkButton(
-            actions,
-            text="Run library scan",
-            fg_color="#238636",
-            hover_color="#2ea043",
-            command=self._on_run_library_scan,
-        )
-        self._scan_btn.pack(fill="x", pady=(0, 4))
-        self._busy_sensitive_widgets.append(self._scan_btn)
-
         self._metrics_btn = ctk.CTkButton(
             actions,
             text="Calculate metrics",
+            font=_primary_action_font(),
+            height=36,
             command=self._on_calculate_metrics,
         )
-        self._metrics_btn.pack(fill="x", pady=(0, 4))
+        self._metrics_btn.pack(fill="x", pady=(0, 8))
         self._busy_sensitive_widgets.append(self._metrics_btn)
 
-        self._plots_btn = ctk.CTkButton(
+        self._save_btn, self._load_last_btn, self._browse_btn = self._pack_save_load_row(
             actions,
-            text="Generate plots",
-            command=self._on_generate_plots,
+            save_command=self._on_save,
+            load_command=self._on_load_last,
+            browse_command=self._on_browse_saved,
         )
-        self._plots_btn.pack(fill="x", pady=(0, 4))
-        self._busy_sensitive_widgets.append(self._plots_btn)
 
-        self._save_btn = ctk.CTkButton(actions, text="Save results", command=self._on_save)
-        self._save_btn.pack(fill="x", pady=(0, 4))
-        self._busy_sensitive_widgets.append(self._save_btn)
-
-        row_btns = ctk.CTkFrame(actions, fg_color="transparent")
-        row_btns.pack(fill="x", pady=(0, 4))
-        self._load_last_btn = ctk.CTkButton(
-            row_btns, text="Load last", width=90, fg_color="gray40", command=self._on_load_last
-        )
-        self._load_last_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
-        self._browse_btn = ctk.CTkButton(
-            row_btns, text="Browse…", width=90, fg_color="gray40", command=self._on_browse_saved
-        )
-        self._browse_btn.pack(side="left", expand=True, fill="x")
-        self._busy_sensitive_widgets.extend([self._load_last_btn, self._browse_btn])
-
-        self._export_csv_btn = ctk.CTkButton(
+        self._export_metrics_sidebar_btn = ctk.CTkButton(
             actions,
-            text="Export signal CSV…",
+            text="Export metrics CSV…",
             fg_color="gray40",
-            command=self._on_export_signal_csv,
+            state="disabled",
+            command=self._on_export_metrics_csv,
         )
-        self._export_csv_btn.pack(fill="x", pady=(0, 4))
-        self._busy_sensitive_widgets.append(self._export_csv_btn)
-
-        self._export_report_btn = ctk.CTkButton(
-            actions,
-            text="Export report…",
-            fg_color="gray40",
-            command=self._on_export_report,
-        )
-        self._export_report_btn.pack(fill="x", pady=(0, 0))
-        self._busy_sensitive_widgets.append(self._export_report_btn)
+        self._export_metrics_sidebar_btn.pack(fill="x", pady=(0, 4))
+        self._busy_sensitive_widgets.append(self._export_metrics_sidebar_btn)
 
         ctk.CTkLabel(
             panel,
@@ -507,10 +731,56 @@ class LibraryDataWindow(BaseWindow):
 
         ctk.CTkLabel(
             panel,
+            text=(
+                "Run library scan first (top bar). Metrics are computed from that "
+                "parsed scan without re-reading the database."
+            ),
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        ).grid(row=row, column=0, sticky="w", padx=8, pady=(8, 6))
+
+    def _build_plots_sidebar_content(self, panel: ctk.CTkScrollableFrame) -> None:
+        row = 0
+        actions = ctk.CTkFrame(panel, fg_color="transparent")
+        actions.grid(row=row, column=0, sticky="ew", padx=8, pady=(4, 12))
+        row += 1
+
+        self._plots_btn = ctk.CTkButton(
+            actions,
+            text="Generate plots",
+            font=_primary_action_font(),
+            height=36,
+            command=self._on_generate_plots,
+        )
+        self._plots_btn.pack(fill="x", pady=(0, 8))
+        self._busy_sensitive_widgets.append(self._plots_btn)
+
+        self._plots_save_btn, self._plots_load_btn, self._plots_browse_btn = (
+            self._pack_save_load_row(
+                actions,
+                save_command=self._on_save,
+                load_command=self._on_load_last,
+                browse_command=self._on_browse_saved,
+            )
+        )
+
+        self._export_plots_csv_btn = ctk.CTkButton(
+            actions,
+            text="Export plot data CSV…",
+            fg_color="gray40",
+            command=self._on_export_signal_csv,
+        )
+        self._export_plots_csv_btn.pack(fill="x", pady=(0, 4))
+        self._busy_sensitive_widgets.append(self._export_plots_csv_btn)
+
+        ctk.CTkLabel(
+            panel,
             text="Plots",
             font=_section_header_font(),
             text_color=_SECTION_HEADER_COLOR,
-        ).grid(row=row, column=0, sticky="w", padx=8, pady=(10, 4))
+        ).grid(row=row, column=0, sticky="w", padx=8, pady=(4, 4))
         row += 1
 
         for category, label in (("coverage", "Coverage"), ("signal", "Signal quality")):
@@ -535,42 +805,89 @@ class LibraryDataWindow(BaseWindow):
                 self._busy_sensitive_widgets.append(cb)
                 row += 1
 
-        row = self._build_pedigree_sidebar(panel, row)
-
         ctk.CTkLabel(
             panel,
             text=(
-                "Run library scan parses each entry once. Metrics and plots are computed "
-                "separately from that scan. Signal metrics use the same peak engine as "
-                "Chromatogram Visualizer."
+                "Plots reuse the library scan from the top bar. Signal-quality plots "
+                "use peak parameters from the Summary metrics sidebar."
             ),
             font=ctk.CTkFont(size=10),
             text_color="gray",
             wraplength=_SIDEBAR_WRAP,
             justify="left",
         ).grid(row=row, column=0, sticky="w", padx=8, pady=(8, 6))
+
+    def _build_pedigree_sidebar_content(self, panel: ctk.CTkScrollableFrame) -> None:
+        """Pedigree analysis controls in the pedigree sidebar."""
+        row = 0
+        actions = ctk.CTkFrame(panel, fg_color="transparent")
+        actions.grid(row=row, column=0, sticky="ew", padx=8, pady=(4, 12))
         row += 1
 
-        self._status_label = ctk.CTkLabel(
-            panel,
-            text="No scan loaded.",
+        self._pedigree_run_btn = ctk.CTkButton(
+            actions,
+            text="Run pedigree analysis",
+            font=_primary_action_font(),
+            height=36,
+            fg_color="#1F6FEB",
+            state="disabled",
+            command=self._on_run_pedigree,
+        )
+        self._pedigree_run_btn.pack(fill="x", pady=(0, 8))
+        self._busy_sensitive_widgets.append(self._pedigree_run_btn)
+
+        self._del_cycle_run_btn = ctk.CTkButton(
+            actions,
+            text="Run DEL cycle analysis",
+            font=_primary_action_font(),
+            height=36,
+            fg_color="#1F6FEB",
+            state="disabled",
+            command=self._on_run_del_cycle_analysis,
+        )
+        self._del_cycle_run_btn.pack(fill="x", pady=(0, 8))
+        self._busy_sensitive_widgets.append(self._del_cycle_run_btn)
+
+        self._pedigree_save_btn = ctk.CTkButton(
+            actions,
+            text="Save results",
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_save_pedigree,
+        )
+        self._pedigree_save_btn.pack(fill="x", pady=(0, 4))
+        self._busy_sensitive_widgets.append(self._pedigree_save_btn)
+
+        ped_row = ctk.CTkFrame(actions, fg_color="transparent")
+        ped_row.pack(fill="x", pady=(0, 4))
+        self._pedigree_load_btn = ctk.CTkButton(
+            ped_row,
+            text="Load last",
+            width=90,
+            fg_color="gray40",
+            command=self._on_load_last_pedigree,
+        )
+        self._pedigree_load_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        self._pedigree_browse_btn = ctk.CTkButton(
+            ped_row,
+            text="Browse…",
+            width=90,
+            fg_color="gray40",
+            command=self._on_browse_pedigree,
+        )
+        self._pedigree_browse_btn.pack(side="left", expand=True, fill="x")
+        self._busy_sensitive_widgets.extend([self._pedigree_load_btn, self._pedigree_browse_btn])
+
+        self._pedigree_status_label = ctk.CTkLabel(
+            actions,
+            text="Run library scan first (top bar).",
             font=ctk.CTkFont(size=10),
             text_color="gray",
             anchor="w",
             wraplength=_SIDEBAR_WRAP,
             justify="left",
         )
-        self._status_label.grid(row=row, column=0, padx=8, pady=(4, 10), sticky="w")
-
-    def _build_pedigree_sidebar(self, panel: ctk.CTkScrollableFrame, row: int) -> int:
-        """Pedigree analysis controls in the left sidebar."""
-        ctk.CTkLabel(
-            panel,
-            text="Pedigree (split-tree)",
-            font=_section_header_font(),
-            text_color=_SECTION_HEADER_COLOR,
-        ).grid(row=row, column=0, sticky="w", padx=8, pady=(12, 4))
-        row += 1
+        self._pedigree_status_label.pack(fill="x", pady=(4, 0))
 
         pedigree_box = ctk.CTkFrame(panel, fg_color="transparent")
         pedigree_box.grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -696,6 +1013,31 @@ class LibraryDataWindow(BaseWindow):
         tol_entry.pack(fill="x", pady=(2, 4))
         self._busy_sensitive_widgets.append(tol_entry)
 
+        ctk.CTkLabel(
+            pedigree_box,
+            text="Split-tree pass % cutoff",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(anchor="w", pady=(6, 0))
+        pass_pct_entry = ctk.CTkEntry(
+            pedigree_box,
+            textvariable=self._pedigree_del_pass_pct_var,
+        )
+        pass_pct_entry.pack(fill="x", pady=(2, 2))
+        pass_pct_entry.bind("<FocusOut>", lambda _e: self._on_del_pass_pct_changed())
+        pass_pct_entry.bind("<Return>", lambda _e: self._on_del_pass_pct_changed())
+        self._busy_sensitive_widgets.append(pass_pct_entry)
+        ctk.CTkLabel(
+            pedigree_box,
+            text=(
+                "Hub turns blue when ≥ this % of descendant full products pass "
+                "(RT verify or pedigree mode). Use 0 for “any pass” (legacy)."
+            ),
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 4))
+
         if self._config.compound_variant_column:
             ctk.CTkLabel(pedigree_box, text="Isoform", font=ctk.CTkFont(size=11, weight="bold")).pack(
                 anchor="w"
@@ -708,42 +1050,12 @@ class LibraryDataWindow(BaseWindow):
             iso_menu.pack(fill="x", pady=(2, 6))
             self._busy_sensitive_widgets.append(iso_menu)
 
-        self._pedigree_run_btn = ctk.CTkButton(
-            pedigree_box,
-            text="Run pedigree analysis",
-            fg_color="#1F6FEB",
-            command=self._on_run_pedigree,
-        )
-        self._pedigree_run_btn.pack(fill="x", pady=(4, 4))
-        self._busy_sensitive_widgets.append(self._pedigree_run_btn)
-
-        ped_row = ctk.CTkFrame(pedigree_box, fg_color="transparent")
-        ped_row.pack(fill="x", pady=(0, 4))
-        self._pedigree_load_btn = ctk.CTkButton(
-            ped_row,
-            text="Load last",
-            width=90,
-            fg_color="gray40",
-            command=self._on_load_last_pedigree,
-        )
-        self._pedigree_load_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
-        self._pedigree_browse_btn = ctk.CTkButton(
-            ped_row,
-            text="Browse…",
-            width=90,
-            fg_color="gray40",
-            command=self._on_browse_pedigree,
-        )
-        self._pedigree_browse_btn.pack(side="left", expand=True, fill="x")
-        self._busy_sensitive_widgets.extend([self._pedigree_load_btn, self._pedigree_browse_btn])
-
         pedigree_ready = (
             self._config.pedigree_configured()
             and pedigree_backend_available()
             and bool(self._config.count_names)
         )
         if not pedigree_ready:
-            self._pedigree_run_btn.configure(state="disabled")
             tip = (
                 "Map BB1..BBn columns in Configure Spreadsheet and build the Rust lcseq "
                 "extension to enable pedigree analysis."
@@ -756,20 +1068,25 @@ class LibraryDataWindow(BaseWindow):
         else:
             attach_tooltip(
                 self._pedigree_run_btn,
-                "Evaluate the full null-truncation pedigree and render a split-tree figure.",
+                "Requires a library scan. Evaluates pedigree, tier-ring tree, "
+                "and DEL-cycle split tree in one run.",
             )
 
-        self._pedigree_status_label = ctk.CTkLabel(
-            pedigree_box,
-            text="No pedigree run yet.",
+        ctk.CTkLabel(
+            panel,
+            text=(
+                "Run library scan first (top bar). Pedigree analysis builds the tier-ring "
+                "tree and DEL-cycle split tree together. Switch visualization modes "
+                "without re-running analysis."
+            ),
             font=ctk.CTkFont(size=10),
             text_color="gray",
-            anchor="w",
             wraplength=_SIDEBAR_WRAP,
             justify="left",
-        )
-        self._pedigree_status_label.pack(fill="x", pady=(4, 0))
+        ).grid(row=row, column=0, sticky="w", padx=8, pady=(8, 6))
 
+    def _build_pedigree_sidebar(self, panel: ctk.CTkScrollableFrame, row: int) -> int:
+        """Legacy hook — pedigree controls now live in ``_build_pedigree_sidebar_content``."""
         return row
 
     def _init_pedigree_settings(self) -> None:
@@ -846,15 +1163,17 @@ class LibraryDataWindow(BaseWindow):
             logger.warning("Could not load variant choices: %s", exc)
         return choices
 
-    def _build_right_content(self) -> None:
-        """Right column (~70%): metrics and visualization tabs."""
-        shell = ctk.CTkFrame(self, fg_color="transparent")
+    def _build_right_content(self, parent: ctk.CTkFrame) -> None:
+        """Right column: metrics and visualization tabs."""
+        shell = ctk.CTkFrame(parent, fg_color="transparent")
         self._results_shell = shell
-        shell.grid(row=1, column=1, sticky="nsew", padx=(8, 16), pady=(0, 12))
+        shell.pack(fill="both", expand=True, padx=(8, 0))
         shell.grid_columnconfigure(0, weight=1)
         shell.grid_rowconfigure(0, weight=1)
 
-        self._content_tabview = ctk.CTkTabview(shell, corner_radius=10)
+        self._content_tabview = ctk.CTkTabview(
+            shell, corner_radius=10, command=self._on_main_tab_changed
+        )
         self._content_tabview.grid(row=0, column=0, sticky="nsew")
         shell.bind("<Configure>", self._on_results_shell_resize)
 
@@ -948,21 +1267,25 @@ class LibraryDataWindow(BaseWindow):
 
         plot_body = ctk.CTkFrame(plots_tab, fg_color="transparent")
         plot_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        plot_body.grid_columnconfigure(0, weight=1, minsize=200)
-        plot_body.grid_columnconfigure(1, weight=4)
+        plot_body.grid_columnconfigure(0, weight=1)
         plot_body.grid_rowconfigure(0, weight=1)
 
-        self._plot_list_frame = ctk.CTkScrollableFrame(
+        self._plots_body_paned, plot_list_host, plot_preview_host = _create_horizontal_paned(
             plot_body,
+            left_minsize=_PLOT_LIST_MINSIZE,
+            right_minsize=_PLOT_PREVIEW_MINSIZE,
+        )
+
+        self._plot_list_frame = ctk.CTkScrollableFrame(
+            plot_list_host,
             label_text="Plots",
             label_font=_section_header_font(),
             label_text_color=_SECTION_HEADER_COLOR,
-            width=210,
         )
-        self._plot_list_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self._plot_list_frame.pack(fill="both", expand=True, padx=(0, 4))
 
-        preview_col = ctk.CTkFrame(plot_body, corner_radius=8)
-        preview_col.grid(row=0, column=1, sticky="nsew")
+        preview_col = ctk.CTkFrame(plot_preview_host, corner_radius=8)
+        preview_col.pack(fill="both", expand=True)
         preview_col.grid_columnconfigure(0, weight=1)
         preview_col.grid_rowconfigure(2, weight=1)
 
@@ -1042,6 +1365,17 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_export_csv_btn.pack(side="left", padx=(0, 6))
         self._busy_sensitive_widgets.append(self._pedigree_export_csv_btn)
 
+        self._pedigree_export_del_csv_btn = ctk.CTkButton(
+            pedigree_actions,
+            text="Export DEL cycle CSV…",
+            width=160,
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_export_del_cycle_csv,
+        )
+        self._pedigree_export_del_csv_btn.pack(side="left", padx=(0, 6))
+        self._busy_sensitive_widgets.append(self._pedigree_export_del_csv_btn)
+
         self._pedigree_export_prominence_btn = ctk.CTkButton(
             pedigree_actions,
             text="Export product prominence CSV…",
@@ -1061,39 +1395,37 @@ class LibraryDataWindow(BaseWindow):
             command=self._on_pedigree_figure_readme,
         ).pack(side="left", padx=(0, 6))
 
-        self._pedigree_save_btn = ctk.CTkButton(
-            pedigree_actions,
-            text="Save pedigree",
-            width=120,
-            fg_color="gray40",
-            state="disabled",
-            command=self._on_save_pedigree,
-        )
-        self._pedigree_save_btn.pack(side="left")
-        self._busy_sensitive_widgets.append(self._pedigree_save_btn)
-
         pedigree_body = ctk.CTkFrame(pedigree_tab, fg_color="transparent")
         pedigree_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
-        pedigree_body.grid_columnconfigure(0, weight=0, minsize=300)
-        pedigree_body.grid_columnconfigure(1, weight=1)
+        pedigree_body.grid_columnconfigure(0, weight=1)
         pedigree_body.grid_rowconfigure(0, weight=1)
 
-        pedigree_sidebar = ctk.CTkFrame(pedigree_body, fg_color="transparent")
-        pedigree_sidebar.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        pedigree_sidebar.grid_columnconfigure(0, weight=1)
-        pedigree_sidebar.grid_rowconfigure(0, weight=1)
+        self._pedigree_body_paned, pedigree_left_host, pedigree_right_host = (
+            _create_horizontal_paned(
+                pedigree_body,
+                left_minsize=_PEDIGREE_SUMMARY_MINSIZE,
+                right_minsize=_PEDIGREE_TREE_MINSIZE,
+            )
+        )
+
+        self._pedigree_left_paned, pedigree_summary_host, pedigree_controls_host = (
+            _create_vertical_paned(
+                pedigree_left_host,
+                top_minsize=_PEDIGREE_SUMMARY_MINSIZE,
+                bottom_minsize=_PEDIGREE_CONTROLS_MINSIZE,
+            )
+        )
 
         self._pedigree_frame = ctk.CTkScrollableFrame(
-            pedigree_sidebar,
+            pedigree_summary_host,
             label_text="Tier summary",
             label_font=_section_header_font(),
             label_text_color=_SECTION_HEADER_COLOR,
-            width=292,
         )
-        self._pedigree_frame.grid(row=0, column=0, sticky="nsew")
+        self._pedigree_frame.pack(fill="both", expand=True, padx=(0, 4), pady=(0, 4))
 
-        tree_controls = ctk.CTkFrame(pedigree_sidebar, fg_color="transparent")
-        tree_controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        tree_controls = ctk.CTkFrame(pedigree_controls_host, fg_color="transparent")
+        tree_controls.pack(fill="both", expand=True, padx=(0, 4), pady=(4, 0))
         tree_controls.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -1202,6 +1534,13 @@ class LibraryDataWindow(BaseWindow):
             command=self._on_del_tree_option_changed,
         ).grid(row=2, column=0, sticky="w", padx=8, pady=(0, 4))
 
+        ctk.CTkCheckBox(
+            self._pedigree_del_controls_frame,
+            text="Color by pedigree pass/fail",
+            variable=self._pedigree_del_color_pedigree_var,
+            command=self._on_del_tree_option_changed,
+        ).grid(row=3, column=0, sticky="w", padx=8, pady=(0, 4))
+
         self._pedigree_tree_dense_note = ctk.CTkLabel(
             tree_controls_inner,
             text="",
@@ -1232,8 +1571,8 @@ class LibraryDataWindow(BaseWindow):
 
         self._sync_tree_viz_mode_widgets()
 
-        tree_col = ctk.CTkFrame(pedigree_body, corner_radius=8)
-        tree_col.grid(row=0, column=1, sticky="nsew")
+        tree_col = ctk.CTkFrame(pedigree_right_host, corner_radius=8)
+        tree_col.pack(fill="both", expand=True)
         tree_col.grid_columnconfigure(0, weight=1)
         tree_col.grid_rowconfigure(1, weight=1)
 
@@ -1609,18 +1948,125 @@ class LibraryDataWindow(BaseWindow):
         computed = {m.metric_id for m in snapshot.metric_results}
         return set(metric_ids).issubset(computed)
 
+    def _peek_pedigree_settings(self) -> Optional[AnalysisSettings]:
+        """Read pedigree fields without validation dialogs (for cache checks)."""
+        if self._config is None:
+            return None
+        channel = self._pedigree_channel_var.get().strip()
+        if not channel:
+            return None
+        try:
+            tolerance = float(self._pedigree_tolerance_var.get().strip())
+            alpha = float(self._pedigree_alpha_var.get().strip())
+            gaussian_min_height_factor = float(self._pedigree_gaussian_height_var.get().strip())
+            gaussian_fit_width = float(self._pedigree_gaussian_fit_width_var.get().strip())
+            gaussian_stddev_threshold = float(self._pedigree_gaussian_stddev_var.get().strip())
+            gaussian_minimum_rt = float(self._pedigree_gaussian_min_rt_var.get().strip())
+        except ValueError:
+            return None
+        if tolerance <= 0 or alpha <= 0 or alpha >= 1:
+            return None
+        time_unit = self._pedigree_time_unit_var.get()
+        if time_unit not in ("seconds", "minutes"):
+            return None
+        isoform = self._pedigree_isoform_var.get().strip() or "All"
+        variants = None if isoform == "All" else [isoform]
+        min_prominence, min_pct_area = self._peek_peak_quality_params()
+        algorithm = self._pedigree_picker_algorithm_var.get()
+        if algorithm not in ("modern", "old_school"):
+            return None
+        stored_unit = (
+            "minutes" if self._config.analysis_time_unit == "minutes" else "seconds"
+        )
+        return AnalysisSettings(
+            count_channel=channel,
+            time_unit=time_unit,  # type: ignore[arg-type]
+            chromatogram_time_unit=stored_unit,  # type: ignore[arg-type]
+            peak_picking_algorithm=algorithm,  # type: ignore[arg-type]
+            alpha=alpha,
+            tolerance=tolerance,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
+            selected_variants=variants,
+            gaussian_min_height_factor=gaussian_min_height_factor,
+            gaussian_fit_width=gaussian_fit_width,
+            gaussian_stddev_threshold=gaussian_stddev_threshold,
+            gaussian_minimum_rt=gaussian_minimum_rt,
+        )
+
+    def _report_pedigree_tier_is_ready(self) -> bool:
+        if self._pedigree_result is None:
+            return False
+        settings = self._peek_pedigree_settings()
+        if settings is None:
+            return False
+        result = self._pedigree_result
+        if result.settings != settings:
+            return False
+        isoform = self._pedigree_isoform_var.get().strip() or "All"
+        if result.isoform_label != isoform:
+            return False
+        if self._db_path is not None and not database_paths_match(
+            result.database_path,
+            self._db_path,
+        ):
+            return False
+        return True
+
+    def _report_del_cycle_is_ready(self) -> bool:
+        if self._del_cycle_tree_data is None:
+            return False
+        settings = self._peek_pedigree_settings()
+        if settings is None:
+            return False
+        del_data = self._del_cycle_tree_data
+        if abs(del_data.rt_threshold - float(settings.tolerance)) > 1e-9:
+            return False
+        return True
+
+    def _report_pedigree_is_ready(self) -> bool:
+        """True when both pedigree tier-ring and DEL tree match current sidebar settings."""
+        return self._report_pedigree_tier_is_ready() and self._report_del_cycle_is_ready()
+
+    def _del_cycle_report_available(self) -> bool:
+        if self._config is None:
+            return False
+        return self._config.pedigree_configured()
+
+    def _pedigree_report_available(self) -> bool:
+        if self._config is None or not self._config.pedigree_configured():
+            return False
+        return pedigree_backend_available()
+
     def _assess_report_prerequisites(
         self,
-        metric_ids: List[str],
-        channels: List[str],
-    ) -> tuple[bool, bool, bool, str]:
-        needs_scan = self._cached_scan is None
-        needs_metrics = not self._report_metrics_are_ready(metric_ids, channels)
-        needs_plots = not self._report_plots_are_ready()
+        report_options: LibraryReportOptions,
+    ) -> LibraryReportPrerequisites:
+        metric_ids = report_options.metric_ids
+        channels = report_options.channels
+        needs_scan = (
+            self._cached_scan is None
+            and (
+                report_options.include_metrics
+                or report_options.include_plots
+                or report_options.include_pedigree
+            )
+        )
+        needs_metrics = report_options.include_metrics and not self._report_metrics_are_ready(
+            metric_ids,
+            channels,
+        )
+        needs_plots = report_options.include_plots and not self._report_plots_are_ready()
+        needs_pedigree = (
+            report_options.include_pedigree and not self._report_pedigree_tier_is_ready()
+        )
+        needs_del_cycle = (
+            report_options.include_del_cycle and not self._report_del_cycle_is_ready()
+        )
         notes: List[str] = []
         if needs_scan:
             notes.append(
-                "• Run a full library scan (parses every entry; often the slowest step)."
+                "Run a full library scan (parses every entry; often the slowest step)."
             )
         if needs_metrics:
             signal_metrics = [mid for mid in metric_ids if mid in SIGNAL_QUALITY_METRIC_IDS]
@@ -1632,11 +2078,11 @@ class LibraryDataWindow(BaseWindow):
                 min_pct_area=min_pct_area,
             ):
                 notes.append(
-                    "• Calculate selected metrics, including per-entry peak analysis for "
+                    "Calculate selected metrics, including per-entry peak analysis for "
                     "signal metrics (may take a long time)."
                 )
             else:
-                notes.append("• Calculate selected metrics.")
+                notes.append("Calculate selected metrics.")
         if needs_plots:
             signal_plots = self._selected_signal_plot_ids()
             alpha = self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
@@ -1648,70 +2094,251 @@ class LibraryDataWindow(BaseWindow):
                 min_pct_area=min_pct_area,
             ):
                 notes.append(
-                    "• Generate selected plots, including peak analysis for signal plots "
+                    "Generate selected plots, including peak analysis for signal plots "
                     "(may take a long time)."
                 )
             else:
-                notes.append("• Generate selected plots.")
-        slow_note = "\n".join(notes) if notes else ""
-        return needs_scan, needs_metrics, needs_plots, slow_note
+                notes.append("Generate selected plots.")
+        if needs_pedigree:
+            notes.append(
+                "Run pedigree tier-ring analysis (requires library scan; "
+                "may take several minutes on large libraries)."
+            )
+        if needs_del_cycle:
+            notes.append(
+                "Build DEL-cycle split tree (uses pedigree RTs when available; "
+                "may take several minutes on large libraries)."
+            )
+        return LibraryReportPrerequisites(
+            needs_scan=needs_scan,
+            needs_metrics=needs_metrics,
+            needs_plots=needs_plots,
+            needs_pedigree=needs_pedigree,
+            needs_del_cycle=needs_del_cycle,
+            notes=notes,
+        )
+
+    def _build_report_section_statuses(
+        self,
+        metric_ids: List[str],
+        plot_ids: List[str],
+        channels: List[str],
+    ) -> List[LibraryReportSectionStatus]:
+        metrics_ready = self._report_metrics_are_ready(metric_ids, channels) if metric_ids else True
+        plots_ready = self._report_plots_are_ready() if plot_ids else True
+        pedigree_ready = self._report_pedigree_tier_is_ready()
+        del_ready = self._report_del_cycle_is_ready()
+        tree_opts = self._pedigree_tree_render_options()
+        del_data = self._del_cycle_tree_data
+        del_detail = (
+            f"Full tree plus {max(0, len(del_data.bb1_names) - 1)} BB1 branch plot(s) "
+            f"in a 2×3 grid (2 columns, 3 rows)."
+            if del_data is not None
+            else "Full tree and all BB1 branch plots using current DEL display options."
+        )
+        return [
+            LibraryReportSectionStatus(
+                key="metrics",
+                label="Summary metrics",
+                selected=bool(metric_ids),
+                ready=metrics_ready,
+                detail=(
+                    f"{len(metric_ids)} metric(s) across {len(channels)} channel(s)."
+                    if metric_ids
+                    else "No metrics selected on the Metrics tab."
+                ),
+                item_ids=list(metric_ids),
+                channels=list(channels),
+            ),
+            LibraryReportSectionStatus(
+                key="plots",
+                label="Visualizations",
+                selected=bool(plot_ids),
+                ready=plots_ready,
+                detail=(
+                    f"{len(plot_ids)} plot type(s) across {len(channels)} channel(s)."
+                    if plot_ids
+                    else "No plots selected on the Plots tab."
+                ),
+                item_ids=list(plot_ids),
+                channels=list(channels),
+            ),
+            LibraryReportSectionStatus(
+                key="pedigree",
+                label="Pedigree analysis",
+                selected=pedigree_ready,
+                ready=pedigree_ready,
+                detail=(
+                    f"Tier-ring tree (max tier {tree_opts.max_display_tier}, "
+                    f"failed nodes {'shown' if tree_opts.include_failed else 'hidden'})."
+                ),
+            ),
+            LibraryReportSectionStatus(
+                key="del_cycle",
+                label="DEL-cycle analysis",
+                selected=del_ready,
+                ready=del_ready,
+                detail=del_detail,
+            ),
+        ]
+
+    def _build_report_audit_trail(
+        self,
+        report_options: LibraryReportOptions,
+        *,
+        computed_scan: bool,
+        computed_metrics: bool,
+        computed_plots: bool,
+        computed_pedigree: bool,
+        computed_del_tree: bool,
+    ) -> LibraryReportAuditTrail:
+        assert self._db_path is not None
+        min_prominence, min_pct_area = self._peek_peak_quality_params()
+        tree_opts = self._pedigree_tree_render_options()
+        del_data = self._del_cycle_tree_data
+        picker = self._pedigree_picker_algorithm_var.get()
+        picker_label = "old-school Gaussian" if picker == "old_school" else "modern NB"
+        return LibraryReportAuditTrail(
+            generated_at=datetime.now(timezone.utc),
+            database_path=str(self._db_path.resolve()),
+            database_name=self._db_path.name,
+            database_kind="index" if self._index_db_mode else "full",
+            report_options=report_options,
+            computed_scan=computed_scan,
+            computed_metrics=computed_metrics,
+            computed_plots=computed_plots,
+            computed_pedigree=computed_pedigree,
+            computed_del_tree=computed_del_tree,
+            fraction_count=self._parse_fraction_count() or DEFAULT_FRACTION_COUNT,
+            signal_quality_alpha=self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
+            pedigree_channel=self._pedigree_channel_var.get().strip(),
+            pedigree_time_unit=self._pedigree_time_unit_var.get(),
+            pedigree_tolerance=float(self._pedigree_tolerance_var.get().strip() or "0"),
+            pedigree_alpha=float(self._pedigree_alpha_var.get().strip() or "0"),
+            pedigree_peak_picker=picker_label,
+            pedigree_isoform=self._pedigree_isoform_var.get().strip() or "All",
+            pedigree_max_display_tier=tree_opts.max_display_tier,
+            pedigree_include_failed=tree_opts.include_failed,
+            pedigree_show_rt=tree_opts.show_rt,
+            del_color_mode=self._del_tree_color_mode(),
+            del_color_by_rt=bool(self._pedigree_del_color_rt_var.get()),
+            del_rt_threshold=del_data.rt_threshold if del_data is not None else 0.0,
+            del_rt_source=del_data.rt_source if del_data is not None else "",
+            del_n_bb1_branches=(
+                max(0, len(del_data.bb1_names) - 1) if del_data is not None else 0
+            ),
+        )
 
     def _confirm_report_export(
         self,
         pdf_path: Path,
-        metric_ids: List[str],
-        plot_ids: List[str],
-        needs_scan: bool,
-        needs_metrics: bool,
-        needs_plots: bool,
-        slow_note: str,
+        report_options: LibraryReportOptions,
+        prerequisites: LibraryReportPrerequisites,
     ) -> bool:
+        sections = []
+        if report_options.include_metrics:
+            sections.append(f"Summary metrics ({len(report_options.metric_ids)})")
+        if report_options.include_plots:
+            sections.append(f"Visualizations ({len(report_options.plot_ids)})")
+        if report_options.include_pedigree:
+            sections.append("Pedigree analysis")
+        if report_options.include_del_cycle:
+            sections.append("DEL-cycle analysis")
         parts = [
             f"Save library report to:\n{pdf_path}\n",
-            f"Metrics selected: {len(metric_ids)}",
-            f"Plots selected: {len(plot_ids)}",
+            "Sections: " + ", ".join(sections),
         ]
-        if needs_scan or needs_metrics or needs_plots:
+        if prerequisites.needs_work:
+            notes = "\n".join(f"• {note}" for note in prerequisites.notes)
             parts.append(
                 "\nThe following calculations will run before the PDF is written "
                 "(this may take several minutes for large libraries):"
             )
-            if slow_note:
-                parts.append(f"\n{slow_note}")
+            parts.append(f"\n{notes}")
             parts.append("\nContinue?")
         else:
             parts.append(
-                "\nAll selected metrics and plots are already computed. "
-                "The PDF will be generated from the current session.\n\nContinue?"
+                "\nAll selected sections are already computed. "
+                "The PDF will use the current session settings.\n\nContinue?"
             )
         return self._confirm_long_operation("\n".join(parts))
 
     def _on_export_report(self) -> None:
         if self._is_busy():
             return
-        channels = self._get_selected_channels()
-        if not channels:
-            messagebox.showinfo(
-                "Library Data",
-                "Select at least one count channel.",
-                parent=self,
-            )
-            return
-        metric_ids = self._get_selected_metric_ids()
-        plot_ids = self._get_selected_plot_ids()
-        if not metric_ids and not plot_ids:
-            messagebox.showinfo(
-                "Library Data",
-                "Select at least one metric and/or plot to include in the report.",
-                parent=self,
-            )
-            return
-        if self._parse_fraction_count() is None or self._parse_signal_alpha() is None:
-            return
         if self._data_store is not None and self._data_store.get_compound_count() == 0:
             messagebox.showinfo(
                 "Library Data",
                 "The database has no compounds to report on.",
+                parent=self,
+            )
+            return
+
+        metric_ids = self._get_selected_metric_ids()
+        plot_ids = self._get_selected_plot_ids()
+        channels = self._get_selected_channels()
+        if (metric_ids or plot_ids) and not channels:
+            messagebox.showinfo(
+                "Library Data",
+                "Select at least one count channel for metrics and/or plots.",
+                parent=self,
+            )
+            return
+        if metric_ids or plot_ids:
+            if self._parse_fraction_count() is None or self._parse_signal_alpha() is None:
+                return
+
+        default_options = LibraryReportOptions(
+            include_metrics=bool(metric_ids),
+            include_plots=bool(plot_ids),
+            include_pedigree=self._report_pedigree_tier_is_ready(),
+            include_del_cycle=self._report_del_cycle_is_ready(),
+            metric_ids=list(metric_ids),
+            plot_ids=list(plot_ids),
+            channels=list(channels),
+        )
+        prerequisites = self._assess_report_prerequisites(default_options)
+        section_statuses = self._build_report_section_statuses(metric_ids, plot_ids, channels)
+
+        def on_dialog_confirm(result: LibraryReportDialogResult) -> None:
+            self._continue_report_export(result)
+
+        show_library_report_dialog(
+            self,
+            section_statuses=section_statuses,
+            prerequisites=prerequisites,
+            pedigree_available=self._pedigree_report_available(),
+            del_cycle_available=self._del_cycle_report_available(),
+            on_confirm=on_dialog_confirm,
+            reassess=self._assess_report_prerequisites,
+        )
+
+    def _continue_report_export(self, dialog_result: LibraryReportDialogResult) -> None:
+        report_options = dialog_result.options
+        prerequisites = self._assess_report_prerequisites(report_options)
+        if report_options.include_pedigree and not self._pedigree_report_available():
+            messagebox.showinfo(
+                "Generate report",
+                "Pedigree analysis is not available for this library.",
+                parent=self,
+            )
+            return
+        if report_options.include_del_cycle and not self._del_cycle_report_available():
+            messagebox.showinfo(
+                "Generate report",
+                "DEL-cycle analysis is not available for this library.",
+                parent=self,
+            )
+            return
+        if (
+            report_options.include_pedigree or report_options.include_del_cycle
+        ) and self._peek_pedigree_settings() is None:
+            messagebox.showinfo(
+                "Generate report",
+                "Fix pedigree settings on the Pedigree tab before including pedigree "
+                "or DEL-cycle analysis.",
                 parent=self,
             )
             return
@@ -1725,43 +2352,45 @@ class LibraryDataWindow(BaseWindow):
         if not dest:
             return
         pdf_path = Path(dest)
-
-        needs_scan, needs_metrics, needs_plots, slow_note = self._assess_report_prerequisites(
-            metric_ids, channels
-        )
-        if not self._confirm_report_export(
-            pdf_path,
-            metric_ids,
-            plot_ids,
-            needs_scan,
-            needs_metrics,
-            needs_plots,
-            slow_note,
-        ):
+        if not self._confirm_report_export(pdf_path, report_options, prerequisites):
             return
-        self._start_report_export(pdf_path, metric_ids, plot_ids, channels)
+        self._start_report_export(pdf_path, report_options, prerequisites)
 
     def _start_report_export(
         self,
         pdf_path: Path,
-        metric_ids: List[str],
-        plot_ids: List[str],
-        channels: List[str],
+        report_options: LibraryReportOptions,
+        prerequisites: LibraryReportPrerequisites,
     ) -> None:
         assert self._db_path is not None and self._config is not None
         db_path = self._db_path
         config = self._config
         kind = "index" if self._index_db_mode else "full"
-        fraction_count = self._parse_fraction_count()
-        signal_alpha = self._parse_signal_alpha()
-        quality = self._parse_peak_quality_params()
-        if fraction_count is None or signal_alpha is None or quality is None:
-            return
-        min_prominence, min_pct_area = quality
+        metric_ids = report_options.metric_ids
+        plot_ids = report_options.plot_ids
+        channels = report_options.channels
+        fraction_count = self._parse_fraction_count() or DEFAULT_FRACTION_COUNT
+        signal_alpha = self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
+        min_prominence, min_pct_area = self._peek_peak_quality_params()
 
-        needs_scan, needs_metrics, needs_plots, _ = self._assess_report_prerequisites(
-            metric_ids, channels
+        needs_scan = prerequisites.needs_scan
+        needs_metrics = prerequisites.needs_metrics
+        needs_plots = prerequisites.needs_plots
+        needs_pedigree = prerequisites.needs_pedigree
+        needs_del_cycle = prerequisites.needs_del_cycle
+
+        audit_base = self._build_report_audit_trail(
+            report_options,
+            computed_scan=False,
+            computed_metrics=False,
+            computed_plots=False,
+            computed_pedigree=False,
+            computed_del_tree=False,
         )
+        tree_opts = self._pedigree_tree_render_options()
+        del_color_mode = self._del_tree_color_mode()
+        del_color_by_rt = bool(self._pedigree_del_color_rt_var.get())
+        del_pass_pct_cutoff = self._read_del_tree_pass_pct_cutoff()
 
         self._show_loading_page(
             "Exporting library report",
@@ -1774,12 +2403,37 @@ class LibraryDataWindow(BaseWindow):
                 scan = self._cached_scan
                 plot_results = list(self._plot_results)
                 metric_results: List = []
+                pedigree_result = self._pedigree_result
+                del_data = self._del_cycle_tree_data
+                pedigree_figures = None
+
+                step_weights: List[tuple[str, float]] = []
+                if needs_scan:
+                    step_weights.append(("scan", 0.25))
+                if needs_metrics:
+                    step_weights.append(("metrics", 0.20))
+                if needs_plots:
+                    step_weights.append(("plots", 0.20))
+                if needs_pedigree:
+                    step_weights.append(("pedigree", 0.20))
+                if needs_del_cycle:
+                    step_weights.append(("del_cycle", 0.25))
+                step_weights.append(("pdf", 0.10))
+                total_weight = sum(weight for _, weight in step_weights) or 1.0
+                completed_weight = 0.0
+                current_step_weight = 0.0
+
+                def step_fraction(local: float) -> float:
+                    return min(0.98, completed_weight + local * current_step_weight)
 
                 if needs_scan:
+                    current_step_weight = next(
+                        weight for name, weight in step_weights if name == "scan"
+                    ) / total_weight
+
                     def scan_progress(processed: int, total: int, status: str) -> None:
-                        fraction = 0.35 * ((processed / total) if total > 0 else 0.0)
                         self._thread_loading_progress(
-                            fraction,
+                            step_fraction((processed / total) if total > 0 else 0.0),
                             status or "Running library scan…",
                         )
 
@@ -1792,16 +2446,19 @@ class LibraryDataWindow(BaseWindow):
                     self._raise_if_cancelled()
                     plot_results = []
                     metric_results = []
+                    completed_weight += current_step_weight
 
-                assert scan is not None
+                if report_options.include_metrics or report_options.include_plots:
+                    assert scan is not None
 
                 if needs_metrics:
+                    current_step_weight = next(
+                        weight for name, weight in step_weights if name == "metrics"
+                    ) / total_weight
+
                     def metrics_progress(processed: int, total: int, status: str) -> None:
-                        base = 0.35 if needs_scan else 0.0
-                        span = 0.35
-                        fraction = base + span * ((processed / total) if total > 0 else 0.0)
                         self._thread_loading_progress(
-                            fraction,
+                            step_fraction((processed / total) if total > 0 else 0.0),
                             status or "Calculating metrics…",
                         )
 
@@ -1816,7 +2473,8 @@ class LibraryDataWindow(BaseWindow):
                         progress_callback=metrics_progress,
                     )
                     self._raise_if_cancelled()
-                elif self._current_snapshot is not None:
+                    completed_weight += current_step_weight
+                elif report_options.include_metrics and self._current_snapshot is not None:
                     metric_results = [
                         m
                         for m in self._current_snapshot.metric_results
@@ -1824,14 +2482,14 @@ class LibraryDataWindow(BaseWindow):
                     ]
 
                 if needs_plots:
+                    current_step_weight = next(
+                        weight for name, weight in step_weights if name == "plots"
+                    ) / total_weight
                     plot_dir = session_plots_dir(db_path)
 
                     def plot_progress(processed: int, total: int, status: str) -> None:
-                        base = 0.7 if (needs_scan or needs_metrics) else 0.35
-                        span = 0.25
-                        fraction = base + span * ((processed / total) if total > 0 else 0.0)
                         self._thread_loading_progress(
-                            fraction,
+                            step_fraction((processed / total) if total > 0 else 0.0),
                             status or "Generating plots…",
                         )
 
@@ -1857,14 +2515,127 @@ class LibraryDataWindow(BaseWindow):
                                 old.unlink()
                         except OSError:
                             pass
-                elif plot_ids:
+                    completed_weight += current_step_weight
+                elif report_options.include_plots and plot_ids:
                     plot_results = [
                         p
                         for p in plot_results
                         if p.plot_id in plot_ids and p.channel in channels
                     ]
 
-                self._thread_loading_progress(0.92, "Writing PDF report…")
+                if report_options.include_pedigree:
+                    if needs_pedigree:
+                        if scan is None:
+                            raise RuntimeError(
+                                "Library scan is required before running pedigree analysis."
+                            )
+                        current_step_weight = next(
+                            weight for name, weight in step_weights if name == "pedigree"
+                        ) / total_weight
+                        settings = self._peek_pedigree_settings()
+                        if settings is None:
+                            raise RuntimeError("Invalid pedigree settings.")
+                        isoform = self._pedigree_isoform_var.get().strip() or "All"
+
+                        def pedigree_progress(step: int, total: int, status: str) -> None:
+                            fraction = step / total if total > 0 else 0.0
+                            self._thread_loading_progress(
+                                step_fraction(min(0.95, fraction)),
+                                status or "Running pedigree analysis…",
+                            )
+
+                        pedigree_result = run_pedigree_analysis_for_path(
+                            db_path,
+                            config,
+                            settings,
+                            scan=scan,
+                            progress_callback=pedigree_progress,
+                            isoform_label=isoform,
+                        )
+                        self._raise_if_cancelled()
+                        completed_weight += current_step_weight
+                    if pedigree_result is None:
+                        raise RuntimeError("Pedigree results are required for this report section.")
+                    self._thread_loading_progress(
+                        step_fraction(0.92),
+                        "Rendering pedigree tier-ring…",
+                    )
+                    tier_path, tier_caption = build_pedigree_tier_report_figure(
+                        pedigree_result,
+                        tree_opts=tree_opts,
+                        output_dir=session_report_assets_dir(db_path),
+                    )
+                    pedigree_figures = merge_report_pedigree_figures(
+                        pedigree_figures,
+                        LibraryReportPedigreeFigures(
+                            tier_ring_path=tier_path,
+                            tier_ring_caption=tier_caption,
+                        ),
+                    )
+                    self._raise_if_cancelled()
+
+                if report_options.include_del_cycle:
+                    if needs_del_cycle:
+                        current_step_weight = next(
+                            weight for name, weight in step_weights if name == "del_cycle"
+                        ) / total_weight
+                        settings = self._peek_pedigree_settings()
+                        if settings is None:
+                            raise RuntimeError("Invalid pedigree settings.")
+                        isoform = self._pedigree_isoform_var.get().strip() or "All"
+
+                        def del_progress(step: int, total: int, status: str) -> None:
+                            if total == 1000:
+                                fraction = step / 1000.0
+                            else:
+                                fraction = step / total if total > 0 else 0.0
+                            self._thread_loading_progress(
+                                step_fraction(min(0.98, fraction)),
+                                status or "Building DEL-cycle tree…",
+                            )
+
+                        del_data = build_del_cycle_tree_for_path(
+                            db_path,
+                            config,
+                            settings,
+                            settings.count_channel,
+                            settings.time_unit,  # type: ignore[arg-type]
+                            rt_threshold=float(settings.tolerance),
+                            pedigree_result=pedigree_result,
+                            isoform_label=isoform,
+                            progress_callback=del_progress,
+                        )
+                        self._raise_if_cancelled()
+                        completed_weight += current_step_weight
+                    if del_data is None:
+                        raise RuntimeError(
+                            "DEL-cycle tree data is required for this report section."
+                        )
+                    self._thread_loading_progress(
+                        step_fraction(0.95),
+                        "Rendering DEL-cycle figures for report…",
+                    )
+                    del_part = build_del_cycle_report_figures(
+                        del_data,
+                        del_color_mode=del_color_mode,
+                        del_color_by_rt=del_color_by_rt,
+                        del_pass_pct_cutoff=del_pass_pct_cutoff,
+                        output_dir=session_report_assets_dir(db_path),
+                    )
+                    pedigree_figures = merge_report_pedigree_figures(pedigree_figures, del_part)
+                    self._raise_if_cancelled()
+
+                current_step_weight = next(
+                    weight for name, weight in step_weights if name == "pdf"
+                ) / total_weight
+                self._thread_loading_progress(
+                    completed_weight + current_step_weight * 0.5,
+                    "Writing PDF report…",
+                )
+
+                entries_attempted = scan.entries_attempted if scan is not None else 0
+                entries_used = scan.entries_used if scan is not None else 0
+                entries_skipped = scan.entries_skipped if scan is not None else 0
                 snapshot = LibraryComputationSnapshot(
                     processed_at=datetime.now(timezone.utc),
                     database_path=str(db_path.resolve()),
@@ -1873,17 +2644,36 @@ class LibraryDataWindow(BaseWindow):
                     selected_channels=list(channels),
                     selected_metrics=list(metric_ids),
                     selected_plots=list(plot_ids),
-                    entries_attempted=scan.entries_attempted,
-                    entries_used=scan.entries_used,
-                    entries_skipped=scan.entries_skipped,
+                    entries_attempted=entries_attempted,
+                    entries_used=entries_used,
+                    entries_skipped=entries_skipped,
                     metric_results=metric_results,
                     plot_results=plot_results,
                     signal_quality_alpha=signal_alpha,
                 )
+                audit = replace(
+                    audit_base,
+                    generated_at=datetime.now(timezone.utc),
+                    computed_scan=needs_scan,
+                    computed_metrics=needs_metrics,
+                    computed_plots=needs_plots,
+                    computed_pedigree=needs_pedigree,
+                    computed_del_tree=needs_del_cycle,
+                    del_rt_threshold=del_data.rt_threshold if del_data is not None else audit_base.del_rt_threshold,
+                    del_rt_source=del_data.rt_source if del_data is not None else audit_base.del_rt_source,
+                    del_n_bb1_branches=(
+                        max(0, len(del_data.bb1_names) - 1)
+                        if del_data is not None
+                        else audit_base.del_n_bb1_branches
+                    ),
+                )
                 generate_library_report_pdf(
                     snapshot,
                     pdf_path,
-                    plot_results=plot_results,
+                    plot_results=plot_results if report_options.include_plots else [],
+                    report_options=report_options,
+                    audit=audit,
+                    pedigree_figures=pedigree_figures,
                 )
                 self._raise_if_cancelled()
                 self._schedule_on_main(
@@ -1892,6 +2682,8 @@ class LibraryDataWindow(BaseWindow):
                     snapshot,
                     plot_results,
                     str(pdf_path.resolve()),
+                    pedigree_result,
+                    del_data,
                 )
             except LibraryOperationCancelled:
                 self._schedule_on_main(self._on_worker_cancelled)
@@ -1903,18 +2695,27 @@ class LibraryDataWindow(BaseWindow):
 
     def _on_report_export_ready(
         self,
-        scan: LibraryScanData,
+        scan: Optional[LibraryScanData],
         snapshot: LibraryComputationSnapshot,
         plot_results: List[PlotResult],
         pdf_path: str,
+        pedigree_result: Optional[PedigreeAnalysisResult] = None,
+        del_data: Optional[DelCycleTreeData] = None,
     ) -> None:
         if not self._ui_is_active():
             return
         self._worker_thread = None
-        self._cached_scan = scan
+        if scan is not None:
+            self._cached_scan = scan
         self._current_snapshot = snapshot
         self._current_snapshot_path = None
         self._plot_results = plot_results
+        if pedigree_result is not None:
+            self._pedigree_result = pedigree_result
+        if del_data is not None:
+            self._del_cycle_tree_data = del_data
+            self._update_del_branch_choices(del_data)
+            self._update_del_tree_status_note(del_data)
         self._update_loading_progress(1.0, f"Report saved: {pdf_path}")
         try:
             if snapshot.metric_results:
@@ -1963,6 +2764,7 @@ class LibraryDataWindow(BaseWindow):
             return
         try:
             self._content_tabview.set(tab_name)
+            self._show_sidebar_for_tab(tab_name)
         except (tk.TclError, ValueError):
             pass
 
@@ -2085,14 +2887,19 @@ class LibraryDataWindow(BaseWindow):
             self._save_btn.configure(
                 state="normal" if self._current_snapshot is not None and not busy else "disabled"
             )
+            self._plots_save_btn.configure(
+                state="normal" if self._current_snapshot is not None and not busy else "disabled"
+            )
             latest = get_latest_snapshot_path(self._db_path) if self._db_path else None
-            self._load_last_btn.configure(
-                state="normal" if latest is not None and not busy else "disabled"
-            )
+            load_state = "normal" if latest is not None and not busy else "disabled"
+            self._load_last_btn.configure(state=load_state)
+            self._plots_load_btn.configure(state=load_state)
             self._browse_btn.configure(state="normal" if not busy else "disabled")
-            self._export_csv_btn.configure(
-                state="normal" if has_scan and has_channels and not busy else "disabled"
+            self._plots_browse_btn.configure(state="normal" if not busy else "disabled")
+            export_plot_csv_state = (
+                "normal" if has_scan and has_channels and not busy else "disabled"
             )
+            self._export_plots_csv_btn.configure(state=export_plot_csv_state)
             has_plot_files = any(
                 p.image_path is not None and p.image_path.is_file() for p in self._plot_results
             )
@@ -2107,6 +2914,9 @@ class LibraryDataWindow(BaseWindow):
                 and self._current_snapshot.metric_results
             )
             self._export_metrics_csv_btn.configure(
+                state="normal" if has_metrics and not busy else "disabled"
+            )
+            self._export_metrics_sidebar_btn.configure(
                 state="normal" if has_metrics and not busy else "disabled"
             )
             has_report_content = bool(
@@ -2128,9 +2938,17 @@ class LibraryDataWindow(BaseWindow):
             self._pedigree_run_btn.configure(
                 state=(
                     "normal"
-                    if pedigree_ready and n_compounds > 0 and not busy
+                    if pedigree_ready and has_scan and n_compounds > 0 and not busy
                     else "disabled"
                 )
+            )
+            del_cycle_ready = (
+                self._config is not None
+                and self._config.pedigree_configured()
+                and n_compounds > 0
+            )
+            self._del_cycle_run_btn.configure(
+                state="normal" if del_cycle_ready and not busy else "disabled"
             )
             has_pedigree = self._pedigree_result is not None
             latest_ped = (
@@ -2150,6 +2968,10 @@ class LibraryDataWindow(BaseWindow):
             has_tree = tree_path is not None and Path(tree_path).is_file()
             ped_export_state = "normal" if has_pedigree and not busy else "disabled"
             self._pedigree_export_csv_btn.configure(state=ped_export_state)
+            has_del_tree = self._del_cycle_tree_data is not None
+            self._pedigree_export_del_csv_btn.configure(
+                state="normal" if has_del_tree and not busy else "disabled"
+            )
             has_prominence = (
                 self._pedigree_result is not None
                 and self._pedigree_result.product_prominence is not None
@@ -2162,6 +2984,22 @@ class LibraryDataWindow(BaseWindow):
             self._pedigree_export_tree_btn.configure(
                 state="normal" if has_tree and not busy else "disabled"
             )
+            if self._pedigree_status_label is not None and self._pedigree_result is None and not busy:
+                if not has_scan:
+                    self._pedigree_status_label.configure(
+                        text="Run library scan first (top bar).",
+                        text_color="gray",
+                    )
+                else:
+                    hint = self._pedigree_status_label.cget("text")
+                    if hint in ("Run library scan first (top bar).", "No pedigree run yet."):
+                        self._pedigree_status_label.configure(
+                            text=(
+                                "Scan ready. Configure options below, "
+                                "then run pedigree analysis."
+                            ),
+                            text_color="gray",
+                        )
         except tk.TclError:
             pass
 
@@ -2211,9 +3049,9 @@ class LibraryDataWindow(BaseWindow):
         card = self._make_info_card(
             self._metrics_frame,
             "Ready",
-            "Select count channels, then click Run library scan. "
-            "After the scan completes, use Calculate metrics and/or Generate plots "
-            "independently from the same scan.",
+            "Select count channels in the sidebar, then click Run library scan "
+            "in the top bar. After the scan completes, use Calculate metrics and/or "
+            "Generate plots from the same parsed scan.",
         )
         card.grid(row=0, column=0, sticky="ew", pady=8)
         self._update_plots_summary([])
@@ -2405,6 +3243,8 @@ class LibraryDataWindow(BaseWindow):
         self._current_snapshot = snapshot
         self._current_snapshot_path = None
         self._plot_results.clear()
+        if self._db_path is not None:
+            save_session_scan(scan, self._db_path)
         self._update_loading_progress(
             0.98,
             (
@@ -3499,10 +4339,14 @@ class LibraryDataWindow(BaseWindow):
             self._pedigree_tree_tier_label.configure(text=f"Max tier shown: {tier}")
         if self._pedigree_result is not None:
             self._update_pedigree_tree_density_note(self._pedigree_result)
+            if not self._is_del_tree_viz_mode():
+                self._show_pedigree_tree_preview(self._pedigree_result)
 
     def _on_pedigree_tree_option_changed(self) -> None:
         if self._pedigree_result is not None:
             self._update_pedigree_tree_density_note(self._pedigree_result)
+            if not self._is_del_tree_viz_mode():
+                self._show_pedigree_tree_preview(self._pedigree_result)
 
     def _is_del_tree_viz_mode(self) -> bool:
         mode = self._pedigree_tree_viz_mode_var.get()
@@ -3535,14 +4379,32 @@ class LibraryDataWindow(BaseWindow):
             if del_mode:
                 self._pedigree_tree_header_label.configure(
                     text=(
-                        "DEL-cycle positional tree (legacy Null Tree layout). "
-                        "Powder blue = verified branch; coral = pruned."
+                        "DEL-cycle positional tree. Powder blue = pass; coral = fail. "
+                        "Default coloring uses notebook RT verification; "
+                        "check “Color by pedigree pass/fail” to use pedigree gates instead."
                     )
                 )
             else:
                 self._pedigree_tree_header_label.configure(
                     text="Pedigree tier-ring or DEL-cycle positional split tree."
                 )
+
+    def _read_del_tree_pass_pct_cutoff(self) -> float:
+        """Parse split-tree pass-rate cutoff (0–100). Invalid values fall back to 0."""
+        try:
+            value = float(self._pedigree_del_pass_pct_var.get().strip())
+        except ValueError:
+            return 0.0
+        return min(100.0, max(0.0, value))
+
+    def _on_del_pass_pct_changed(self) -> None:
+        if self._del_cycle_tree_data is not None and self._is_del_tree_viz_mode():
+            self._show_del_cycle_tree_preview(self._del_cycle_tree_data)
+
+    def _del_tree_color_mode(self) -> str:
+        if bool(self._pedigree_del_color_pedigree_var.get()):
+            return COLOR_MODE_PEDIGREE
+        return COLOR_MODE_NOTEBOOK
 
     def _on_tree_viz_mode_changed(self, _value: Optional[str] = None) -> None:
         self._sync_tree_viz_mode_widgets()
@@ -3556,37 +4418,105 @@ class LibraryDataWindow(BaseWindow):
         if self._del_cycle_tree_data is not None and self._is_del_tree_viz_mode():
             self._show_del_cycle_tree_preview(self._del_cycle_tree_data)
 
+    def _resolve_del_branch_bb1(
+        self,
+        data: DelCycleTreeData,
+        selection: str = "",
+    ) -> str:
+        """Map branch dropdown text (``#N name`` or raw name) to a BB1 tree key."""
+        selection = (selection or self._pedigree_del_branch_var.get()).strip()
+        null = data.null_token
+        branches = [name for name in data.bb1_names if name != null]
+        if not branches:
+            return ""
+        if selection in self._del_branch_label_to_name:
+            return self._del_branch_label_to_name[selection]
+        if selection in branches:
+            return selection
+        if selection.startswith("#"):
+            _, _, name = selection.partition(" ")
+            if name in branches:
+                return name
+        for name in branches:
+            label = format_bb_branch_label(
+                name,
+                data.bb_index_global,
+                null_token=null,
+            )
+            if selection == label:
+                return name
+        return branches[0]
+
     def _update_del_branch_choices(self, data: DelCycleTreeData) -> None:
         null = data.null_token
-        choices = [name for name in data.bb1_names if name != null]
-        if not choices:
-            choices = ["—"]
+        bb1_names = [name for name in data.bb1_names if name != null]
+        self._del_branch_label_to_name = {
+            format_bb_branch_label(name, data.bb_index_global, null_token=null): name
+            for name in bb1_names
+        }
+        choices = list(self._del_branch_label_to_name.keys()) or ["—"]
         if self._pedigree_del_branch_menu is not None:
             self._pedigree_del_branch_menu.configure(values=choices)
-        current = self._pedigree_del_branch_var.get().strip()
-        if current not in choices:
+        current_bb1 = self._resolve_del_branch_bb1(data)
+        if current_bb1:
+            self._pedigree_del_branch_var.set(
+                format_bb_branch_label(
+                    current_bb1,
+                    data.bb_index_global,
+                    null_token=null,
+                )
+            )
+        elif choices:
             self._pedigree_del_branch_var.set(choices[0])
 
     def _update_del_tree_status_note(self, data: DelCycleTreeData) -> None:
         if self._pedigree_tree_node_count_label is None:
             return
+        picker = data.peak_picking_algorithm or "—"
+        picker_label = "old-school Gaussian" if picker == "old_school" else (
+            "modern NB" if picker == "modern" else picker
+        )
+        agree_note = ""
+        if data.pedigree_passed_by_product and data.n_rt_verified_pedigree_agree is not None:
+            compared = sum(
+                1
+                for positions in data.verified_sequences
+                if len(positions) == data.library_cycle_count
+                and positions in data.pedigree_passed_by_product
+            )
+            if compared:
+                agree_note = (
+                    f" · RT verify vs pedigree agree: "
+                    f"{data.n_rt_verified_pedigree_agree:,}/{compared:,}"
+                )
         self._pedigree_tree_node_count_label.configure(
             text=(
-                f"DEL rows: {data.n_rows:,} · verified products: {data.n_verified:,} · "
-                f"RT source: {data.rt_source} · threshold: {data.rt_threshold:g}"
-            )
+                f"DEL rows: {data.n_rows:,} · RT verified: {data.n_verified:,} · "
+                f"pedigree passed: {data.n_pedigree_passed:,} · "
+                f"RT: {data.rt_source} (pedigree={data.n_rt_from_pedigree:,}, "
+                f"peak-pick={data.n_rt_from_peak_pick:,}, "
+                f"metadata={data.n_rt_from_metadata:,}) · "
+                f"picker: {picker_label} · threshold: {data.rt_threshold:g}"
+                f"{agree_note}"
+            ),
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
         )
         if self._pedigree_tree_dense_note is not None:
             self._pedigree_tree_dense_note.configure(
                 text=(
-                    "Full tree shows root → BB1 → BB2. Branch plots expand one BB1 "
-                    "through all coupling cycles."
+                    "Full tree labels BB1 branches only (same numbers as branch roots "
+                    "and CSV bb1_index). The outer BB2 ring is unlabeled; center hub "
+                    "is the null foundation."
                 )
             )
 
-    def _refresh_tree_display(self) -> None:
+    def _refresh_tree_display(self, *, force_rebuild_del: bool = False) -> None:
         if self._is_del_tree_viz_mode():
-            self._refresh_del_cycle_tree()
+            if self._del_cycle_tree_data is not None and not force_rebuild_del:
+                self._show_del_cycle_tree_preview(self._del_cycle_tree_data)
+            else:
+                self._refresh_del_cycle_tree()
         elif self._pedigree_result is not None:
             self._show_pedigree_tree_preview(self._pedigree_result)
 
@@ -3622,8 +4552,10 @@ class LibraryDataWindow(BaseWindow):
         rt_threshold = float(settings.tolerance)
         time_unit = settings.time_unit
         color_by_rt = bool(self._pedigree_del_color_rt_var.get())
+        color_mode = self._del_tree_color_mode()
+        pass_pct_cutoff = self._read_del_tree_pass_pct_cutoff()
         view_mode = self._pedigree_tree_viz_mode_var.get()
-        branch_bb1 = self._pedigree_del_branch_var.get().strip()
+        branch_selection = self._pedigree_del_branch_var.get().strip()
 
         def worker() -> None:
             try:
@@ -3653,11 +4585,14 @@ class LibraryDataWindow(BaseWindow):
                     if view_mode == _TREE_VIZ_DEL_BRANCH
                     else DelCycleTreeView.FULL
                 )
-                selected_branch = branch_bb1
+                selected_branch = branch_selection
                 if view == DelCycleTreeView.BRANCH:
                     null = data.null_token
                     branches = [name for name in data.bb1_names if name != null]
-                    if selected_branch not in branches and branches:
+                    resolved = self._resolve_del_branch_bb1(data, branch_selection)
+                    if resolved in branches:
+                        selected_branch = resolved
+                    elif branches:
                         selected_branch = branches[0]
                 self._thread_loading_progress(0.96, "Rendering tree figure…")
                 figure = render_del_cycle_tree_figure(
@@ -3665,6 +4600,8 @@ class LibraryDataWindow(BaseWindow):
                     view=view,
                     branch_bb1=selected_branch if view == DelCycleTreeView.BRANCH else None,
                     color_by_rt=color_by_rt,
+                    color_mode=color_mode,
+                    pass_pct_cutoff=pass_pct_cutoff,
                 )
                 self._schedule_on_main(
                     self._on_del_cycle_tree_ready,
@@ -3688,7 +4625,13 @@ class LibraryDataWindow(BaseWindow):
         self._del_cycle_tree_data = data
         self._update_del_branch_choices(data)
         if selected_branch:
-            self._pedigree_del_branch_var.set(selected_branch)
+            self._pedigree_del_branch_var.set(
+                format_bb_branch_label(
+                    selected_branch,
+                    data.bb_index_global,
+                    null_token=data.null_token,
+                )
+            )
         self._update_del_tree_status_note(data)
         self._mount_pedigree_tree_figure(figure)
         if self._pedigree_status_label is not None:
@@ -3718,12 +4661,14 @@ class LibraryDataWindow(BaseWindow):
                 if self._is_del_branch_viz_mode()
                 else DelCycleTreeView.FULL
             )
-            branch = self._pedigree_del_branch_var.get().strip()
+            branch = self._resolve_del_branch_bb1(data)
             figure = render_del_cycle_tree_figure(
                 data,
                 view=view,
                 branch_bb1=branch if view == DelCycleTreeView.BRANCH else None,
                 color_by_rt=bool(self._pedigree_del_color_rt_var.get()),
+                color_mode=self._del_tree_color_mode(),
+                pass_pct_cutoff=self._read_del_tree_pass_pct_cutoff(),
             )
             self._update_del_tree_status_note(data)
             self._mount_pedigree_tree_figure(figure)
@@ -3756,7 +4701,7 @@ class LibraryDataWindow(BaseWindow):
 
     def _on_refresh_pedigree_tree(self) -> None:
         if self._is_del_tree_viz_mode():
-            self._refresh_del_cycle_tree()
+            self._refresh_tree_display(force_rebuild_del=True)
             return
         if self._pedigree_result is None or self._db_path is None:
             return
@@ -3777,6 +4722,13 @@ class LibraryDataWindow(BaseWindow):
 
     def _on_run_pedigree(self) -> None:
         if self._is_busy():
+            return
+        if self._cached_scan is None:
+            messagebox.showinfo(
+                "Pedigree",
+                "Run library scan first (top bar). Pedigree analysis reuses the cached scan.",
+                parent=self,
+            )
             return
         if self._data_store is None or self._db_path is None or self._config is None:
             return
@@ -3804,12 +4756,44 @@ class LibraryDataWindow(BaseWindow):
         if not messagebox.askyesno(
             "Pedigree analysis",
             f"Run full-library pedigree evaluation on {n:,} compound(s)?\n\n"
-            "Index databases may take several minutes on first run.",
+            "Chromatograms are taken from the cached library scan; only metadata "
+            "is read from the database.",
             parent=self,
         ):
             return
         isoform = self._pedigree_isoform_var.get().strip() or "All"
         self._start_pedigree_analysis(settings, isoform_label=isoform)
+
+    def _on_run_del_cycle_analysis(self) -> None:
+        if self._is_busy():
+            return
+        if self._data_store is None or self._db_path is None or self._config is None:
+            return
+        if not self._config.pedigree_configured():
+            messagebox.showinfo(
+                "DEL-cycle analysis",
+                "Map BB1..BBn columns in Configure Spreadsheet before building the tree.",
+                parent=self,
+            )
+            return
+        if self._parse_pedigree_settings() is None:
+            return
+        if self._data_store.get_compound_count() == 0:
+            messagebox.showinfo(
+                "DEL-cycle analysis",
+                "The database has no compounds.",
+                parent=self,
+            )
+            return
+        if self._content_tabview is not None:
+            try:
+                self._content_tabview.set(_TAB_PEDIGREE)
+            except ValueError:
+                pass
+        if not self._is_del_tree_viz_mode():
+            self._pedigree_tree_viz_mode_var.set(_TREE_VIZ_DEL_FULL)
+            self._sync_tree_viz_mode_widgets()
+        self._refresh_del_cycle_tree()
 
     def _start_pedigree_analysis(
         self,
@@ -3818,9 +4802,10 @@ class LibraryDataWindow(BaseWindow):
         isoform_label: str,
     ) -> None:
         assert self._db_path is not None and self._config is not None
+        self._del_cycle_tree_data = None
         self._show_loading_page(
             "Running pedigree analysis",
-            "Loading compounds and evaluating null-truncation pedigree…",
+            "Building chromatogram map from scan and evaluating pedigree…",
         )
         if self._pedigree_status_label is not None:
             self._pedigree_status_label.configure(text="Pedigree analysis running…")
@@ -3828,6 +4813,8 @@ class LibraryDataWindow(BaseWindow):
 
         db_path = self._db_path
         config = self._config
+        scan = self._cached_scan
+        assert scan is not None
 
         def worker() -> None:
             try:
@@ -3842,6 +4829,7 @@ class LibraryDataWindow(BaseWindow):
                     db_path,
                     config,
                     settings,
+                    scan=scan,
                     progress_callback=progress,
                     isoform_label=isoform_label,
                 )
@@ -3882,12 +4870,16 @@ class LibraryDataWindow(BaseWindow):
         self._worker_thread = None
         self._pedigree_result = result
         self._pedigree_snapshot_path = None
+        # Always rebuild DEL-cycle tree through the same path as the visualization
+        # dropdown so BB numbering matches the direct DEL-tree workflow.
+        self._del_cycle_tree_data = None
         self._update_pedigree_graphviz_banner()
         if tree_opts is not None:
-            self._pedigree_include_failed_var.set(tree_opts.include_failed)
             self._pedigree_show_rt_var.set(tree_opts.show_rt)
             self._configure_pedigree_tier_slider(result)
             self._update_pedigree_tree_density_note(result)
+            # In-app preview defaults to showing failed trim points for coloring.
+            self._pedigree_include_failed_var.set(True)
         self._display_pedigree_result(result)
         if self._pedigree_status_label is not None:
             status = (
@@ -4159,6 +5151,29 @@ class LibraryDataWindow(BaseWindow):
         except Exception as exc:
             messagebox.showerror("Pedigree", str(exc), parent=self)
 
+    def _on_export_del_cycle_csv(self) -> None:
+        if self._del_cycle_tree_data is None:
+            messagebox.showinfo(
+                "DEL-cycle tree",
+                "Build the DEL split tree first (Run DEL cycle analysis or "
+                "switch to a DEL-cycle tree view).",
+                parent=self,
+            )
+            return
+        dest = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export DEL-cycle CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+        )
+        if not dest:
+            return
+        try:
+            export_del_cycle_csv(self._del_cycle_tree_data, dest)
+            messagebox.showinfo("DEL-cycle tree", f"Saved to:\n{dest}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("DEL-cycle tree", str(exc), parent=self)
+
     def _on_export_product_prominence_csv(self) -> None:
         if self._pedigree_result is None or self._pedigree_result.product_prominence is None:
             return
@@ -4262,6 +5277,37 @@ class LibraryDataWindow(BaseWindow):
             return
         self._load_pedigree_from_path(Path(path))
 
+    def _try_restore_session_scan(self) -> None:
+        """Restore a persisted library scan from the current session folder."""
+        if not self._ui_is_active() or self._cached_scan is not None or self._db_path is None:
+            return
+        scan = load_session_scan(self._db_path)
+        if scan is None:
+            return
+        kind = "index" if self._index_db_mode else "full"
+        channels = list(scan.channel_names) or self._get_selected_channels()
+        for name, var in self._channel_vars.items():
+            var.set(name in channels)
+        snapshot = build_snapshot_from_scan(
+            scan,
+            database_path=self._db_path,
+            database_kind=kind,
+            channel_names=channels,
+            metric_ids=[],
+            plot_ids=[],
+            plot_results=[],
+            fraction_count=self._parse_fraction_count() or DEFAULT_FRACTION_COUNT,
+            signal_quality_alpha=self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA,
+        )
+        self._cached_scan = scan
+        self._current_snapshot = snapshot
+        self._show_scan_ready_placeholder(scan)
+        self._update_status_label()
+        self._update_action_states()
+        logger.info(
+            "Restored session library scan (%s entries)", scan.entries_used,
+        )
+
     def _load_pedigree_from_path(self, path: Path) -> None:
         try:
             result = load_pedigree_result(path)
@@ -4277,8 +5323,52 @@ class LibraryDataWindow(BaseWindow):
                 parent=self,
             ):
                 return
+        self._show_loading_page(
+            "Loading pedigree",
+            "Restoring pedigree snapshot and rebuilding DEL-cycle tree…",
+        )
+        config = self._config
+
+        def worker() -> None:
+            del_data = None
+            try:
+                if (
+                    config is not None
+                    and config.pedigree_configured()
+                    and self._db_path is not None
+                ):
+                    del_data = build_del_cycle_tree_for_path(
+                        self._db_path,
+                        config,
+                        result.settings,
+                        result.settings.count_channel,
+                        result.settings.time_unit,  # type: ignore[arg-type]
+                        rt_threshold=float(result.settings.tolerance),
+                        pedigree_result=result,
+                        progress_callback=None,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "DEL-cycle tree rebuild on pedigree load failed: %s", exc, exc_info=True
+                )
+            self._schedule_on_main(self._on_pedigree_loaded, result, path, del_data)
+
+        self._start_worker(worker)
+
+    def _on_pedigree_loaded(
+        self,
+        result: PedigreeAnalysisResult,
+        path: Path,
+        del_data: Optional[DelCycleTreeData],
+    ) -> None:
+        self._worker_thread = None
         self._pedigree_result = result
         self._pedigree_snapshot_path = path
+        if del_data is not None:
+            self._del_cycle_tree_data = del_data
+            self._update_del_branch_choices(del_data)
+        else:
+            self._del_cycle_tree_data = None
         self._sync_pedigree_controls(result)
         self._update_pedigree_graphviz_banner()
         self._configure_pedigree_tier_slider(result)
@@ -4292,8 +5382,11 @@ class LibraryDataWindow(BaseWindow):
         self._update_pedigree_tree_density_note(result)
         self._display_pedigree_result(result)
         if self._pedigree_status_label is not None:
+            note = f"Loaded pedigree snapshot from {path.name}"
+            if del_data is not None:
+                note += f" — DEL tree ready ({del_data.n_verified:,} verified)."
             self._pedigree_status_label.configure(
-                text=f"Loaded pedigree snapshot from {path.name}",
+                text=note,
                 text_color=("gray10", "gray90"),
             )
         if self._content_tabview is not None:
@@ -4301,6 +5394,7 @@ class LibraryDataWindow(BaseWindow):
                 self._content_tabview.set(_TAB_PEDIGREE)
             except ValueError:
                 pass
+        self._hide_loading_page()
         self._update_action_states()
 
     def _sync_pedigree_controls(self, result: PedigreeAnalysisResult) -> None:

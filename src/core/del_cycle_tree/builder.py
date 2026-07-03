@@ -7,6 +7,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Sequence
 
 from src.core.del_cycle_tree.models import DelCycleRow, VerifiedSequence
+from src.core.del_cycle_tree.bb_index_scheme import normalize_bb_name
 
 
 def create_tree(rows: Sequence[DelCycleRow]) -> Dict[str, Any]:
@@ -22,13 +23,14 @@ def create_tree(rows: Sequence[DelCycleRow]) -> Dict[str, Any]:
     for row in rows:
         node: Dict[str, Any] = tree
         for level, bb in enumerate(row.positions):
+            bb_key = normalize_bb_name(bb)
             is_leaf = level == depth - 1
             if is_leaf:
-                node[bb] = float(row.rt)
+                node[bb_key] = float(row.rt)
             else:
-                if bb not in node or not isinstance(node.get(bb), dict):
-                    node[bb] = {}
-                node = node[bb]
+                if bb_key not in node or not isinstance(node.get(bb_key), dict):
+                    node[bb_key] = {}
+                node = node[bb_key]
     return tree
 
 
@@ -47,10 +49,11 @@ def prune_tree(
         cursor = tree
         path: List[str] = []
         for bb in positions:
-            if bb not in cursor:
+            bb_key = normalize_bb_name(bb)
+            if bb_key not in cursor:
                 break
-            path.append(bb)
-            value = cursor[bb]
+            path.append(bb_key)
+            value = cursor[bb_key]
             if isinstance(value, dict):
                 cursor = value
             else:

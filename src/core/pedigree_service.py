@@ -12,11 +12,15 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from src.core.data_store import DataStore
+from src.core.library_metrics import LibraryScanData
 from src.core.lineage_service import load_all_compounds
 from src.core.pedigree_adapter import (
     build_chromatogram_map,
+    build_chromatogram_map_from_scan,
+    compounds_with_scan_chromatograms,
     filter_compounds_by_variant,
     infer_bbs_per_position,
+    infer_bbs_per_position_from_map,
 )
 from src.core.pedigree_backend import get_pedigree_backend
 from src.core.pedigree_product_prominence import compute_product_prominence_summary
@@ -66,12 +70,112 @@ def default_max_display_tier(config: SpreadsheetConfig) -> Optional[int]:
     return max(0, n - 1)
 
 
+def run_pedigree_analysis_from_scan(
+    store: DataStore,
+    config: SpreadsheetConfig,
+    settings: AnalysisSettings,
+    scan: LibraryScanData,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+    max_display_tier: Optional[int] = None,
+    isoform_label: str = "All",
+) -> PedigreeAnalysisResult:
+    """
+    Run pedigree evaluation using a cached library scan instead of reloading chromatograms.
+
+    Metadata (BB positions, isoform labels) is loaded from SQLite without ``data_points``.
+    """
+    if not config.pedigree_configured():
+        raise ValueError(
+            "Pedigree is not configured. Map BB1..BBn columns in Configure Spreadsheet."
+        )
+    if settings.count_channel not in scan.channel_names:
+        raise ValueError(
+            f"Scan does not include pedigree channel {settings.count_channel!r}. "
+            f"Available channels: {', '.join(scan.channel_names) or 'none'}."
+        )
+
+    backend = get_pedigree_backend()
+    display_tier = (
+        default_max_display_tier(config) if max_display_tier is None else max_display_tier
+    )
+
+    def emit(step: int, status: str) -> None:
+        if progress_callback is not None:
+            progress_callback(step, 3, status)
+
+    emit(0, "Loading compound metadata from scan…")
+    compound_ids = [str(entry.compound_id) for entry in scan.entries]
+    metadata_by_id = store.load_compound_metadata_map(compound_ids)
+
+    emit(1, "Building chromatogram map from scan…")
+    chromatogram_map, metadata_stubs = build_chromatogram_map_from_scan(
+        scan,
+        metadata_by_id,
+        settings.count_channel,
+        config,
+        time_unit=settings.time_unit,
+        selected_variants=settings.selected_variants,
+    )
+    if not chromatogram_map:
+        raise ValueError(
+            f"No chromatograms found for channel {settings.count_channel!r} "
+            f"from {len(scan.entries):,} scanned entr"
+            f"{'y' if len(scan.entries) == 1 else 'ies'}. "
+            "Ensure BB metadata is present and the scan includes the selected channel."
+        )
+
+    emit(2, "Running pedigree evaluation…")
+    bbs_per_position = infer_bbs_per_position_from_map(chromatogram_map, config)
+    records = backend.evaluate_library(
+        bbs_per_position,
+        config.null_token,
+        chromatogram_map,
+        settings.tolerance,
+        settings.alpha,
+        min_prominence=settings.min_prominence,
+        min_pct_area=settings.min_pct_area,
+        settings=settings,
+    )
+    tier_summaries = summarize_by_tier(records)
+
+    prominence_compounds = compounds_with_scan_chromatograms(
+        scan,
+        metadata_stubs,
+        selected_variants=settings.selected_variants,
+    )
+    product_prominence = compute_product_prominence_summary(
+        records,
+        prominence_compounds,
+        config,
+        settings.count_channel,
+    )
+
+    return PedigreeAnalysisResult(
+        database_path=str(store.db_path),
+        channel=settings.count_channel,
+        settings=settings,
+        null_token=config.null_token,
+        library_cycle_count=config.library_cycle_count,
+        records=records,
+        tier_summaries=tier_summaries,
+        backend_name=backend.info(),
+        computed_at=datetime.now(timezone.utc),
+        n_compounds_loaded=len(metadata_stubs),
+        n_chromatograms=len(chromatogram_map),
+        max_display_tier=display_tier,
+        isoform_label=isoform_label,
+        product_prominence=product_prominence,
+    )
+
+
 def run_pedigree_analysis(
     store: DataStore,
     config: SpreadsheetConfig,
     settings: AnalysisSettings,
     *,
     index_database: bool,
+    scan: Optional[LibraryScanData] = None,
     progress_callback: Optional[ProgressCallback] = None,
     max_display_tier: Optional[int] = None,
     isoform_label: str = "All",
@@ -79,8 +183,22 @@ def run_pedigree_analysis(
     """
     Run full-library pedigree evaluation on the active database.
 
+    When ``scan`` is provided, chromatogram arrays are taken from the cached library
+    scan and only compound metadata is read from SQLite.
+
     ``store`` must be opened in the calling thread (see ``run_pedigree_analysis_for_path``).
     """
+    if scan is not None:
+        return run_pedigree_analysis_from_scan(
+            store,
+            config,
+            settings,
+            scan,
+            progress_callback=progress_callback,
+            max_display_tier=max_display_tier,
+            isoform_label=isoform_label,
+        )
+
     if not config.pedigree_configured():
         raise ValueError(
             "Pedigree is not configured. Map BB1..BBn columns in Configure Spreadsheet."
@@ -162,6 +280,7 @@ def run_pedigree_analysis_for_path(
     config: SpreadsheetConfig,
     settings: AnalysisSettings,
     *,
+    scan: Optional[LibraryScanData] = None,
     progress_callback: Optional[ProgressCallback] = None,
     max_display_tier: Optional[int] = None,
     isoform_label: str = "All",
@@ -174,6 +293,7 @@ def run_pedigree_analysis_for_path(
             config,
             settings,
             index_database=store.is_index_database(),
+            scan=scan,
             progress_callback=progress_callback,
             max_display_tier=max_display_tier,
             isoform_label=isoform_label,

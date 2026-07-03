@@ -29,11 +29,19 @@ PLOT_TOTAL_COUNT_HISTOGRAM = "total_count_histogram"
 PLOT_TOTAL_COUNT_PER_FRACTION = "total_count_per_fraction"
 PLOT_MAX_COUNT_HISTOGRAM = "max_count_histogram"
 PLOT_SNR_EXCESS_HISTOGRAM = "snr_excess_histogram"
+PLOT_SNR_RATIO_HISTOGRAM = "snr_ratio_histogram"
+PLOT_DYNAMIC_RANGE_HISTOGRAM = "dynamic_range_histogram"
+PLOT_MAX_PROMINENCE_HISTOGRAM = "max_prominence_histogram"
 PLOT_BASELINE_MU_HISTOGRAM = "baseline_mu_histogram"
 PLOT_SIG_PEAK_COUNT_HISTOGRAM = "significant_peak_count_histogram"
 
 DEFAULT_HISTOGRAM_BINS = 50
 DEFAULT_SIGNAL_QUALITY_ALPHA = 0.001
+
+# Matplotlib defaults are ~12 (title) and ~10 (axis labels); bump for readability.
+PLOT_TITLE_FONTSIZE = 13
+PLOT_AXIS_LABEL_FONTSIZE = 12
+PLOT_LEGEND_FONTSIZE = 10
 
 PLOT_TOTAL_COUNT_PER_FRACTION_TITLE = "Total sequencing count per fraction"
 
@@ -56,6 +64,9 @@ def list_library_plot_definitions() -> List[PlotDefinition]:
         LIBRARY_PLOT_DEFINITIONS[PLOT_TOTAL_COUNT_PER_FRACTION],
         LIBRARY_PLOT_DEFINITIONS[PLOT_MAX_COUNT_HISTOGRAM],
         LIBRARY_PLOT_DEFINITIONS[PLOT_SNR_EXCESS_HISTOGRAM],
+        LIBRARY_PLOT_DEFINITIONS[PLOT_SNR_RATIO_HISTOGRAM],
+        LIBRARY_PLOT_DEFINITIONS[PLOT_DYNAMIC_RANGE_HISTOGRAM],
+        LIBRARY_PLOT_DEFINITIONS[PLOT_MAX_PROMINENCE_HISTOGRAM],
         LIBRARY_PLOT_DEFINITIONS[PLOT_BASELINE_MU_HISTOGRAM],
         LIBRARY_PLOT_DEFINITIONS[PLOT_SIG_PEAK_COUNT_HISTOGRAM],
     ]
@@ -181,7 +192,12 @@ def _overlay_distribution_reference(
     legend_handles.append(
         Line2D([0], [0], color="none", label=f"n = {n:,}")
     )
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=8, framealpha=0.9)
+    ax.legend(
+        handles=legend_handles,
+        loc="upper right",
+        fontsize=PLOT_LEGEND_FONTSIZE,
+        framealpha=0.9,
+    )
 
 
 def _render_histogram(
@@ -196,7 +212,7 @@ def _render_histogram(
     """Render a histogram with a normal reference curve and summary markers."""
     if not values:
         ax.text(0.5, 0.5, "No data", ha="center", va="center", transform=ax.transAxes)
-        ax.set_title(title)
+        ax.set_title(title, fontsize=PLOT_TITLE_FONTSIZE)
         return
     if integer_bins:
         bins = _integer_histogram_bins(values)
@@ -211,7 +227,7 @@ def _render_histogram(
         )
         vmax = int(max(values))
         ax.set_xticks(list(range(vmax + 1)))
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel, fontsize=PLOT_AXIS_LABEL_FONTSIZE)
     else:
         _, bin_edges, _ = ax.hist(
             values,
@@ -221,10 +237,10 @@ def _render_histogram(
             alpha=0.9,
             label="_nolegend_",
         )
-        ax.set_xlabel(xlabel)
+        ax.set_xlabel(xlabel, fontsize=PLOT_AXIS_LABEL_FONTSIZE)
     bin_width = float(bin_edges[1] - bin_edges[0]) if len(bin_edges) > 1 else 1.0
-    ax.set_ylabel("Entries")
-    ax.set_title(title)
+    ax.set_ylabel("Entries", fontsize=PLOT_AXIS_LABEL_FONTSIZE)
+    ax.set_title(title, fontsize=PLOT_TITLE_FONTSIZE)
     _overlay_distribution_reference(ax, values, bin_edges=bin_edges, bin_width=bin_width)
 
 
@@ -339,12 +355,13 @@ def _render_total_count_per_fraction(
     else:
         ax.plot(indices, totals, color="#FF7B72", linewidth=1.6)
         ax.fill_between(indices, 0, totals, color="#FF7B72", alpha=0.15)
-        ax.set_xlabel("Fraction index")
-        ax.set_ylabel(f"Total {channel}")
+        ax.set_xlabel("Fraction index", fontsize=PLOT_AXIS_LABEL_FONTSIZE)
+        ax.set_ylabel(f"Total {channel}", fontsize=PLOT_AXIS_LABEL_FONTSIZE)
         ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0), useMathText=True)
         ax.set_title(
             f"{PLOT_TOTAL_COUNT_PER_FRACTION_TITLE} ({channel}, "
-            f"{entries_used:,} entries)"
+            f"{entries_used:,} entries)",
+            fontsize=PLOT_TITLE_FONTSIZE,
         )
 
         library_total = float(np.sum(totals))
@@ -421,9 +438,15 @@ def _render_signal_histogram(
     title: str,
     color: str,
     integer_bins: bool = False,
+    skip_none: bool = False,
 ) -> Figure:
     stats_list = _signal_stats_for_channel(scan, channel, signal_quality_alpha)
-    values = [float(value_fn(s)) for s in stats_list]
+    values: List[float] = []
+    for stats in stats_list:
+        raw = value_fn(stats)
+        if skip_none and raw is None:
+            continue
+        values.append(float(raw))
     fig, ax = plt.subplots(figsize=(7.0, 4.2), dpi=dpi)
     _render_histogram(
         ax,
@@ -453,6 +476,65 @@ def _render_snr_excess_histogram(
         xlabel="SNR excess (tallest significant peak − μ)",
         title=f"Tallest significant peak SNR excess — {channel}",
         color="#A371F7",
+    )
+
+
+def _render_snr_ratio_histogram(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+    *,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+) -> Figure:
+    return _render_signal_histogram(
+        scan,
+        channel,
+        dpi,
+        signal_quality_alpha=signal_quality_alpha,
+        value_fn=lambda s: s.tallest_significant_snr_ratio,
+        xlabel="SNR ratio ((tallest significant peak − μ) ÷ σ)",
+        title=f"Tallest significant peak SNR ratio — {channel}",
+        color="#BC8CFF",
+        skip_none=True,
+    )
+
+
+def _render_dynamic_range_histogram(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+    *,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+) -> Figure:
+    return _render_signal_histogram(
+        scan,
+        channel,
+        dpi,
+        signal_quality_alpha=signal_quality_alpha,
+        value_fn=lambda s: s.tallest_significant_dynamic_range,
+        xlabel="Dynamic range (tallest significant peak ÷ μ)",
+        title=f"Tallest significant peak dynamic range — {channel}",
+        color="#79C0FF",
+        skip_none=True,
+    )
+
+
+def _render_max_prominence_histogram(
+    scan: LibraryScanData,
+    channel: str,
+    dpi: int,
+    *,
+    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+) -> Figure:
+    return _render_signal_histogram(
+        scan,
+        channel,
+        dpi,
+        signal_quality_alpha=signal_quality_alpha,
+        value_fn=lambda s: s.max_significant_prominence,
+        xlabel="Max prominence (significant peaks)",
+        title=f"Max significant peak prominence — {channel}",
+        color="#56D364",
     )
 
 
@@ -525,6 +607,36 @@ LIBRARY_PLOT_DEFINITIONS: Dict[str, PlotDefinition] = {
             "peak (apex height minus baseline μ)."
         ),
         render_fn=_render_snr_excess_histogram,
+        category="signal",
+    ),
+    PLOT_SNR_RATIO_HISTOGRAM: PlotDefinition(
+        plot_id=PLOT_SNR_RATIO_HISTOGRAM,
+        title="Tallest significant peak SNR ratio distribution",
+        help_text=(
+            "Histogram of per-entry SNR ratio for the tallest significant peak: "
+            "(height − baseline μ) ÷ baseline σ. Entries with σ ≈ 0 are omitted."
+        ),
+        render_fn=_render_snr_ratio_histogram,
+        category="signal",
+    ),
+    PLOT_DYNAMIC_RANGE_HISTOGRAM: PlotDefinition(
+        plot_id=PLOT_DYNAMIC_RANGE_HISTOGRAM,
+        title="Dynamic range distribution",
+        help_text=(
+            "Histogram of per-entry dynamic range for the tallest significant peak: "
+            "apex height ÷ baseline μ. Entries with μ ≈ 0 are omitted."
+        ),
+        render_fn=_render_dynamic_range_histogram,
+        category="signal",
+    ),
+    PLOT_MAX_PROMINENCE_HISTOGRAM: PlotDefinition(
+        plot_id=PLOT_MAX_PROMINENCE_HISTOGRAM,
+        title="Max prominence distribution",
+        help_text=(
+            "Histogram of per-entry maximum prominence among statistically significant "
+            "peaks (apex height minus the higher of the two adjacent minima)."
+        ),
+        render_fn=_render_max_prominence_histogram,
         category="signal",
     ),
     PLOT_BASELINE_MU_HISTOGRAM: PlotDefinition(

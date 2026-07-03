@@ -23,7 +23,8 @@ from src.core.library_metrics import (  # noqa: E402
     compute_metrics_from_scan,
 )
 from src.core.library_plots import PLOT_TOTAL_COUNT_HISTOGRAM, generate_plots  # noqa: E402
-from src.core.library_report import generate_library_report_pdf  # noqa: E402
+from src.core.library_report import generate_library_report_pdf
+from src.core.library_report_models import LibraryReportOptions, LibraryReportAuditTrail  # noqa: E402
 
 
 def _flat_entry(compound_id: str, counts: list[float]) -> ScannedEntry:
@@ -109,3 +110,52 @@ class TestLibraryReportPdf:
         pdf_path = tmp_path / "minimal.pdf"
         generate_library_report_pdf(snapshot, pdf_path)
         assert pdf_path.is_file()
+
+    def test_generates_pdf_with_audit_trail(self, tmp_path: Path) -> None:
+        snapshot = LibraryComputationSnapshot(
+            processed_at=datetime.now(timezone.utc),
+            database_path=str(tmp_path / "test.db"),
+            database_kind="full",
+            fraction_count=96,
+            selected_channels=["Count"],
+            selected_metrics=[METRIC_TOTAL_COUNT_PER_ENTRY],
+            metric_results=[
+                MetricResult(
+                    metric_id=METRIC_TOTAL_COUNT_PER_ENTRY,
+                    title="Total count per entry",
+                    help_text="test",
+                    channels=[
+                        ChannelAggregateStats(
+                            count_name="Count",
+                            mean=25.0,
+                            std_dev=5.0,
+                            n=2,
+                        )
+                    ],
+                )
+            ],
+        )
+        audit = LibraryReportAuditTrail(
+            generated_at=datetime.now(timezone.utc),
+            database_path=str(tmp_path / "test.db"),
+            database_name="test.db",
+            database_kind="full",
+            report_options=LibraryReportOptions(
+                include_metrics=True,
+                include_plots=False,
+                include_pedigree=False,
+                include_del_cycle=False,
+                metric_ids=[METRIC_TOTAL_COUNT_PER_ENTRY],
+                channels=["Count"],
+            ),
+            computed_metrics=False,
+        )
+        pdf_path = tmp_path / "audit.pdf"
+        generate_library_report_pdf(
+            snapshot,
+            pdf_path,
+            report_options=audit.report_options,
+            audit=audit,
+        )
+        assert pdf_path.is_file()
+        assert pdf_path.stat().st_size > 1000

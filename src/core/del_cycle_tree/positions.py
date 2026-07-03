@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from src.core.del_cycle_tree.models import DelCycleRow
 from src.models.compound import Compound
 from src.models.spreadsheet_config import SpreadsheetConfig
 
@@ -36,6 +37,25 @@ def positions_c_to_n(
             text = str(raw).strip()
             values.append(text if text else null)
     return tuple(values)
+
+
+def index_discovery_rows_from_compounds(
+    compounds: Sequence[Compound],
+    config: SpreadsheetConfig,
+) -> List[DelCycleRow]:
+    """
+    Placeholder rows covering every compound with BB metadata.
+
+    Used to assign stable global display indices independent of which compounds
+    happen to resolve an RT during pedigree or peak-picking passes.
+    """
+    rows: List[DelCycleRow] = []
+    for compound in compounds:
+        positions = positions_c_to_n(compound, config)
+        if positions is None:
+            continue
+        rows.append(DelCycleRow(positions=positions, rt=0.0))
+    return rows
 
 
 def build_bb_index_by_level(

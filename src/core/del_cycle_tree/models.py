@@ -32,6 +32,17 @@ class VerifiedSequence:
     success: bool
 
 
+@dataclass(frozen=True)
+class DelCycleRtResolution:
+    """How retention times were resolved for DEL-cycle tree rows."""
+
+    rt_source: str
+    peak_picking_algorithm: str
+    n_rt_from_pedigree: int = 0
+    n_rt_from_peak_pick: int = 0
+    n_rt_from_metadata: int = 0
+
+
 @dataclass
 class DelCycleTreeData:
     """Analyzed DEL-cycle tree ready for rendering."""
@@ -44,7 +55,19 @@ class DelCycleTreeData:
     verified_sequences: Dict[Tuple[str, ...], VerifiedSequence]
     full_null_rt: Optional[float]
     bb_index_by_level: List[Dict[str, int]] = field(default_factory=list)
+    bb_index_global: Dict[str, int] = field(default_factory=dict)
+    truncation_library: Dict[Tuple[str, ...], List[Tuple[Tuple[str, ...], float]]] = field(
+        default_factory=dict
+    )
     bb1_names: List[str] = field(default_factory=list)
     n_rows: int = 0
     n_verified: int = 0
     rt_source: str = "pedigree"
+    peak_picking_algorithm: str = ""
+    n_rt_from_pedigree: int = 0
+    n_rt_from_peak_pick: int = 0
+    n_rt_from_metadata: int = 0
+    n_rt_verified_pedigree_agree: int = 0
+    pedigree_passed_by_product: Dict[Tuple[str, ...], bool] = field(default_factory=dict)
+    pedigree_pruned_tree: Dict[str, Any] = field(default_factory=dict)
+    n_pedigree_passed: int = 0

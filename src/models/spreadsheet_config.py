@@ -28,6 +28,8 @@ class SpreadsheetConfig:
         null_token: Token marking unfilled coupling positions in BB columns (pedigree).
         library_cycle_count: Number of coupling cycles (2, 3, or 4) in this DEL library.
         bb_position_columns: Up to four spreadsheet columns for BB1..BB4 (C→N coupling order).
+        bb_index_map: Optional user CSV mapping of building-block name → display index.
+        bb_index_csv_path: Source file path when index map was loaded from CSV (informational).
         analysis_time_unit: Default time unit for peak/pedigree analysis UI (seconds/minutes).
     """
     
@@ -42,6 +44,8 @@ class SpreadsheetConfig:
     null_token: str = "AgxNull"
     library_cycle_count: int = 3
     bb_position_columns: List[str] = field(default_factory=lambda: ["", "", "", ""])
+    bb_index_map: Dict[str, int] = field(default_factory=dict)
+    bb_index_csv_path: Optional[str] = None
     analysis_time_unit: str = "seconds"
     
     def __post_init__(self) -> None:
@@ -107,6 +111,24 @@ class SpreadsheetConfig:
             raise ValueError("analysis_time_unit must be 'seconds' or 'minutes'")
         if not self.null_token or not str(self.null_token).strip():
             raise ValueError("null_token must be a non-empty string")
+        self._validate_bb_index_map()
+
+    def _validate_bb_index_map(self) -> None:
+        """Light validation of optional user BB index overrides."""
+        if not self.bb_index_map:
+            return
+        seen_indices: Dict[int, str] = {}
+        for name, index in self.bb_index_map.items():
+            if not str(name).strip():
+                raise ValueError("bb_index_map keys must be non-empty building-block names")
+            if not isinstance(index, int):
+                raise ValueError(f"bb_index_map index for {name!r} must be an integer")
+            if index in seen_indices and seen_indices[index] != name:
+                raise ValueError(
+                    f"bb_index_map duplicate index {index} for {name!r} and "
+                    f"{seen_indices[index]!r}"
+                )
+            seen_indices[index] = str(name)
 
     def active_bb_position_columns(self) -> List[str]:
         """BB column names for the configured cycle count (C→N: BB1 = C-term)."""
@@ -118,6 +140,14 @@ class SpreadsheetConfig:
     def pedigree_configured(self) -> bool:
         """True when enough BB columns are mapped for pedigree analysis."""
         return len(self.active_bb_position_columns()) == self.library_cycle_count
+
+    def uses_bb_index_csv(self) -> bool:
+        """True when split-tree labels use a user-supplied index map."""
+        return bool(self.bb_index_map)
+
+    def bb_index_override(self) -> Optional[Dict[str, int]]:
+        """Return the override map when configured, else ``None`` for auto indexing."""
+        return dict(self.bb_index_map) if self.bb_index_map else None
 
     def parsed_fields_per_point(self) -> int:
         """
@@ -174,6 +204,8 @@ class SpreadsheetConfig:
             "null_token": self.null_token,
             "library_cycle_count": self.library_cycle_count,
             "bb_position_columns": self.bb_position_columns.copy(),
+            "bb_index_map": dict(self.bb_index_map),
+            "bb_index_csv_path": self.bb_index_csv_path,
             "analysis_time_unit": self.analysis_time_unit,
         }
     
@@ -206,6 +238,17 @@ class SpreadsheetConfig:
             bb_cols = list(bb_cols) + [""] * (4 - len(bb_cols))
         bb_cols = [str(c) if c else "" for c in bb_cols[:4]]
 
+        raw_index_map = data.get("bb_index_map") or {}
+        bb_index_map: Dict[str, int] = {}
+        if isinstance(raw_index_map, dict):
+            for name, index in raw_index_map.items():
+                try:
+                    bb_index_map[str(name).strip()] = int(index)
+                except (TypeError, ValueError):
+                    continue
+        raw_csv_path = data.get("bb_index_csv_path")
+        bb_index_csv_path = str(raw_csv_path).strip() if raw_csv_path else None
+
         return cls(
             compound_id_column=str(data["compound_id_column"]),
             chromatographic_data_column=str(data["chromatographic_data_column"]),
@@ -218,5 +261,7 @@ class SpreadsheetConfig:
             null_token=str(data.get("null_token", "AgxNull")),
             library_cycle_count=int(data.get("library_cycle_count", 3)),
             bb_position_columns=bb_cols,
+            bb_index_map=bb_index_map,
+            bb_index_csv_path=bb_index_csv_path,
             analysis_time_unit=str(data.get("analysis_time_unit", "seconds")),
         )

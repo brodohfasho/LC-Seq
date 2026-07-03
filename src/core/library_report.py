@@ -9,8 +9,10 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Sequence
+from xml.sax.saxutils import escape
 
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -29,6 +31,17 @@ from src.core.library_metrics import (
     LibraryComputationSnapshot,
     MetricResult,
     PlotResult,
+)
+from src.core.library_report_assets import (
+    BRANCHES_PER_GRID_PAGE,
+    BRANCH_GRID_COLS,
+    BRANCH_GRID_ROWS,
+)
+from src.core.library_report_models import (
+    LibraryReportAuditTrail,
+    LibraryReportOptions,
+    LibraryReportPedigreeBranchFigure,
+    LibraryReportPedigreeFigures,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,11 +106,269 @@ def _styled_table(data: List[List[str]], col_widths: Optional[List[float]] = Non
     return table
 
 
+def _scaled_image(path: Path, *, max_w: float, max_h: float) -> Image:
+    img = Image(str(path))
+    scale = min(max_w / img.drawWidth, max_h / img.drawHeight, 1.0)
+    img.drawWidth *= scale
+    img.drawHeight *= scale
+    return img
+
+
+def _branch_label_html(branch: LibraryReportPedigreeBranchFigure) -> str:
+    """Bold branch title with optional blue global index prefix."""
+    name = escape(branch.bb1_name)
+    if branch.bb1_index is not None and branch.bb1_index > 0:
+        return f'<font color="#2563EB">#{branch.bb1_index}</font> {name}'
+    return name
+
+
+def _branch_cell(
+    branch: LibraryReportPedigreeBranchFigure,
+    *,
+    label_style: ParagraphStyle,
+    image_w: float,
+    image_h: float,
+) -> Table:
+    """One branch panel: bold name centered above the split-tree image."""
+    label_html = _branch_label_html(branch)
+    try:
+        img = _scaled_image(branch.image_path, max_w=image_w, max_h=image_h)
+        body: List[List[object]] = [[Paragraph(label_html, label_style)], [img]]
+    except Exception as exc:
+        logger.warning("Could not embed DEL branch %s: %s", branch.bb1_name, exc)
+        body = [[Paragraph(f"{label_html}<br/>(unavailable: {exc})", label_style)]]
+
+    cell = Table(body, colWidths=[image_w])
+    cell.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, 0), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+                ("TOPPADDING", (0, 1), (-1, 1), 2),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 0),
+            ]
+        )
+    )
+    return cell
+
+
+def _append_bb_index_reference(
+    story: list,
+    pedigree: LibraryReportPedigreeFigures,
+    *,
+    subheading_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+) -> None:
+    if not pedigree.bb_index_reference:
+        return
+
+    story.append(Paragraph("Building-block index reference", subheading_style))
+    null_note = (
+        f" Null / placeholder token “{pedigree.null_token}” is labeled 0 on the tree."
+        if pedigree.null_token
+        else ""
+    )
+    story.append(
+        Paragraph(
+            "Numbers on the DEL-cycle full tree label BB1 branches only (matching "
+            "branch plot roots and CSV bb1_index). The outer BB2 ring is unlabeled."
+            f"{null_note}",
+            body_style,
+        )
+    )
+    story.append(Spacer(1, 0.08 * inch))
+
+    rows: List[List[str]] = [["Index", "Building block"]]
+    rows.extend([str(index), name] for index, name in pedigree.bb_index_reference)
+    story.append(_styled_table(rows, col_widths=[0.9 * inch, 5.5 * inch]))
+    story.append(Spacer(1, 0.16 * inch))
+
+
+def _append_pedigree_tier_section(
+    story: list,
+    pedigree: LibraryReportPedigreeFigures,
+    *,
+    heading_style: ParagraphStyle,
+    caption_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+    subheading_style: ParagraphStyle,
+) -> None:
+    story.append(PageBreak())
+    story.append(Paragraph("Pedigree analysis", heading_style))
+    story.append(
+        Paragraph(
+            "Pedigree tier-ring using the display options active in Library Data "
+            "when the report was generated.",
+            body_style,
+        )
+    )
+    story.append(Spacer(1, 0.12 * inch))
+
+    if pedigree.tier_ring_path is not None and pedigree.tier_ring_path.is_file():
+        story.append(Paragraph("Pedigree tier-ring tree", subheading_style))
+        if pedigree.tier_ring_caption:
+            story.append(Paragraph(pedigree.tier_ring_caption, caption_style))
+        try:
+            story.append(_scaled_image(pedigree.tier_ring_path, max_w=6.8 * inch, max_h=6.8 * inch))
+        except Exception as exc:
+            logger.warning("Could not embed pedigree tier-ring: %s", exc)
+            story.append(Paragraph(f"(Image unavailable: {exc})", caption_style))
+        story.append(Spacer(1, 0.2 * inch))
+
+
+def _append_del_cycle_section(
+    story: list,
+    pedigree: LibraryReportPedigreeFigures,
+    *,
+    heading_style: ParagraphStyle,
+    caption_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+    subheading_style: ParagraphStyle,
+    branch_label_style: ParagraphStyle,
+) -> None:
+    story.append(PageBreak())
+    story.append(Paragraph("DEL-cycle analysis", heading_style))
+    story.append(
+        Paragraph(
+            "DEL-cycle split trees using the tolerance, coloring, and pass-rate "
+            "settings active in Library Data when the report was generated.",
+            body_style,
+        )
+    )
+    story.append(Spacer(1, 0.12 * inch))
+
+    bb_index_shown = False
+
+    if pedigree.del_full_tree_path is not None and pedigree.del_full_tree_path.is_file():
+        story.append(Paragraph("DEL-cycle tree (full)", subheading_style))
+        if pedigree.del_full_tree_caption:
+            story.append(Paragraph(pedigree.del_full_tree_caption, caption_style))
+        try:
+            story.append(
+                _scaled_image(pedigree.del_full_tree_path, max_w=6.8 * inch, max_h=6.8 * inch)
+            )
+        except Exception as exc:
+            logger.warning("Could not embed DEL full tree: %s", exc)
+            story.append(Paragraph(f"(Image unavailable: {exc})", caption_style))
+        story.append(Spacer(1, 0.2 * inch))
+        _append_bb_index_reference(
+            story,
+            pedigree,
+            subheading_style=subheading_style,
+            body_style=body_style,
+        )
+        bb_index_shown = True
+
+    branches = [
+        branch
+        for branch in pedigree.del_branch_figures
+        if branch.image_path.is_file()
+    ]
+    if not branches:
+        return
+
+    story.append(PageBreak())
+    story.append(Paragraph("DEL-cycle BB1 branches", subheading_style))
+    if not bb_index_shown:
+        _append_bb_index_reference(
+            story,
+            pedigree,
+            subheading_style=subheading_style,
+            body_style=body_style,
+        )
+    story.append(
+        Paragraph(
+            f"{len(branches)} branch plot(s) in a {BRANCH_GRID_COLS}×{BRANCH_GRID_ROWS} grid "
+            f"({BRANCHES_PER_GRID_PAGE} per page).",
+            caption_style,
+        )
+    )
+    story.append(Spacer(1, 0.1 * inch))
+
+    col_w = 3.15 * inch
+    image_w = 3.0 * inch
+    image_h = 2.35 * inch
+    for page_start in range(0, len(branches), BRANCHES_PER_GRID_PAGE):
+        page_branches = branches[page_start : page_start + BRANCHES_PER_GRID_PAGE]
+        grid_rows: List[List[object]] = []
+        for row_idx in range(BRANCH_GRID_ROWS):
+            row_cells: List[object] = []
+            for col_idx in range(BRANCH_GRID_COLS):
+                branch_idx = row_idx * BRANCH_GRID_COLS + col_idx
+                if branch_idx < len(page_branches):
+                    row_cells.append(
+                        _branch_cell(
+                            page_branches[branch_idx],
+                            label_style=branch_label_style,
+                            image_w=image_w,
+                            image_h=image_h,
+                        )
+                    )
+                else:
+                    row_cells.append(Spacer(1, image_h + 0.25 * inch))
+            grid_rows.append(row_cells)
+        table = Table(grid_rows, colWidths=[col_w] * BRANCH_GRID_COLS)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
+        story.append(table)
+        if page_start + BRANCHES_PER_GRID_PAGE < len(branches):
+            story.append(PageBreak())
+
+
+def _append_pedigree_section(
+    story: list,
+    pedigree: LibraryReportPedigreeFigures,
+    *,
+    heading_style: ParagraphStyle,
+    caption_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+    subheading_style: ParagraphStyle,
+    branch_label_style: ParagraphStyle,
+    include_pedigree: bool,
+    include_del_cycle: bool,
+) -> None:
+    """Embed pedigree tier-ring and/or DEL-cycle figures based on report options."""
+    if include_pedigree:
+        _append_pedigree_tier_section(
+            story,
+            pedigree,
+            heading_style=heading_style,
+            caption_style=caption_style,
+            body_style=body_style,
+            subheading_style=subheading_style,
+        )
+    if include_del_cycle:
+        _append_del_cycle_section(
+            story,
+            pedigree,
+            heading_style=heading_style,
+            caption_style=caption_style,
+            body_style=body_style,
+            subheading_style=subheading_style,
+            branch_label_style=branch_label_style,
+        )
+
+
 def generate_library_report_pdf(
     snapshot: LibraryComputationSnapshot,
     output_path: Path,
     *,
     plot_results: Optional[Sequence[PlotResult]] = None,
+    report_options: Optional[LibraryReportOptions] = None,
+    audit: Optional[LibraryReportAuditTrail] = None,
+    pedigree_figures: Optional[LibraryReportPedigreeFigures] = None,
 ) -> Path:
     """
     Write a multi-section PDF report for one library analysis session.
@@ -113,6 +384,15 @@ def generate_library_report_pdf(
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     plots = list(plot_results if plot_results is not None else snapshot.plot_results)
+    opts = report_options or LibraryReportOptions(
+        include_metrics=bool(snapshot.metric_results),
+        include_plots=bool(plots),
+        include_pedigree=False,
+        include_del_cycle=False,
+        metric_ids=list(snapshot.selected_metrics),
+        plot_ids=list(snapshot.selected_plots),
+        channels=list(snapshot.selected_channels),
+    )
 
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
@@ -129,6 +409,14 @@ def generate_library_report_pdf(
         spaceBefore=12,
         spaceAfter=8,
     )
+    subheading_style = ParagraphStyle(
+        "ReportSubheading",
+        parent=styles["Heading3"],
+        fontSize=12,
+        textColor=colors.HexColor("#1F3A5F"),
+        spaceBefore=8,
+        spaceAfter=6,
+    )
     body_style = ParagraphStyle(
         "ReportBody",
         parent=styles["Normal"],
@@ -142,6 +430,14 @@ def generate_library_report_pdf(
         textColor=colors.HexColor("#555555"),
         spaceAfter=10,
     )
+    branch_label_style = ParagraphStyle(
+        "BranchLabel",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        alignment=TA_CENTER,
+        spaceAfter=4,
+    )
 
     story: list = []
     story.append(Paragraph("LC-Seq Library Data Report", title_style))
@@ -153,76 +449,126 @@ def generate_library_report_pdf(
         ["Generated", _format_timestamp(snapshot.processed_at)],
         ["Entries parsed", f"{snapshot.entries_used:,} of {snapshot.entries_attempted:,}"],
         ["Entries skipped", f"{snapshot.entries_skipped:,}"],
-        ["Fraction count", str(snapshot.fraction_count)],
-        ["Peak significance α", f"{snapshot.signal_quality_alpha:g}"],
-        ["Count channels", ", ".join(snapshot.selected_channels) or "—"],
     ]
+    if opts.include_metrics:
+        summary_rows.extend(
+            [
+                ["Fraction count", str(snapshot.fraction_count)],
+                ["Peak significance α", f"{snapshot.signal_quality_alpha:g}"],
+            ]
+        )
+    summary_rows.append(["Count channels", ", ".join(snapshot.selected_channels) or "—"])
+    sections = []
+    if opts.include_metrics:
+        sections.append("Summary metrics")
+    if opts.include_plots:
+        sections.append("Visualizations")
+    if opts.include_pedigree:
+        sections.append("Pedigree analysis")
+    if opts.include_del_cycle:
+        sections.append("DEL-cycle analysis")
+    summary_rows.append(["Report sections", ", ".join(sections) or "—"])
     story.append(_styled_table(summary_rows, col_widths=[1.6 * inch, 4.8 * inch]))
-    story.append(PageBreak())
 
-    story.append(Paragraph("Methodology", heading_style))
-    story.append(Paragraph(_METHODOLOGY_TEXT, body_style))
-    story.append(Spacer(1, 0.2 * inch))
-
-    coverage_metrics = [
-        m
-        for m in snapshot.metric_results
-        if LIBRARY_METRIC_DEFINITIONS.get(m.metric_id, None)
-        and LIBRARY_METRIC_DEFINITIONS[m.metric_id].category == "coverage"
-    ]
-    signal_metrics = [
-        m
-        for m in snapshot.metric_results
-        if LIBRARY_METRIC_DEFINITIONS.get(m.metric_id, None)
-        and LIBRARY_METRIC_DEFINITIONS[m.metric_id].category == "signal"
-    ]
-
-    if coverage_metrics:
-        story.append(Paragraph("Coverage metrics", heading_style))
-        for metric in coverage_metrics:
-            story.append(Paragraph(metric.title, styles["Heading3"]))
-            story.append(_styled_table(_metric_table_rows(metric), col_widths=[1.4 * inch, 2.4 * inch, 0.8 * inch]))
-            story.append(Spacer(1, 0.12 * inch))
-
-    if signal_metrics:
-        story.append(Paragraph("Signal-quality metrics", heading_style))
+    if audit is not None:
+        story.append(Spacer(1, 0.2 * inch))
+        story.append(Paragraph("Audit trail", heading_style))
         story.append(
             Paragraph(
-                f"All signal metrics computed with α = {snapshot.signal_quality_alpha:g}.",
+                "Settings and provenance captured at report generation time.",
                 body_style,
             )
         )
         story.append(Spacer(1, 0.08 * inch))
-        for metric in signal_metrics:
-            story.append(Paragraph(metric.title, styles["Heading3"]))
-            story.append(_styled_table(_metric_table_rows(metric), col_widths=[1.4 * inch, 2.4 * inch, 0.8 * inch]))
-            story.append(Spacer(1, 0.12 * inch))
+        story.append(_styled_table(audit.audit_rows(), col_widths=[2.0 * inch, 4.4 * inch]))
 
-    valid_plots = [
-        p
-        for p in plots
-        if p.image_path is not None and Path(p.image_path).is_file()
-    ]
-    if valid_plots:
-        story.append(PageBreak())
-        story.append(Paragraph("Visualizations", heading_style))
-        for plot in valid_plots:
-            story.append(Paragraph(plot.title, styles["Heading3"]))
-            if plot.help_text:
-                story.append(Paragraph(plot.help_text, caption_style))
-            img_path = Path(plot.image_path)
-            try:
-                img = Image(str(img_path))
-                max_w = 6.5 * inch
-                max_h = 4.5 * inch
-                scale = min(max_w / img.drawWidth, max_h / img.drawHeight, 1.0)
-                img.drawWidth *= scale
-                img.drawHeight *= scale
-                story.append(img)
-            except Exception as exc:
-                logger.warning("Could not embed plot %s: %s", plot.plot_id, exc)
-                story.append(Paragraph(f"(Plot image unavailable: {exc})", caption_style))
-            story.append(Spacer(1, 0.2 * inch))
+    story.append(PageBreak())
+    story.append(Paragraph("Methodology", heading_style))
+    story.append(Paragraph(_METHODOLOGY_TEXT, body_style))
+    story.append(Spacer(1, 0.2 * inch))
+
+    if opts.include_metrics:
+        coverage_metrics = [
+            m
+            for m in snapshot.metric_results
+            if LIBRARY_METRIC_DEFINITIONS.get(m.metric_id, None)
+            and LIBRARY_METRIC_DEFINITIONS[m.metric_id].category == "coverage"
+        ]
+        signal_metrics = [
+            m
+            for m in snapshot.metric_results
+            if LIBRARY_METRIC_DEFINITIONS.get(m.metric_id, None)
+            and LIBRARY_METRIC_DEFINITIONS[m.metric_id].category == "signal"
+        ]
+
+        if coverage_metrics or signal_metrics:
+            story.append(PageBreak())
+            story.append(Paragraph("Summary metrics", heading_style))
+
+        if coverage_metrics:
+            story.append(Paragraph("Coverage metrics", subheading_style))
+            for metric in coverage_metrics:
+                story.append(Paragraph(metric.title, styles["Heading3"]))
+                story.append(
+                    _styled_table(
+                        _metric_table_rows(metric),
+                        col_widths=[1.4 * inch, 2.4 * inch, 0.8 * inch],
+                    )
+                )
+                story.append(Spacer(1, 0.12 * inch))
+
+        if signal_metrics:
+            story.append(Paragraph("Signal-quality metrics", subheading_style))
+            story.append(
+                Paragraph(
+                    f"All signal metrics computed with α = {snapshot.signal_quality_alpha:g}.",
+                    body_style,
+                )
+            )
+            story.append(Spacer(1, 0.08 * inch))
+            for metric in signal_metrics:
+                story.append(Paragraph(metric.title, styles["Heading3"]))
+                story.append(
+                    _styled_table(
+                        _metric_table_rows(metric),
+                        col_widths=[1.4 * inch, 2.4 * inch, 0.8 * inch],
+                    )
+                )
+                story.append(Spacer(1, 0.12 * inch))
+
+    if opts.include_plots:
+        valid_plots = [
+            p
+            for p in plots
+            if p.image_path is not None and Path(p.image_path).is_file()
+        ]
+        if valid_plots:
+            story.append(PageBreak())
+            story.append(Paragraph("Visualizations", heading_style))
+            for plot in valid_plots:
+                story.append(Paragraph(plot.title, styles["Heading3"]))
+                if plot.help_text:
+                    story.append(Paragraph(plot.help_text, caption_style))
+                img_path = Path(plot.image_path)
+                try:
+                    story.append(_scaled_image(img_path, max_w=6.5 * inch, max_h=4.5 * inch))
+                except Exception as exc:
+                    logger.warning("Could not embed plot %s: %s", plot.plot_id, exc)
+                    story.append(Paragraph(f"(Plot image unavailable: {exc})", caption_style))
+                story.append(Spacer(1, 0.2 * inch))
+
+    if pedigree_figures is not None and (opts.include_pedigree or opts.include_del_cycle):
+        _append_pedigree_section(
+            story,
+            pedigree_figures,
+            heading_style=heading_style,
+            caption_style=caption_style,
+            body_style=body_style,
+            subheading_style=subheading_style,
+            branch_label_style=branch_label_style,
+            include_pedigree=opts.include_pedigree,
+            include_del_cycle=opts.include_del_cycle,
+        )
 
     doc = SimpleDocTemplate(
         str(target),
