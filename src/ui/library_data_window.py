@@ -91,10 +91,11 @@ from src.core.pedigree_render import (
 )
 from src.core.pedigree_service import run_pedigree_analysis_for_path
 from src.core.del_cycle_tree import (
+    DelCycleExportResult,
     DelCycleTreeData,
     DelCycleTreeView,
     build_del_cycle_tree_for_path,
-    export_del_cycle_csv,
+    export_del_cycle_package,
     render_del_cycle_tree_figure,
 )
 from src.core.del_cycle_tree.bb_index_scheme import format_bb_branch_label
@@ -1367,7 +1368,7 @@ class LibraryDataWindow(BaseWindow):
 
         self._pedigree_export_del_csv_btn = ctk.CTkButton(
             pedigree_actions,
-            text="Export DEL cycle CSV…",
+            text="Export DEL cycle bundle…",
             width=160,
             fg_color="gray40",
             state="disabled",
@@ -5152,6 +5153,8 @@ class LibraryDataWindow(BaseWindow):
             messagebox.showerror("Pedigree", str(exc), parent=self)
 
     def _on_export_del_cycle_csv(self) -> None:
+        if self._is_busy():
+            return
         if self._del_cycle_tree_data is None:
             messagebox.showinfo(
                 "DEL-cycle tree",
@@ -5160,19 +5163,85 @@ class LibraryDataWindow(BaseWindow):
                 parent=self,
             )
             return
-        dest = filedialog.asksaveasfilename(
+        dest = filedialog.askdirectory(
             parent=self,
-            title="Export DEL-cycle CSV",
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv")],
+            title="Select folder for DEL-cycle export",
         )
         if not dest:
             return
+
+        del_data = self._del_cycle_tree_data
+        self._show_loading_page(
+            "Exporting DEL cycle bundle",
+            "Starting export…",
+        )
+
+        def worker() -> None:
+            try:
+                def export_progress(fraction: float, status: str) -> None:
+                    self._thread_loading_progress(fraction, status)
+
+                result = export_del_cycle_package(
+                    del_data,
+                    dest,
+                    progress_callback=export_progress,
+                )
+                self._schedule_on_main(self._on_del_cycle_export_ready, result)
+            except Exception as exc:
+                logger.error("DEL-cycle export failed: %s", exc, exc_info=True)
+                self._schedule_on_main(self._on_del_cycle_export_failed, str(exc))
+
+        self._start_worker(worker)
+        self._update_action_states()
+
+    def _on_del_cycle_export_ready(self, result: DelCycleExportResult) -> None:
+        if not self._ui_is_active():
+            return
+        self._worker_thread = None
+        self._update_loading_progress(
+            1.0,
+            f"Exported {result.file_count} file(s) to {result.output_dir.name}",
+        )
+
+        def finish() -> None:
+            if not self._ui_is_active():
+                return
+            self._hide_loading_page()
+            self._update_action_states()
+            if self._pedigree_status_label is not None:
+                self._pedigree_status_label.configure(
+                    text=f"DEL export saved — {result.file_count} file(s) in {result.output_dir}",
+                    text_color="green",
+                )
+            messagebox.showinfo(
+                "DEL-cycle tree",
+                f"Exported {result.file_count} file(s) to:\n{result.output_dir}\n\n"
+                f"- {result.products_csv.name}\n"
+                f"- {result.audit_csv.name}\n"
+                f"- {result.summary_csv.name}\n"
+                f"- {result.flagged_csv.name}\n"
+                + (
+                    f"- {len(result.grid_files)} grid workbook(s) in grids/"
+                    if result.grid_files
+                    else "- (no BB1 grids — requires a 3-cycle library)"
+                ),
+                parent=self,
+            )
+
+        self.after(30, finish)
+
+    def _on_del_cycle_export_failed(self, message: str) -> None:
+        if not self._ui_is_active():
+            return
+        self._worker_thread = None
         try:
-            export_del_cycle_csv(self._del_cycle_tree_data, dest)
-            messagebox.showinfo("DEL-cycle tree", f"Saved to:\n{dest}", parent=self)
-        except Exception as exc:
-            messagebox.showerror("DEL-cycle tree", str(exc), parent=self)
+            self._loading_detail.configure(text=f"Export failed: {message}", text_color="red")
+            self._loading_percent.configure(text="")
+        except tk.TclError:
+            pass
+        self._hide_loading_page()
+        self._update_action_states()
+        messagebox.showerror("DEL-cycle tree", message, parent=self)
 
     def _on_export_product_prominence_csv(self) -> None:
         if self._pedigree_result is None or self._pedigree_result.product_prominence is None:
