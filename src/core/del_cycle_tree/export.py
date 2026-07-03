@@ -435,13 +435,7 @@ def _build_flagged_bb_rows(data: DelCycleTreeData) -> List[Dict[str, object]]:
                 row["total_products"],
             )
             couplings_by_bb1.setdefault(bb1, []).append(detail)
-            partner_detail = _format_coupling_detail(
-                bb1,
-                bb2,
-                row["pass_pct"],
-                row["total_products"],
-            )
-            couplings_by_bb2.setdefault(bb2, []).append(partner_detail)
+            couplings_by_bb2.setdefault(bb2, []).append(detail)
 
     flagged_keys: Set[Tuple[int, str]] = set()
     flagged_keys.update(cycle_1_hub)
@@ -661,6 +655,8 @@ def export_del_cycle_package(
     - ``del_cycle_summary_report.csv`` — flagged BB1/BB2 majority-failure patterns
     - ``del_cycle_flagged_building_blocks.csv`` — aggregated problematic residues with commentary
     - ``grids/del_grid_bb1_*.xlsx`` — one color-coded BB2×BB3 grid per BB1 (3-cycle only)
+
+    Field definitions and grid interpretation: **Help → DEL cycle bundle glossary** in the app.
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -686,7 +682,7 @@ def export_del_cycle_package(
         grids_dir,
         progress_callback=progress_callback,
         progress_start=0.32,
-        progress_end=0.95,
+        progress_end=0.92,
     )
     _report_progress(progress_callback, 1.0, "Export complete.")
 

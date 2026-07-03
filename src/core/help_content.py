@@ -28,7 +28,19 @@ HELP_TOPICS: Tuple[HelpTopic, ...] = (
     HelpTopic("integration", "Peak integration", "integration.md", ("peak_picking",)),
     HelpTopic("null_truncates", "Null truncates & BB columns", "null_truncates.md", ("lineage_analysis", "pedigree_analysis")),
     HelpTopic("lineage_analysis", "Lineage analysis", "lineage_analysis.md", ("null_truncates", "pedigree_analysis")),
-    HelpTopic("pedigree_analysis", "Library pedigree (split-tree)", "pedigree_analysis.md", ("null_truncates", "lineage_analysis")),
+    HelpTopic("pedigree_analysis", "Library pedigree (split-tree)", "pedigree_analysis.md", ("null_truncates", "lineage_analysis", "pedigree_split_tree", "del_cycle_bundle_glossary")),
+    HelpTopic(
+        "pedigree_split_tree",
+        "Pedigree split-tree figure",
+        "pedigree_split_tree_readme.md",
+        ("pedigree_analysis", "del_cycle_bundle_glossary"),
+    ),
+    HelpTopic(
+        "del_cycle_bundle_glossary",
+        "DEL cycle bundle glossary",
+        "del_cycle_bundle_glossary.md",
+        ("pedigree_analysis", "pedigree_split_tree"),
+    ),
     HelpTopic("signal_quality", "Library signal quality", "signal_quality.md", ("peak_picking", "glossary")),
     HelpTopic("glossary", "Glossary", "glossary.md", ()),
 )

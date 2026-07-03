@@ -157,6 +157,17 @@ def test_no_grids_for_two_cycle_library(tmp_path: Path) -> None:
     assert result.file_count == 4
 
 
+def test_del_cycle_bundle_glossary_help_topic() -> None:
+    from src.core.help_content import load_help_text
+
+    text = load_help_text("del_cycle_bundle_glossary")
+    assert "del_cycle_products.csv" in text
+    assert "rt_verified" in text
+    assert "grids/" in text
+    assert "green fill" in text
+    assert "del_cycle_flagged_building_blocks.csv" in text
+
+
 def test_flagged_building_blocks_csv(tmp_path: Path) -> None:
     data = _sample_data()
     result = export_del_cycle_package(data, tmp_path)

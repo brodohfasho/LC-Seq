@@ -40,4 +40,4 @@ Same as lineage: count channel, time unit, tolerance, α. Optional **isoform** f
 
 Index databases with 100k+ rows may take several minutes on first run while compounds are parsed.
 
-Use the **About this figure** panel on the Pedigree tab for a full explanation of the split-tree image, colours, and display controls (max tier, passed-only view, Graphviz).
+Use **Help** on the Pedigree tab for split-tree figure details, display controls, and the DEL cycle bundle glossary.

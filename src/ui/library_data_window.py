@@ -1388,13 +1388,14 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_export_prominence_btn.pack(side="left", padx=(0, 6))
         self._busy_sensitive_widgets.append(self._pedigree_export_prominence_btn)
 
-        ctk.CTkButton(
+        self._pedigree_help_btn = ctk.CTkButton(
             pedigree_actions,
-            text="About figure…",
-            width=120,
+            text="Help ▾",
+            width=100,
             fg_color="gray40",
-            command=self._on_pedigree_figure_readme,
-        ).pack(side="left", padx=(0, 6))
+            command=self._show_pedigree_help_menu,
+        )
+        self._pedigree_help_btn.pack(side="left", padx=(0, 6))
 
         pedigree_body = ctk.CTkFrame(pedigree_tab, fg_color="transparent")
         pedigree_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
@@ -4260,14 +4261,6 @@ class LibraryDataWindow(BaseWindow):
             parts.append(" · ".join(tier_bits))
         return "\n".join(parts)
 
-    @staticmethod
-    def _load_pedigree_split_tree_readme() -> str:
-        """Bundled scientist readme for the pedigree split-tree figure."""
-        path = Path(__file__).resolve().parent.parent / "help" / "pedigree_split_tree_readme.md"
-        if path.is_file():
-            return path.read_text(encoding="utf-8")
-        return "Pedigree split-tree readme not found."
-
     def _update_pedigree_graphviz_banner(self) -> None:
         if self._pedigree_graphviz_banner is None:
             return
@@ -5013,40 +5006,35 @@ class LibraryDataWindow(BaseWindow):
                 )
         return card
 
-    def _on_pedigree_figure_readme(self) -> None:
-        """Open bundled scientist readme for the split-tree figure."""
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Pedigree split-tree — about this figure")
-        dialog.geometry("640x520")
-        dialog.transient(self)
-        dialog.grab_set()
+    _PEDIGREE_HELP_MENU: Tuple[Tuple[str, str], ...] = (
+        ("pedigree_analysis", "Pedigree analysis"),
+        ("pedigree_split_tree", "Split-tree figure"),
+        ("del_cycle_bundle_glossary", "DEL cycle bundle glossary"),
+    )
 
-        dialog.grid_columnconfigure(0, weight=1)
-        dialog.grid_rowconfigure(0, weight=1)
+    def _show_pedigree_help_menu(self) -> None:
+        """Show pedigree-tab help topics in a dropdown menu."""
+        menu = tk.Menu(self, tearoff=0)
+        for topic_id, label in self._PEDIGREE_HELP_MENU:
+            menu.add_command(
+                label=label,
+                command=lambda tid=topic_id: self._open_pedigree_help_topic(tid),
+            )
+        btn = self._pedigree_help_btn
+        if btn is None:
+            return
+        try:
+            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
+        finally:
+            menu.grab_release()
 
-        text = ctk.CTkTextbox(
-            dialog,
-            wrap="word",
-            font=ctk.CTkFont(size=12),
-            activate_scrollbars=True,
-        )
-        text.grid(row=0, column=0, sticky="nsew", padx=16, pady=(16, 8))
-        text.insert("1.0", self._load_pedigree_split_tree_readme())
-        text.configure(state="disabled")
-
-        ctk.CTkButton(
-            dialog,
-            text="Close",
-            width=100,
-            command=dialog.destroy,
-        ).grid(row=1, column=0, pady=(0, 16))
-
-        dialog.after(100, dialog.focus_set)
-
-    def _on_pedigree_help(self) -> None:
+    def _open_pedigree_help_topic(self, topic_id: str) -> None:
         from src.ui.help_window import open_help_window
 
-        open_help_window(self, "pedigree_analysis")
+        open_help_window(self, topic_id)
+
+    def _on_pedigree_help(self) -> None:
+        self._open_pedigree_help_topic("pedigree_analysis")
 
     def _clear_pedigree_tree_plot(self) -> None:
         """Release matplotlib canvas/toolbar used for the interactive tree preview."""

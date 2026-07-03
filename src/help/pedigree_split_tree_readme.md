@@ -66,4 +66,4 @@ The **tier summary** cards and **pedigree CSV** always include all evaluated tie
 
 ## Related help
 
-Use **? Help** in the sidebar for analysis settings (α, tolerance, isoform) and export options.
+Use **Help** on the Pedigree tab for pedigree analysis settings and the DEL cycle bundle glossary.
