@@ -55,12 +55,27 @@ release/*.zip
 config/settings.json
 config/*.json
 !config/default_config.json.example
+
+# User spreadsheet data (not part of the app repo)
 data/
-# Bulk SQLite outputs (managed UI); keep folder via .gitkeep
-output/databases/*.db
-output/databases/*.db-wal
-output/databases/*.db-shm
+!data/.gitkeep
 *.xlsx
 *.xls
 *.csv
-!data/.gitkeep
+
+# LC-Seq runtime output (library scans, plots, metrics snapshots, reports, pedigree)
+output/library_data/
+output/pedigree_analysis/
+output/**/*.pkl
+output/**/*.png
+output/**/*.json
+output/**/*.pdf
+
+# Managed SQLite databases (keep folder placeholder only)
+output/databases/*.db
+output/databases/*.db-wal
+output/databases/*.db-shm
+!output/databases/.gitkeep
+
+# Ad-hoc exports at repo root
+_pedigree_analysis_out.json
