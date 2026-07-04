@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.core.data_processor import DataProcessor
 from src.core.data_store import DataStore
@@ -77,6 +77,45 @@ def load_all_compounds(
                 i,
                 total,
                 f"Loading library compounds… {i:,} / {total:,}",
+            )
+
+    return compounds
+
+
+def load_all_compound_metadata(
+    store: DataStore,
+    *,
+    metadata_columns: Optional[Sequence[str]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> List[Compound]:
+    """
+    Load metadata for every compound without parsing chromatogram points.
+
+    Much faster than :func:`load_all_compounds` on index databases.
+
+    When ``metadata_columns`` is provided, indexed SQL metadata columns are merged
+    into each compound's metadata dict (in addition to ``metadata_json``).
+    """
+    compound_ids = store.get_all_compound_ids()
+    total = len(compound_ids)
+    compounds: List[Compound] = []
+    chunk_size = 500
+
+    for start in range(0, total, chunk_size):
+        chunk = compound_ids[start : start + chunk_size]
+        meta_map = store.load_compound_metadata_map(
+            chunk,
+            metadata_columns=metadata_columns,
+        )
+        compounds.extend(meta_map.values())
+        processed = min(start + len(chunk), total)
+        if progress_callback is not None and (
+            processed % 5000 == 0 or processed == total
+        ):
+            progress_callback(
+                processed,
+                total,
+                f"Scanning metadata columns… {processed:,} / {total:,}",
             )
 
     return compounds

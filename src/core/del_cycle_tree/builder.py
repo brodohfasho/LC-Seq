@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 from src.core.del_cycle_tree.models import DelCycleRow, VerifiedSequence
 from src.core.del_cycle_tree.bb_index_scheme import normalize_bb_name
@@ -82,3 +82,19 @@ def _freeze_nested(node: Dict[str, Any]) -> Dict[str, Any]:
         else:
             out[key] = value
     return out
+
+
+def flatten_del_tree_rts(
+    tree: Dict[str, Any],
+    *,
+    prefix: Tuple[str, ...] = (),
+) -> Dict[Tuple[str, ...], float]:
+    """Collect every leaf RT in a nested DEL tree keyed by C→N position tuple."""
+    lookup: Dict[Tuple[str, ...], float] = {}
+    for name, child in tree.items():
+        path = prefix + (normalize_bb_name(name),)
+        if isinstance(child, dict):
+            lookup.update(flatten_del_tree_rts(child, prefix=path))
+        else:
+            lookup[path] = float(child)
+    return lookup

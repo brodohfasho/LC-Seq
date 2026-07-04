@@ -17,7 +17,6 @@ if not getattr(sys, "frozen", False):
 from src.core.app_paths import resolve_user_path
 
 import customtkinter as ctk
-
 from src.core.logging_config import setup_logging, get_logger
 from src.core.app_state import AppState
 from src.core.config_manager import ConfigManager

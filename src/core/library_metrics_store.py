@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from src.core.app_paths import get_application_root
 from src.core.database_library import sanitize_database_stem
@@ -20,6 +21,10 @@ from src.core.library_metrics import (
     MetricResult,
     PlotResult,
 )
+
+if TYPE_CHECKING:
+    from src.core.library_metrics import LibraryScanData
+    from src.models.spreadsheet_config import SpreadsheetConfig
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +60,18 @@ def session_scan_path(database_path: Path) -> Path:
     return directory / "scan.pkl"
 
 
+def stamp_scan_provenance(scan: "LibraryScanData", database_path: Path) -> None:
+    """Record which database produced a scan (for export/import validation)."""
+    scan.source_database_name = database_path.name
+    if scan.scanned_at is None:
+        scan.scanned_at = datetime.now(timezone.utc)
+
+
 def save_session_scan(scan: "LibraryScanData", database_path: Path) -> None:
     """Persist the parsed library scan for reuse within and across sessions."""
     import pickle
 
-    from src.core.library_metrics import LibraryScanData
-
+    stamp_scan_provenance(scan, database_path)
     path = session_scan_path(database_path)
     try:
         with path.open("wb") as handle:
@@ -68,6 +79,175 @@ def save_session_scan(scan: "LibraryScanData", database_path: Path) -> None:
         logger.info("Saved session library scan to %s", path)
     except OSError as exc:
         logger.warning("Could not save session library scan: %s", exc)
+
+
+def delete_session_scan(database_path: Path) -> bool:
+    """Remove the persisted session scan pickle for a database, if present."""
+    path = session_scan_path(database_path)
+    if not path.is_file():
+        return False
+    try:
+        path.unlink()
+        logger.info("Deleted session library scan at %s", path)
+        return True
+    except OSError as exc:
+        logger.warning("Could not delete session library scan at %s: %s", path, exc)
+        return False
+
+
+def list_session_scan_paths() -> List[Path]:
+    """Return every persisted session scan pickle under ``output/library_data/.session``."""
+    session_root = get_library_data_dir() / ".session"
+    if not session_root.is_dir():
+        return []
+    return sorted(path for path in session_root.glob("*/scan.pkl") if path.is_file())
+
+
+def any_session_scan_exists() -> bool:
+    """True when at least one session scan pickle exists on disk."""
+    return bool(list_session_scan_paths())
+
+
+def delete_all_session_scans() -> int:
+    """
+    Remove every persisted session scan pickle.
+
+    Returns:
+        Number of scan files successfully deleted.
+    """
+    deleted = 0
+    for path in list_session_scan_paths():
+        try:
+            path.unlink()
+            deleted += 1
+            logger.info("Deleted session library scan at %s", path)
+        except OSError as exc:
+            logger.warning("Could not delete session library scan at %s: %s", path, exc)
+    return deleted
+
+
+def session_scan_exists(database_path: Path) -> bool:
+    """True when a session scan pickle exists on disk for this database."""
+    return session_scan_path(database_path).is_file()
+
+
+def _sanitize_filename_token(value: str, *, max_len: int = 48) -> str:
+    import re
+
+    token = re.sub(r"[^\w\-]+", "_", str(value).strip())
+    token = token.strip("_")
+    if not token:
+        return "unknown"
+    return token[:max_len]
+
+
+def suggested_scan_export_filename(
+    database_path: Path,
+    scan: "LibraryScanData",
+) -> str:
+    """Build a descriptive filename for an exported library scan pickle."""
+    stem = sanitize_database_stem(database_path.stem)
+    channel_tokens = [
+        _sanitize_filename_token(name, max_len=24) for name in scan.channel_names[:3]
+    ]
+    channel_part = "-".join(channel_tokens) if channel_tokens else "no_channels"
+    if len(scan.channel_names) > 3:
+        channel_part += f"_plus{len(scan.channel_names) - 3}"
+    n_entries = scan.entries_used or len(scan.entries)
+    if scan.scanned_at is not None:
+        ts = scan.scanned_at.astimezone(timezone.utc).strftime("%Y%m%d")
+    else:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d")
+    return f"{stem}_library_scan_{channel_part}_{n_entries}entries_{ts}.pkl"
+
+
+def export_scan_pickle(scan: "LibraryScanData", dest_path: Path) -> None:
+    """Write a library scan to an external pickle path."""
+    import pickle
+
+    dest_path = Path(dest_path)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with dest_path.open("wb") as handle:
+        pickle.dump(scan, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    logger.info("Exported library scan to %s", dest_path)
+
+
+def load_scan_pickle(source_path: Path) -> "LibraryScanData":
+    """Load a library scan pickle from any path."""
+    import pickle
+
+    from src.core.library_metrics import LibraryScanData
+
+    source_path = Path(source_path)
+    with source_path.open("rb") as handle:
+        scan = pickle.load(handle)
+    if not isinstance(scan, LibraryScanData):
+        raise ValueError("File is not a valid LC-Seq library scan.")
+    return scan
+
+
+@dataclass
+class ScanValidationReport:
+    """Outcome of validating an imported scan against the active library."""
+
+    ok: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+def validate_scan_for_database(
+    scan: "LibraryScanData",
+    *,
+    database_path: Path,
+    config: "SpreadsheetConfig",
+    compound_count: int,
+) -> ScanValidationReport:
+    """
+    Check that a scan can be used with the active database and spreadsheet config.
+
+    Channel names must match configured count columns. Entry counts and database
+    provenance produce warnings when they look inconsistent.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    n_entries = len(scan.entries) or scan.entries_used
+    if n_entries <= 0:
+        errors.append("Scan contains no parsed entries.")
+
+    if not scan.channel_names:
+        errors.append("Scan has no count channels.")
+    else:
+        config_channels = set(config.count_names)
+        unknown = [name for name in scan.channel_names if name not in config_channels]
+        if unknown:
+            errors.append(
+                "Scan channels are not configured in the active spreadsheet: "
+                f"{', '.join(unknown)}. "
+                f"Configured count channels: {', '.join(config.count_names) or 'none'}."
+            )
+
+    if compound_count > 0 and n_entries > 0:
+        ratio = n_entries / compound_count
+        if ratio < 0.5:
+            warnings.append(
+                f"Scan has {n_entries:,} entries but the active database has "
+                f"{compound_count:,} compounds ({ratio:.0%}). "
+                "The scan may belong to a different library."
+            )
+        elif ratio > 1.05:
+            warnings.append(
+                f"Scan has {n_entries:,} entries, more than the {compound_count:,} "
+                "compounds in the active database."
+            )
+
+    if scan.source_database_name and scan.source_database_name != database_path.name:
+        warnings.append(
+            f"Scan was saved from database “{scan.source_database_name}” but the active "
+            f"database is “{database_path.name}”."
+        )
+
+    return ScanValidationReport(ok=not errors, errors=errors, warnings=warnings)
 
 
 def load_session_scan(database_path: Path) -> Optional["LibraryScanData"]:

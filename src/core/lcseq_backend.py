@@ -135,6 +135,37 @@ class PythonLcseqBackend:
         return BaselineEstimate(mu=b.mu, sigma=b.sigma, dispersion_r=b.dispersion_r)
 
 
+def select_direct_pick_product_rt(
+    peaks: Sequence[PickedPeak],
+    settings: AnalysisSettings,
+    *,
+    trace_max_intensity: float,
+) -> Optional[float]:
+    """
+    Choose the product RT for Direct Pick assignment (CalculateRTs.ipynb rule).
+
+    Legacy notebooks fit Gaussians to all significant peaks, then assign the
+    cyclized product as the **latest** retention time among accepted fits
+    (``best_mean`` loop in ``old-school/CalculateRTs.ipynb``).
+    """
+    if not peaks:
+        return None
+
+    candidates: Sequence[PickedPeak] = peaks
+    if settings.uses_old_school_peak_picker:
+        factor, _, _, minimum_rt = settings.gaussian_picker_params()
+        height_cutoff = trace_max_intensity * factor
+        candidates = [
+            p
+            for p in peaks
+            if p.rt >= minimum_rt and p.intensity >= height_cutoff
+        ]
+
+    if not candidates:
+        return None
+    return float(max(candidates, key=lambda p: p.rt).rt)
+
+
 def find_peaks_for_settings(
     rt: Sequence[float],
     intensity: Sequence[float],

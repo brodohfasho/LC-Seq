@@ -33,6 +33,28 @@ class VerifiedSequence:
 
 
 @dataclass(frozen=True)
+class CompoundRtAssignment:
+    """Assigned retention time for one library compound row."""
+
+    compound_id: str
+    assigned_rt: float
+    rt_source: str
+    null_rt_verified: Optional[bool] = None
+
+
+@dataclass(frozen=True)
+class MetadataRtColumnInfo:
+    """One registered spreadsheet metadata column with RT and/or verification values."""
+
+    column_name: str
+    n_numeric_values: int
+    n_compounds_scanned: int
+    n_with_bb_positions: int = 0
+    n_verified_values: int = 0
+    n_verified_with_bb_positions: int = 0
+
+
+@dataclass(frozen=True)
 class DelCycleRtResolution:
     """How retention times were resolved for DEL-cycle tree rows."""
 

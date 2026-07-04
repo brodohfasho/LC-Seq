@@ -170,7 +170,7 @@ class MainScreen(ctk.CTk):
 
         self.library_data_button = ctk.CTkButton(
             primary_row,
-            text="Library Data",
+            text="Library Analysis",
             font=ctk.CTkFont(size=16, weight="bold"),
             height=60,
             command=self._on_enter_library_data,
@@ -565,11 +565,11 @@ class MainScreen(ctk.CTk):
         )
 
     def _on_enter_library_data(self) -> None:
-        """Open Library Data dashboard."""
+        """Open Library Analysis dashboard."""
         if not self.app_state.can_access_library_data():
-            logger.warning("Attempted to open Library Data when not ready")
+            logger.warning("Attempted to open Library Analysis when not ready")
             return
-        logger.info("Opening Library Data")
+        logger.info("Opening Library Analysis")
         if self._library_data_window is not None:
             try:
                 self._library_data_window.lift()

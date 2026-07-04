@@ -11,6 +11,11 @@ from typing import Optional, Tuple, List
 logger = logging.getLogger(__name__)
 
 
+def _excel_engine(file_path: Path) -> str:
+    """Return the pandas Excel engine for a workbook path."""
+    return "openpyxl" if file_path.suffix.lower() == ".xlsx" else "xlrd"
+
+
 class SpreadsheetLoader:
     """
     Handles loading and validation of spreadsheet files.
@@ -76,13 +81,14 @@ class SpreadsheetLoader:
                 self.current_sheet_name = None
             elif file_path_obj.suffix.lower() in ['.xlsx', '.xls']:
                 # Handle Excel files
+                engine = _excel_engine(file_path_obj)
                 if sheet_name:
-                    df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl' if file_path_obj.suffix == '.xlsx' else 'xlrd')
+                    df = pd.read_excel(file_path, sheet_name=sheet_name, engine=engine)
                 else:
                     # Load first sheet by default
-                    excel_file = pd.ExcelFile(file_path, engine='openpyxl' if file_path_obj.suffix == '.xlsx' else 'xlrd')
+                    excel_file = pd.ExcelFile(file_path, engine=engine)
                     sheet_name = excel_file.sheet_names[0]
-                    df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl' if file_path_obj.suffix == '.xlsx' else 'xlrd')
+                    df = pd.read_excel(file_path, sheet_name=sheet_name, engine=engine)
                 self.current_sheet_name = sheet_name
             else:
                 error = f"Unexpected file type: {file_path_obj.suffix}"
@@ -120,23 +126,31 @@ class SpreadsheetLoader:
     def get_available_sheets(self, file_path: str) -> Optional[List[str]]:
         """
         Get list of available sheet names for an Excel file.
-        
+
+        Uses a read-only openpyxl pass for ``.xlsx`` files so sheet detection
+        does not parse the full workbook into memory.
+
         Args:
             file_path: Path to Excel file
-            
+
         Returns:
             List of sheet names, or None if not an Excel file or error occurred
         """
         file_path_obj = Path(file_path)
-        
+
         if file_path_obj.suffix.lower() not in ['.xlsx', '.xls']:
             return None
-        
+
         try:
-            excel_file = pd.ExcelFile(
-                file_path,
-                engine='openpyxl' if file_path_obj.suffix == '.xlsx' else 'xlrd'
-            )
+            if file_path_obj.suffix.lower() == '.xlsx':
+                from openpyxl import load_workbook
+
+                workbook = load_workbook(file_path, read_only=True, data_only=True)
+                try:
+                    return list(workbook.sheetnames)
+                finally:
+                    workbook.close()
+            excel_file = pd.ExcelFile(file_path, engine='xlrd')
             return excel_file.sheet_names
         except Exception as e:
             logger.error(f"Error reading Excel sheets: {e}")

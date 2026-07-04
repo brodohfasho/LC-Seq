@@ -15,6 +15,44 @@ from src.core.del_cycle_tree.notebook_analyzer import (
 )
 
 
+def test_sequence_passes_honors_verify_success_for_metadata_rt_source() -> None:
+    """Metadata split-trees must use null verify success for pass/fail, not mere presence."""
+    from src.core.del_cycle_tree.models import VerifiedSequence
+    from src.core.del_cycle_tree.render import COLOR_MODE_NOTEBOOK, _sequence_passes
+
+    data = DelCycleTreeData(
+        library_cycle_count=3,
+        null_token="AgxNull",
+        rt_threshold=0.5,
+        tree={},
+        pruned_tree={},
+        verified_sequences={
+            ("A", "B", "C"): VerifiedSequence(
+                positions=("A", "B", "C"),
+                rt=12.1,
+                success=False,
+            ),
+            ("A", "B", "D"): VerifiedSequence(
+                positions=("A", "B", "D"),
+                rt=15.0,
+                success=True,
+            ),
+        },
+        full_null_rt=None,
+        rt_source="metadata",
+    )
+    assert not _sequence_passes(
+        data,
+        ("A", "B", "C"),
+        color_mode=COLOR_MODE_NOTEBOOK,
+    )
+    assert _sequence_passes(
+        data,
+        ("A", "B", "D"),
+        color_mode=COLOR_MODE_NOTEBOOK,
+    )
+
+
 def test_verify_sequence_rejects_near_truncation_rt() -> None:
     null = "AgxNull"
     truncated = {
@@ -329,3 +367,232 @@ def test_pedigree_pruned_tree_uses_pass_fail() -> None:
     }
     assert "D" in prune_tree(tree, verified)["A"]["B"]
     assert "D" not in prune_tree(tree, pedigree_verified)["A"]["B"]
+
+
+def test_rt_from_metadata_column_skips_empty_and_invalid_values() -> None:
+    import math
+
+    from src.core.del_cycle_tree.service import rt_from_metadata_column
+    from src.models.compound import Compound
+
+    compound = Compound(
+        compound_id="C1",
+        metadata={
+            "rt_empty": "",
+            "rt_space": "   ",
+            "rt_na": "N/A",
+            "rt_nan_str": "nan",
+            "rt_nan_float": float("nan"),
+            "rt_good_str": " 12.5 ",
+            "rt_good_float": 8.0,
+        },
+    )
+    assert rt_from_metadata_column(compound, "rt_empty") is None
+    assert rt_from_metadata_column(compound, "rt_space") is None
+    assert rt_from_metadata_column(compound, "rt_na") is None
+    assert rt_from_metadata_column(compound, "rt_nan_str") is None
+    assert rt_from_metadata_column(compound, "rt_nan_float") is None
+    assert rt_from_metadata_column(compound, "rt_missing") is None
+    assert rt_from_metadata_column(compound, "rt_good_str") == 12.5
+    assert rt_from_metadata_column(compound, "rt_good_float") == 8.0
+    assert not math.isnan(rt_from_metadata_column(compound, "rt_good_float") or 0.0)
+
+
+def test_build_del_cycle_rows_from_metadata_skips_empty_rt() -> None:
+    from src.core.del_cycle_tree.service import build_del_cycle_rows_from_metadata_column
+    from src.models.compound import Compound
+    from src.models.spreadsheet_config import SpreadsheetConfig
+
+    null = "AgxNull"
+    config = SpreadsheetConfig(
+        compound_id_column="id",
+        chromatographic_data_column="data",
+        delimiters=[","],
+        time_column_index=0,
+        count_column_indices=[1],
+        count_names=["Count"],
+        library_cycle_count=3,
+        bb_position_columns=["BB1", "BB2", "BB3", ""],
+        null_token=null,
+        selected_metadata_columns=["assigned_rt"],
+    )
+    compounds = [
+        Compound(
+            compound_id="with_rt",
+            metadata={"BB1": "A", "BB2": "B", "BB3": "C", "assigned_rt": 15.0},
+        ),
+        Compound(
+            compound_id="empty_rt",
+            metadata={"BB1": "A", "BB2": "B", "BB3": "D"},
+        ),
+        Compound(
+            compound_id="blank_rt",
+            metadata={"BB1": "A", "BB2": "B", "BB3": "E", "assigned_rt": ""},
+        ),
+    ]
+    rows, resolution = build_del_cycle_rows_from_metadata_column(
+        compounds,
+        config,
+        "assigned_rt",
+    )
+    assert len(rows) == 1
+    assert rows[0].positions == ("A", "B", "C")
+    assert rows[0].rt == 15.0
+    assert resolution.rt_source == "metadata"
+    assert resolution.n_rt_from_metadata == 1
+
+
+def test_build_del_cycle_rows_skips_metadata_when_disabled() -> None:
+    import numpy as np
+
+    from src.core.del_cycle_tree.service import build_del_cycle_rows
+    from src.models.analysis_settings import AnalysisSettings
+    from src.models.chromatographic_data_point import ChromatographicDataPoint
+    from src.models.compound import Compound
+    from src.models.spreadsheet_config import SpreadsheetConfig
+
+    null = "AgxNull"
+    config = SpreadsheetConfig(
+        compound_id_column="id",
+        chromatographic_data_column="data",
+        delimiters=[","],
+        time_column_index=0,
+        count_column_indices=[1],
+        count_names=["Count"],
+        library_cycle_count=3,
+        bb_position_columns=["BB1", "BB2", "BB3", ""],
+        null_token=null,
+        selected_metadata_columns=["Cyclized RT (min)"],
+        analysis_time_unit="minutes",
+    )
+    times = np.linspace(0.0, 30.0, 60)
+    counts = np.exp(-((times - 15.0) ** 2) / 4.0)
+    points = [
+        ChromatographicDataPoint(time=float(t), counts={"Count": float(c)})
+        for t, c in zip(times, counts)
+    ]
+    compound = Compound(
+        compound_id="C1",
+        metadata={
+            "BB1": "A",
+            "BB2": "B",
+            "BB3": "C",
+            "Cyclized RT (min)": 99.0,
+        },
+        data_points=points,
+    )
+    settings = AnalysisSettings(
+        count_channel="Count",
+        time_unit="minutes",
+        peak_picking_algorithm="old_school",
+    )
+    rows_default, resolution_default = build_del_cycle_rows(
+        [compound],
+        config,
+        "Count",
+        settings,
+        "minutes",
+    )
+    assert len(rows_default) == 1
+    assert rows_default[0].rt == 99.0
+    assert resolution_default.n_rt_from_metadata == 1
+
+    rows_fresh, resolution_fresh = build_del_cycle_rows(
+        [compound],
+        config,
+        "Count",
+        settings,
+        "minutes",
+        use_metadata_rt=False,
+    )
+    assert len(rows_fresh) == 1
+    assert abs(rows_fresh[0].rt - 15.0) < 1.0
+    assert resolution_fresh.n_rt_from_metadata == 0
+    assert resolution_fresh.n_rt_from_peak_pick == 1
+
+
+def test_validate_registered_metadata_columns_counts_verification_values() -> None:
+    from src.core.del_cycle_tree.service import validate_registered_metadata_columns
+    from src.models.compound import Compound
+    from src.models.spreadsheet_config import SpreadsheetConfig
+
+    config = SpreadsheetConfig(
+        compound_id_column="Name",
+        chromatographic_data_column="Chromatogram",
+        delimiters=[","],
+        time_column_index=0,
+        count_column_indices=[1],
+        count_names=["Count"],
+        library_cycle_count=3,
+        bb_position_columns=["BB1", "BB2", "BB3", ""],
+        null_token="AgxNull",
+        selected_metadata_columns=["assigned_rt", "verify_status"],
+    )
+    compounds = [
+        Compound(
+            compound_id="ProdA",
+            metadata={
+                "BB1": "A",
+                "BB2": "B",
+                "BB3": "C",
+                "assigned_rt": 12.0,
+                "verify_status": "TRUE",
+            },
+        ),
+        Compound(
+            compound_id="ProdB",
+            metadata={
+                "BB1": "A",
+                "BB2": "B",
+                "BB3": "D",
+                "assigned_rt": 15.0,
+                "verify_status": "FALSE",
+            },
+        ),
+    ]
+    validated = validate_registered_metadata_columns(compounds, config)
+    rt_info = next(info for info in validated if info.column_name == "assigned_rt")
+    verify_info = next(info for info in validated if info.column_name == "verify_status")
+    assert rt_info.n_numeric_values == 2
+    assert verify_info.n_verified_values == 2
+    assert verify_info.n_verified_with_bb_positions == 2
+
+
+def test_metadata_tree_uses_user_verified_column_override() -> None:
+    from src.core.del_cycle_tree.service import build_del_cycle_tree_from_metadata_column
+    from src.models.compound import Compound
+    from src.models.spreadsheet_config import SpreadsheetConfig
+
+    config = SpreadsheetConfig(
+        compound_id_column="Name",
+        chromatographic_data_column="Chromatogram",
+        delimiters=[","],
+        time_column_index=0,
+        count_column_indices=[1],
+        count_names=["Count"],
+        library_cycle_count=3,
+        bb_position_columns=["BB1", "BB2", "BB3", ""],
+        null_token="AgxNull",
+        selected_metadata_columns=["assigned_rt", "custom_verify"],
+    )
+    compounds = [
+        Compound(
+            compound_id="ProdA",
+            metadata={
+                "BB1": "A",
+                "BB2": "B",
+                "BB3": "C",
+                "assigned_rt": 12.0,
+                "custom_verify": "FALSE",
+            },
+        ),
+    ]
+    data = build_del_cycle_tree_from_metadata_column(
+        compounds,
+        config,
+        "assigned_rt",
+        verified_column="custom_verify",
+        rt_threshold=0.5,
+    )
+    assert data.verified_sequences[("A", "B", "C")].success is False
+

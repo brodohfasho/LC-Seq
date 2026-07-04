@@ -21,6 +21,17 @@ LCSEQ_META_DB_KIND = "db_kind"
 DB_KIND_FULL = "full"
 DB_KIND_INDEX = "index"
 
+_BASE_COMPOUND_COLUMNS = frozenset(
+    {
+        "compound_id",
+        "metadata_json",
+        "data_point_count",
+        "primary_compound_id",
+        "compound_variant",
+        "raw_chromatographic_data",
+    }
+)
+
 
 class DataStore:
     """
@@ -233,6 +244,40 @@ class DataStore:
         except Exception as e:
             logger.error("get_raw_chromatogram: %s", e, exc_info=True)
             return None
+
+    def load_raw_chromatogram_map(
+        self,
+        compound_ids: Sequence[str],
+    ) -> Dict[str, Optional[str]]:
+        """Batch-fetch raw chromatogram cell text for many compounds (index DB export)."""
+        if not compound_ids:
+            return {}
+        out: Dict[str, Optional[str]] = {}
+        chunk_size = 500
+        ids = list(compound_ids)
+        try:
+            cursor = self.conn.cursor()
+            for start in range(0, len(ids), chunk_size):
+                chunk = ids[start : start + chunk_size]
+                placeholders = ", ".join(["?"] * len(chunk))
+                cursor.execute(
+                    f"""
+                    SELECT compound_id, raw_chromatographic_data
+                    FROM compounds
+                    WHERE compound_id IN ({placeholders})
+                    """,
+                    chunk,
+                )
+                for row in cursor.fetchall():
+                    raw_cell = row["raw_chromatographic_data"]
+                    if raw_cell is None:
+                        out[str(row["compound_id"])] = None
+                        continue
+                    text = str(raw_cell).strip()
+                    out[str(row["compound_id"])] = text if text else None
+        except Exception as e:
+            logger.error("load_raw_chromatogram_map failed: %s", e, exc_info=True)
+        return out
 
     def add_index_compounds_batch(
         self,
@@ -636,14 +681,46 @@ class DataStore:
         return added
     
     @staticmethod
+    def _merge_row_metadata_columns(
+        metadata: Dict[str, Any],
+        row: sqlite3.Row,
+        metadata_columns: Sequence[str],
+    ) -> Dict[str, Any]:
+        """Fill missing metadata keys from indexed SQL metadata columns."""
+        merged = dict(metadata)
+        for logical in metadata_columns:
+            column = str(logical).strip()
+            if not column:
+                continue
+            safe = DataStore._sanitize_column_name(column)
+            if safe not in row.keys():
+                continue
+            raw = row[safe]
+            if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+                continue
+            existing = merged.get(column)
+            if existing is None or (
+                isinstance(existing, str) and not str(existing).strip()
+            ):
+                merged[column] = raw
+        return merged
+
+    @staticmethod
     def _compound_from_row(
         row: sqlite3.Row,
         *,
         data_points: Optional[List[ChromatographicDataPoint]] = None,
+        metadata_columns: Optional[Sequence[str]] = None,
     ) -> Compound:
         """Build a ``Compound`` from a ``compounds`` table row."""
         compound_id = str(row["compound_id"])
         metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        if metadata_columns:
+            metadata = DataStore._merge_row_metadata_columns(
+                metadata,
+                row,
+                metadata_columns,
+            )
         keys = row.keys()
         primary_db = (
             row["primary_compound_id"] if "primary_compound_id" in keys else None
@@ -692,7 +769,12 @@ class DataStore:
             for time, counts in sorted(data_points_dict.items())
         ]
 
-    def get_compound_metadata(self, compound_id: str) -> Optional[Compound]:
+    def get_compound_metadata(
+        self,
+        compound_id: str,
+        *,
+        metadata_columns: Optional[Sequence[str]] = None,
+    ) -> Optional[Compound]:
         """Return compound identity and metadata without loading chromatogram points."""
         try:
             cursor = self.conn.cursor()
@@ -703,7 +785,10 @@ class DataStore:
             row = cursor.fetchone()
             if not row:
                 return None
-            return self._compound_from_row(row)
+            return self._compound_from_row(
+                row,
+                metadata_columns=metadata_columns,
+            )
         except Exception as e:
             logger.error("Error getting compound metadata %s: %s", compound_id, e, exc_info=True)
             return None
@@ -713,6 +798,7 @@ class DataStore:
         compound_ids: Sequence[str],
         *,
         chunk_size: int = 500,
+        metadata_columns: Optional[Sequence[str]] = None,
     ) -> Dict[str, Compound]:
         """Load metadata-only compounds for many IDs (no ``data_points`` query)."""
         if not compound_ids:
@@ -728,7 +814,10 @@ class DataStore:
                 chunk,
             )
             for row in cursor.fetchall():
-                compound = self._compound_from_row(row)
+                compound = self._compound_from_row(
+                    row,
+                    metadata_columns=metadata_columns,
+                )
                 out[str(compound.compound_id)] = compound
         return out
 

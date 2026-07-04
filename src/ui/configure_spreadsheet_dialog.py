@@ -6,8 +6,9 @@ Dialog for configuring spreadsheet parsing settings.
 import customtkinter as ctk
 import logging
 import random
+import threading
 import pandas as pd
-from typing import Optional, Callable, List, Dict
+from typing import Callable, Dict, List, Optional, Tuple
 
 from src.ui.base_window import BaseWindow
 from src.core.spreadsheet_loader import SpreadsheetLoader
@@ -22,6 +23,10 @@ from src.models.spreadsheet_config import SpreadsheetConfig
 from src.utils.data_parser import DataParser
 
 logger = logging.getLogger(__name__)
+
+_WIZARD_DIALOG_WIDTH = 1180
+_WIZARD_DIALOG_HEIGHT = 820
+_WIZARD_TEXT_WRAP = 1100
 
 
 class ConfigureSpreadsheetDialog(BaseWindow):
@@ -67,10 +72,12 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self.on_success = on_success
         self.on_default_preset_applied = on_default_preset_applied
         
-        self.geometry("1020x820")
-        self.center_window(1020, 820)
+        self.geometry(f"{_WIZARD_DIALOG_WIDTH}x{_WIZARD_DIALOG_HEIGHT}")
+        self.center_window(_WIZARD_DIALOG_WIDTH, _WIZARD_DIALOG_HEIGHT)
         self.resizable(True, True)
-        self.minsize(720, 580)
+        self.minsize(860, 580)
+        self._sample_loading = False
+        self._sample_worker_thread: Optional[threading.Thread] = None
         
         # Column selections
         self.selected_compound_id_column: Optional[str] = None
@@ -125,6 +132,18 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._create_widgets()
         
         logger.info("Configure spreadsheet dialog initialized")
+
+    @staticmethod
+    def _wizard_section_font() -> ctk.CTkFont:
+        return ctk.CTkFont(size=13, weight="bold")
+
+    @staticmethod
+    def _wizard_hint_font() -> ctk.CTkFont:
+        return ctk.CTkFont(size=11)
+
+    @staticmethod
+    def _wizard_mono_font() -> ctk.CTkFont:
+        return ctk.CTkFont(family="Consolas", size=11)
     
     def _load_existing_config(self) -> None:
         """Load existing configuration if available and validate against spreadsheet."""
@@ -198,10 +217,12 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             font=ctk.CTkFont(size=11),
             text_color="gray",
             anchor="w",
+            wraplength=_WIZARD_TEXT_WRAP,
+            justify="left",
         )
         self.wizard_hint.grid(row=0, column=0, padx=16, pady=(12, 4), sticky="ew")
         self.tabview = ctk.CTkTabview(
-            self, height=540, command=self._on_wizard_tabview_changed
+            self, height=560, command=self._on_wizard_tabview_changed
         )
         self.tabview.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
         self._tab_labels = [
@@ -230,7 +251,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self,
             text="",
             font=ctk.CTkFont(size=11),
-            wraplength=820,
+            wraplength=_WIZARD_TEXT_WRAP,
             justify="left",
         )
         self.validation_label.grid(row=2, column=0, padx=16, pady=(6, 4), sticky="ew")
@@ -245,6 +266,15 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.nav_frame, text="Next", width=90, command=self._wizard_tab_next
         )
         self.next_tab_btn.grid(row=0, column=1, padx=4, pady=4, sticky="w")
+        self.accept_button = ctk.CTkButton(
+            self.nav_frame,
+            text="Accept configuration",
+            width=180,
+            command=self._on_accept_configuration,
+            state="disabled",
+        )
+        self.accept_button.grid(row=0, column=1, padx=4, pady=4, sticky="w")
+        self.accept_button.grid_remove()
         self.load_preset_button = ctk.CTkButton(
             self.nav_frame,
             text="Load preset",
@@ -274,176 +304,345 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._apply_delimiter_entries_from_list(self.delimiters)
         self._validate_selections()
 
+    def _wizard_button_theme(self) -> Tuple[dict, dict]:
+        theme = ctk.ThemeManager.theme["CTkButton"]
+        normal = {
+            "font": ctk.CTkFont(size=13),
+            "fg_color": theme["fg_color"],
+            "hover_color": theme["hover_color"],
+        }
+        emphasis = {
+            "font": ctk.CTkFont(size=13, weight="bold"),
+            "fg_color": "#B45309",
+            "hover_color": "#92400E",
+        }
+        return normal, emphasis
+
+    def _set_wizard_button_emphasis(self, button: Optional[ctk.CTkButton], emphasized: bool) -> None:
+        if button is None or not button.winfo_exists():
+            return
+        normal, emphasis = self._wizard_button_theme()
+        button.configure(**(emphasis if emphasized else normal))
+
+    def _columns_selection_ready(self) -> bool:
+        return bool(
+            self.selected_compound_id_column
+            and self.selected_chromatographic_data_column
+            and self.selected_compound_id_column != self.selected_chromatographic_data_column
+            and self.selected_compound_id_column in self.available_columns
+            and self.selected_chromatographic_data_column in self.available_columns
+        )
+
+    def _update_wizard_action_highlights(self) -> None:
+        """Draw attention to the validation action or Next/Accept for the active step."""
+        if not hasattr(self, "next_tab_btn"):
+            return
+
+        for button in (
+            getattr(self, "show_column_sample_button", None),
+            getattr(self, "test_parse_button", None),
+            getattr(self, "test_assignments_button", None),
+            getattr(self, "validate_bb_index_button", None),
+            self.next_tab_btn,
+            getattr(self, "accept_button", None),
+        ):
+            self._set_wizard_button_emphasis(button, False)
+
+        tab_i = self._wizard_tab_index()
+        if tab_i == 0:
+            if self._columns_selection_ready() and not self._columns_sample_confirmed:
+                self._set_wizard_button_emphasis(self.show_column_sample_button, True)
+            elif self._columns_sample_confirmed:
+                self._set_wizard_button_emphasis(self.next_tab_btn, True)
+        elif tab_i == 1:
+            if not self._delimiter_parse_confirmed:
+                self._set_wizard_button_emphasis(self.test_parse_button, True)
+            else:
+                self._set_wizard_button_emphasis(self.next_tab_btn, True)
+        elif tab_i == 2:
+            if not self._data_assignments_confirmed:
+                self._set_wizard_button_emphasis(self.test_assignments_button, True)
+            else:
+                self._set_wizard_button_emphasis(self.next_tab_btn, True)
+        elif tab_i == 3:
+            self._set_wizard_button_emphasis(self.next_tab_btn, True)
+        elif tab_i == 4:
+            if self.bb_index_map and not self.bb_index_validated:
+                self._set_wizard_button_emphasis(self.validate_bb_index_button, True)
+            if str(self.accept_button.cget("state")) == "normal":
+                self._set_wizard_button_emphasis(self.accept_button, True)
+
+        self._update_wizard_nav_buttons()
+
+    def _update_wizard_nav_buttons(self) -> None:
+        """On the last tab, swap Next for Accept configuration in the nav bar."""
+        if not hasattr(self, "next_tab_btn") or not hasattr(self, "accept_button"):
+            return
+        on_last_tab = self._wizard_tab_index() == len(self._tab_names) - 1
+        if on_last_tab:
+            self.next_tab_btn.grid_remove()
+            self.accept_button.grid(row=0, column=1, padx=4, pady=4, sticky="w")
+        else:
+            self.accept_button.grid_remove()
+            self.next_tab_btn.grid(row=0, column=1, padx=4, pady=4, sticky="w")
+
     def _populate_tab_columns(self, parent: ctk.CTkFrame) -> None:
-        row = 0
-        # Instructions
+        """Step 1: column mapping panel + sample preview panel."""
+        parent.grid_columnconfigure(0, weight=0, minsize=420)
+        parent.grid_columnconfigure(1, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+
         instructions = ctk.CTkLabel(
             parent,
-            text=(
-                "Step 1: Choose Compound ID and Chromatographic Data columns, then click "
-                "Show sample data. Values are always taken from the same row for both columns."
-            ),
+            text="Step 1: Map spreadsheet columns to compound identity and chromatographic data.",
             font=ctk.CTkFont(size=14, weight="bold"),
-            wraplength=820,
+            wraplength=_WIZARD_TEXT_WRAP,
             justify="left",
             anchor="w",
         )
-        instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(20, 10), sticky="ew")
-        row += 1
-        
-        # Compound ID column selection
-        compound_frame = ctk.CTkFrame(parent)
-        compound_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        row += 1
-        compound_frame.grid_columnconfigure(1, weight=1)
-        
-        compound_label = ctk.CTkLabel(
-            compound_frame,
-            text="Compound ID Column:",
-            font=ctk.CTkFont(size=12)
+        instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 8), sticky="ew")
+
+        mapping_col = ctk.CTkFrame(parent)
+        mapping_col.grid(row=1, column=0, padx=(16, 6), pady=(0, 12), sticky="nsew")
+        mapping_col.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            mapping_col,
+            text="1. Column mapping",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            mapping_col,
+            text=(
+                "Required columns must differ. Variant is optional for multi-version compounds "
+                "(e.g. linear vs cyclized)."
+            ),
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=380,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 10), sticky="ew")
+
+        fields = ctk.CTkFrame(mapping_col, fg_color="transparent")
+        fields.grid(row=2, column=0, padx=8, pady=(0, 12), sticky="ew")
+        fields.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(fields, text="Compound ID:", font=ctk.CTkFont(size=12)).grid(
+            row=0, column=0, padx=8, pady=(8, 4), sticky="w"
         )
-        compound_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
         self.compound_var = ctk.StringVar()
         if self.selected_compound_id_column:
             self.compound_var.set(self.selected_compound_id_column)
-        
         self.compound_dropdown = ctk.CTkComboBox(
-            compound_frame,
+            fields,
             variable=self.compound_var,
             values=self.available_columns,
             command=self._on_compound_id_selected,
-            state="readonly"
+            state="readonly",
         )
-        self.compound_dropdown.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        
-        # Selected compound ID display
+        self.compound_dropdown.grid(row=0, column=1, padx=8, pady=(8, 2), sticky="ew")
         self.compound_selected_label = ctk.CTkLabel(
-            compound_frame,
-            text="",
-            font=ctk.CTkFont(size=11),
-            text_color="gray"
+            fields, text="", font=self._wizard_hint_font(), text_color="gray"
         )
-        self.compound_selected_label.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
+        self.compound_selected_label.grid(
+            row=1, column=0, columnspan=2, padx=8, pady=(0, 8), sticky="w"
+        )
         self._update_compound_display()
-        
-        # Chromatographic Data column selection
-        data_frame = ctk.CTkFrame(parent)
-        data_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        row += 1
-        data_frame.grid_columnconfigure(1, weight=1)
-        
-        data_label = ctk.CTkLabel(
-            data_frame,
-            text="Chromatographic Data Column:",
-            font=ctk.CTkFont(size=12)
+
+        ctk.CTkLabel(fields, text="Chromatographic data:", font=ctk.CTkFont(size=12)).grid(
+            row=2, column=0, padx=8, pady=(4, 4), sticky="w"
         )
-        data_label.grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        
         self.data_var = ctk.StringVar()
         if self.selected_chromatographic_data_column:
             self.data_var.set(self.selected_chromatographic_data_column)
-        
         self.data_dropdown = ctk.CTkComboBox(
-            data_frame,
+            fields,
             variable=self.data_var,
             values=self.available_columns,
             command=self._on_chromatographic_data_selected,
-            state="readonly"
+            state="readonly",
         )
-        self.data_dropdown.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
-        
-        # Selected chromatographic data display
+        self.data_dropdown.grid(row=2, column=1, padx=8, pady=(4, 2), sticky="ew")
         self.data_selected_label = ctk.CTkLabel(
-            data_frame,
-            text="",
-            font=ctk.CTkFont(size=11),
-            text_color="gray"
+            fields, text="", font=self._wizard_hint_font(), text_color="gray"
         )
-        self.data_selected_label.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="w")
+        self.data_selected_label.grid(
+            row=3, column=0, columnspan=2, padx=8, pady=(0, 8), sticky="w"
+        )
         self._update_data_display()
 
-        variant_frame = ctk.CTkFrame(parent)
-        variant_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        row += 1
-        variant_frame.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            variant_frame,
-            text="Compound variant column (optional):",
-            font=ctk.CTkFont(size=12),
-        ).grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        ctk.CTkLabel(fields, text="Variant (optional):", font=ctk.CTkFont(size=12)).grid(
+            row=4, column=0, padx=8, pady=(4, 4), sticky="w"
+        )
         self.variant_var = ctk.StringVar(value="(none)")
         self.variant_dropdown = ctk.CTkComboBox(
-            variant_frame,
+            fields,
             variable=self.variant_var,
             values=["(none)"] + self.available_columns,
             command=self._on_variant_column_selected,
             state="readonly",
         )
-        self.variant_dropdown.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        self.variant_dropdown.grid(row=4, column=1, padx=8, pady=(4, 2), sticky="ew")
         if self.selected_variant_column:
             self.variant_var.set(self.selected_variant_column)
         ctk.CTkLabel(
-            variant_frame,
+            fields,
             text=(
-                "Distinguishes multiple versions of the same compound (e.g. linear vs cyclized). "
-                "Each row must have a non-empty value. The visualizer lists primaries once and "
-                "coplots every variant × count series you enable."
+                "Labels compound versions (e.g. linear vs cyclized). Each row needs a value when set."
             ),
-            font=ctk.CTkFont(size=11),
+            font=self._wizard_hint_font(),
             text_color="gray",
-            wraplength=760,
+            wraplength=380,
             justify="left",
             anchor="w",
-        ).grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 10), sticky="ew")
-        
-        sample_frame = ctk.CTkFrame(parent)
-        sample_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 10), sticky="ew")
-        row += 1
-        sample_frame.grid_columnconfigure(0, weight=1)
+        ).grid(row=5, column=0, columnspan=2, padx=8, pady=(0, 8), sticky="ew")
+
+        preview_col = ctk.CTkFrame(parent)
+        preview_col.grid(row=1, column=1, padx=(6, 16), pady=(0, 12), sticky="nsew")
+        preview_col.grid_columnconfigure(0, weight=1)
+        preview_col.grid_rowconfigure(3, weight=1)
+
+        ctk.CTkLabel(
+            preview_col,
+            text="2. Sample preview",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            preview_col,
+            text="Random rows showing paired compound ID and chromatographic text from the same row.",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=520,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        action_row = ctk.CTkFrame(preview_col, fg_color="transparent")
+        action_row.grid(row=2, column=0, padx=8, pady=(0, 6), sticky="ew")
+        action_row.grid_columnconfigure(1, weight=1)
 
         self.show_column_sample_button = ctk.CTkButton(
-            sample_frame,
+            action_row,
             text="Show sample data",
             command=self._on_show_column_samples,
             width=160,
         )
-        self.show_column_sample_button.grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
+        self.show_column_sample_button.grid(row=0, column=0, padx=(4, 8), pady=4, sticky="w")
+        self.column_sample_status = ctk.CTkLabel(
+            action_row,
+            text="",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            anchor="w",
+            justify="left",
+        )
+        self.column_sample_status.grid(row=0, column=1, padx=4, pady=4, sticky="ew")
 
-        self.column_sample_text = ctk.CTkTextbox(sample_frame, height=150, wrap="word", activate_scrollbars=True)
-        self.column_sample_text.grid(row=1, column=0, padx=10, pady=(4, 10), sticky="ew")
+        self.column_sample_text = ctk.CTkTextbox(
+            preview_col,
+            wrap="word",
+            activate_scrollbars=True,
+            font=self._wizard_mono_font(),
+        )
+        self.column_sample_text.grid(row=3, column=0, padx=12, pady=(0, 12), sticky="nsew")
         self.column_sample_text.configure(state="disabled")
 
-        # Separator
-        separator1 = ctk.CTkFrame(parent, height=2, fg_color="gray")
-        separator1.grid(row=row, column=0, columnspan=2, padx=20, pady=20, sticky="ew")
-        row += 1
-        
-
     def _populate_tab_delimiters_and_parse(self, parent: ctk.CTkFrame) -> None:
-        """Step 2: full-width step 1 sample; delimiters + Test parse left, preview right."""
-        parent.grid_columnconfigure(0, weight=0)
-        parent.grid_columnconfigure(1, weight=1)
-        parent.grid_rowconfigure(2, weight=1)
+        """Step 2: three-column layout — delimiters | raw sample | parsed preview."""
+        parent.grid_columnconfigure(0, weight=0, minsize=272)
+        parent.grid_columnconfigure(1, weight=1, uniform="delimiter_step")
+        parent.grid_columnconfigure(2, weight=1, uniform="delimiter_step")
+        parent.grid_rowconfigure(1, weight=1)
 
         instructions = ctk.CTkLabel(
             parent,
             text=(
-                "Step 2: Enter the delimiters separating your time and count(s) data and test parsing. "
-                "Leave extra delimiters blank if not needed."
+                "Step 2: Enter delimiters that separate time and count values in your chromatographic "
+                "data, then test parsing against the sample from step 1. Leave extra delimiter fields blank."
             ),
             font=ctk.CTkFont(size=14, weight="bold"),
-            wraplength=920,
+            wraplength=_WIZARD_TEXT_WRAP,
             justify="left",
             anchor="w",
         )
-        instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 6), sticky="ew")
+        instructions.grid(row=0, column=0, columnspan=3, padx=16, pady=(12, 8), sticky="ew")
+
+        delim_col = ctk.CTkFrame(parent)
+        delim_col.grid(row=1, column=0, padx=(16, 6), pady=(0, 12), sticky="nsew")
+        delim_col.grid_columnconfigure(0, weight=1)
+        delim_col.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            delim_col,
+            text="1. Delimiters",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            delim_col,
+            text=(
+                "Order matters — each delimiter adds one field per data point. "
+                "Leave extra delimiter fields blank."
+            ),
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=240,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        self.delimiter_fields_frame = ctk.CTkFrame(delim_col, fg_color="transparent")
+        self.delimiter_fields_frame.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="new")
+        self.delimiter_fields_frame.grid_columnconfigure(1, weight=1)
+
+        self.delimiter_entry_widgets: List[ctk.CTkEntry] = []
+        for i in range(3):
+            lbl = ctk.CTkLabel(self.delimiter_fields_frame, text=f"Delimiter {i + 1}:")
+            lbl.grid(row=i, column=0, padx=4, pady=6, sticky="w")
+            ent = ctk.CTkEntry(
+                self.delimiter_fields_frame,
+                placeholder_text="(blank to skip)",
+            )
+            ent.grid(row=i, column=1, padx=4, pady=6, sticky="ew")
+            ent.bind("<KeyRelease>", lambda _e: self._on_delimiter_field_edited())
+            self.delimiter_entry_widgets.append(ent)
+
+        self.test_parse_button = ctk.CTkButton(
+            delim_col,
+            text="Test parse",
+            command=self._on_test_parse_click,
+            width=160,
+        )
+        self.test_parse_button.grid(row=3, column=0, padx=12, pady=(4, 12), sticky="w")
+
+        sample_col = ctk.CTkFrame(parent)
+        sample_col.grid(row=1, column=1, padx=6, pady=(0, 12), sticky="nsew")
+        sample_col.grid_columnconfigure(0, weight=1)
+        sample_col.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            sample_col,
+            text="2. Sample data",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            sample_col,
+            text="Raw chromatographic text from step 1 — parsing uses the first non-empty sample row.",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=320,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
 
         self.delimiter_step_reference_text = ctk.CTkTextbox(
-            parent, height=100, wrap="word", activate_scrollbars=True
+            sample_col,
+            wrap="word",
+            activate_scrollbars=True,
+            font=self._wizard_mono_font(),
         )
         self.delimiter_step_reference_text.grid(
-            row=1, column=0, columnspan=2, padx=16, pady=(4, 8), sticky="ew"
+            row=2, column=0, padx=12, pady=(0, 12), sticky="nsew"
         )
         self.delimiter_step_reference_text.insert(
             "1.0",
@@ -451,236 +650,306 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         )
         self.delimiter_step_reference_text.configure(state="disabled")
 
-        left = ctk.CTkFrame(parent, fg_color="transparent")
-        left.grid(row=2, column=0, padx=(16, 6), pady=(4, 12), sticky="nsew")
-        left.grid_columnconfigure(0, weight=1)
+        parse_col = ctk.CTkFrame(parent)
+        parse_col.grid(row=1, column=2, padx=(6, 16), pady=(0, 12), sticky="nsew")
+        parse_col.grid_columnconfigure(0, weight=1)
+        parse_col.grid_rowconfigure(2, weight=1)
 
-        self.delimiter_fields_frame = ctk.CTkFrame(left, fg_color="transparent")
-        self.delimiter_fields_frame.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        self.delimiter_fields_frame.grid_columnconfigure(1, weight=1)
-
-        self.delimiter_entry_widgets: List[ctk.CTkEntry] = []
-        for i in range(3):
-            lbl = ctk.CTkLabel(self.delimiter_fields_frame, text=f"Delimiter {i + 1}:")
-            lbl.grid(row=i, column=0, padx=8, pady=6, sticky="w")
-            ent = ctk.CTkEntry(
-                self.delimiter_fields_frame,
-                placeholder_text="(blank to skip)",
-                width=220,
-            )
-            ent.grid(row=i, column=1, padx=8, pady=6, sticky="ew")
-            ent.bind("<KeyRelease>", lambda _e: self._on_delimiter_field_edited())
-            self.delimiter_entry_widgets.append(ent)
-
-        self.test_parse_button = ctk.CTkButton(
-            left,
-            text="Test parse",
-            command=self._on_test_parse_click,
-            width=140,
-        )
-        self.test_parse_button.grid(row=1, column=0, padx=8, pady=(12, 8), sticky="w")
-
-        right = ctk.CTkFrame(parent, fg_color="transparent")
-        right.grid(row=2, column=1, padx=(6, 16), pady=(4, 12), sticky="nsew")
-        right.grid_columnconfigure(0, weight=1)
-        right.grid_rowconfigure(0, weight=1)
+        ctk.CTkLabel(
+            parse_col,
+            text="3. Parsed preview",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            parse_col,
+            text="Structured fields after test parse — verify columns align with time and counts.",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=320,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
 
         self.preview_text = ctk.CTkTextbox(
-            right, height=300, wrap="none", activate_scrollbars=True
+            parse_col,
+            wrap="none",
+            activate_scrollbars=True,
+            font=self._wizard_mono_font(),
         )
-        self.preview_text.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
+        self.preview_text.grid(row=2, column=0, padx=12, pady=(0, 6), sticky="nsew")
         self.preview_text.insert("1.0", "Enter delimiters and click Test parse.")
 
         self.parse_status_label = ctk.CTkLabel(
-            right, text="", font=ctk.CTkFont(size=11), anchor="w", justify="left"
+            parse_col,
+            text="",
+            font=ctk.CTkFont(size=11),
+            anchor="w",
+            justify="left",
+            wraplength=340,
         )
-        self.parse_status_label.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
+        self.parse_status_label.grid(row=3, column=0, padx=12, pady=(0, 12), sticky="ew")
 
     def _populate_tab_time_count(self, parent: ctk.CTkFrame) -> None:
-        """Step 3: preview table on the left; time, counts, names, and test button stacked on the right."""
-        parent.grid_columnconfigure(0, weight=2)
-        parent.grid_columnconfigure(1, weight=1)
+        """Step 3: structured preview panel + field assignment panel."""
+        parent.grid_columnconfigure(0, weight=3, uniform="time_count_step")
+        parent.grid_columnconfigure(1, weight=2, uniform="time_count_step")
         parent.grid_rowconfigure(1, weight=1)
 
-        time_count_instructions = ctk.CTkLabel(
+        instructions = ctk.CTkLabel(
             parent,
-            text="Step 3: Select Time and Count fields",
+            text=(
+                "Step 3: Assign which parsed field is time and which are counts, name each count "
+                "channel, then test assignments against the structured preview."
+            ),
             font=ctk.CTkFont(size=14, weight="bold"),
+            wraplength=_WIZARD_TEXT_WRAP,
+            justify="left",
+            anchor="w",
         )
-        time_count_instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(10, 6), sticky="w")
+        instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 8), sticky="ew")
 
-        left = ctk.CTkFrame(parent, fg_color="transparent")
-        left.grid(row=1, column=0, padx=(16, 8), pady=(0, 12), sticky="nsew")
-        left.grid_columnconfigure(0, weight=1)
-        left.grid_rowconfigure(1, weight=1)
+        preview_col = ctk.CTkFrame(parent)
+        preview_col.grid(row=1, column=0, padx=(16, 6), pady=(0, 12), sticky="nsew")
+        preview_col.grid_columnconfigure(0, weight=1)
+        preview_col.grid_rowconfigure(2, weight=1)
 
-        structured_label = ctk.CTkLabel(
-            left,
-            text="Structured data preview:",
-            font=ctk.CTkFont(size=12, weight="bold"),
-        )
-        structured_label.grid(row=0, column=0, padx=4, pady=(0, 4), sticky="w")
+        ctk.CTkLabel(
+            preview_col,
+            text="1. Structured preview",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            preview_col,
+            text="Parsed data points from step 2 — confirm field indices before assigning time and counts.",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=420,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
 
         self.structured_text = ctk.CTkTextbox(
-            left,
-            height=350,
+            preview_col,
             wrap="none",
             activate_scrollbars=True,
+            font=self._wizard_mono_font(),
         )
-        self.structured_text.grid(row=1, column=0, padx=4, pady=(0, 4), sticky="nsew")
+        self.structured_text.grid(row=2, column=0, padx=12, pady=(0, 12), sticky="nsew")
         self.structured_text.insert(
             "1.0",
             "Complete step 2 (Test parse) to populate structured points here.",
         )
 
-        right = ctk.CTkFrame(parent, fg_color="transparent")
-        right.grid(row=1, column=1, padx=(8, 16), pady=(0, 12), sticky="nsew")
-        right.grid_columnconfigure(0, weight=1)
+        assign_col = ctk.CTkFrame(parent)
+        assign_col.grid(row=1, column=1, padx=(6, 16), pady=(0, 12), sticky="nsew")
+        assign_col.grid_columnconfigure(0, weight=1)
+        assign_col.grid_rowconfigure(2, weight=1)
 
-        ry = 0
-        time_label = ctk.CTkLabel(
-            right,
-            text="Time field:",
+        ctk.CTkLabel(
+            assign_col,
+            text="2. Field assignments",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            assign_col,
+            text="Time and counts must use different field indices. Count names appear in plots and exports.",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=340,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 10), sticky="ew")
+
+        assign_body = ctk.CTkFrame(assign_col, fg_color="transparent")
+        assign_body.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="new")
+        assign_body.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            assign_body,
+            text="Time field",
             font=ctk.CTkFont(size=12, weight="bold"),
-        )
-        time_label.grid(row=ry, column=0, padx=4, pady=(0, 4), sticky="w")
-        ry += 1
-
+        ).grid(row=0, column=0, padx=4, pady=(0, 4), sticky="w")
         self.time_index_var = ctk.StringVar()
         self.time_index_dropdown = ctk.CTkComboBox(
-            right,
+            assign_body,
             variable=self.time_index_var,
             values=[],
             command=self._on_time_index_selected,
             state="readonly",
-            width=220,
         )
-        self.time_index_dropdown.grid(row=ry, column=0, padx=4, pady=(0, 12), sticky="w")
-        ry += 1
+        self.time_index_dropdown.grid(row=1, column=0, padx=4, pady=(0, 12), sticky="ew")
 
-        count_label = ctk.CTkLabel(
-            right,
-            text="Count Field (select multiple if necessary)",
+        ctk.CTkLabel(
+            assign_body,
+            text="Count fields",
             font=ctk.CTkFont(size=12, weight="bold"),
-        )
-        count_label.grid(row=ry, column=0, padx=4, pady=(0, 4), sticky="w")
-        ry += 1
-
-        self.count_checkboxes_frame = ctk.CTkFrame(right, fg_color="transparent")
-        self.count_checkboxes_frame.grid(row=ry, column=0, padx=4, pady=(0, 10), sticky="ew")
+        ).grid(row=2, column=0, padx=4, pady=(0, 4), sticky="w")
+        self.count_checkboxes_frame = ctk.CTkFrame(assign_body, fg_color="transparent")
+        self.count_checkboxes_frame.grid(row=3, column=0, padx=4, pady=(0, 10), sticky="ew")
         self.count_checkboxes_frame.grid_columnconfigure(0, weight=1)
-        ry += 1
 
-        count_names_label = ctk.CTkLabel(
-            right,
-            text="Count names:",
+        ctk.CTkLabel(
+            assign_body,
+            text="Count names",
             font=ctk.CTkFont(size=12, weight="bold"),
-        )
-        count_names_label.grid(row=ry, column=0, padx=4, pady=(0, 4), sticky="w")
-        ry += 1
-
-        self.count_names_frame = ctk.CTkFrame(right, fg_color="transparent")
-        self.count_names_frame.grid(row=ry, column=0, padx=4, pady=(0, 12), sticky="ew")
+        ).grid(row=4, column=0, padx=4, pady=(0, 4), sticky="w")
+        self.count_names_frame = ctk.CTkFrame(assign_body, fg_color="transparent")
+        self.count_names_frame.grid(row=5, column=0, padx=4, pady=(0, 4), sticky="ew")
         self.count_names_frame.grid_columnconfigure(1, weight=1)
-        ry += 1
 
         self.test_assignments_button = ctk.CTkButton(
-            right,
+            assign_col,
             text="Test data assignments",
             width=200,
             command=self._on_test_data_assignments_click,
         )
-        self.test_assignments_button.grid(row=ry, column=0, padx=4, pady=(4, 4), sticky="ew")
+        self.test_assignments_button.grid(row=3, column=0, padx=12, pady=(8, 12), sticky="w")
 
     def _populate_tab_metadata(self, parent: ctk.CTkFrame) -> None:
-        row = 0
-        # Phase 7.3: Metadata Column Selection
-        metadata_instructions = ctk.CTkLabel(
-            parent,
-            text="Step 4: Select metadata columns for database (optional but recommended)",
-            font=ctk.CTkFont(size=14, weight="bold")
-        )
-        metadata_instructions.grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 5), sticky="w")
-        row += 1
-        
-        # Explanation text
-        explanation_text = (
-            "Select which metadata columns to include in the searchable database. "
-            "Include only columns necessary for searching to improve efficiency and speed up searches. "
-            "You can search and filter by these columns in the visualizer. "
-        )
-        explanation_label = ctk.CTkLabel(
-            parent,
-            text=explanation_text,
-            font=ctk.CTkFont(size=11),
-            wraplength=950,
-            justify="left"
-        )
-        explanation_label.grid(row=row, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="w")
-        row += 1
-        
-        # Metadata column selection frame
-        metadata_selection_frame = ctk.CTkFrame(parent)
-        metadata_selection_frame.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        metadata_selection_frame.grid_columnconfigure(0, weight=1)
-        row += 1
-        
-        metadata_label = ctk.CTkLabel(
-            metadata_selection_frame,
-            text="Available Metadata Columns:",
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        metadata_label.grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
-        
-        # Get metadata columns (exclude compound_id and chromatographic_data columns)
-        self.metadata_columns = self._get_metadata_columns()
-        
-        if self.metadata_columns:
-            self.metadata_checkboxes_frame = ctk.CTkFrame(
-                metadata_selection_frame, fg_color="transparent"
-            )
-            self.metadata_checkboxes_frame.grid(row=1, column=0, padx=10, pady=8, sticky="ew")
+        """Step 4: guidance panel + scrollable metadata column picker."""
+        parent.grid_columnconfigure(0, weight=0, minsize=320)
+        parent.grid_columnconfigure(1, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
 
-            self._create_metadata_checkboxes()
-            
-            # Select All / Deselect All buttons
-            metadata_buttons_frame = ctk.CTkFrame(metadata_selection_frame)
-            metadata_buttons_frame.grid(row=2, column=0, padx=10, pady=10, sticky="ew")
-            
-            select_all_button = ctk.CTkButton(
+        instructions = ctk.CTkLabel(
+            parent,
+            text=(
+                "Step 4: Choose metadata columns to store in the searchable database. "
+                "Optional, but recommended for filtering in the visualizer."
+            ),
+            font=ctk.CTkFont(size=14, weight="bold"),
+            wraplength=_WIZARD_TEXT_WRAP,
+            justify="left",
+            anchor="w",
+        )
+        instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 8), sticky="ew")
+
+        guide_col = ctk.CTkFrame(parent)
+        guide_col.grid(row=1, column=0, padx=(16, 6), pady=(0, 12), sticky="nsew")
+        guide_col.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            guide_col,
+            text="1. What to include",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            guide_col,
+            text=(
+                "Include columns you will search or filter on in the chromatogram visualizer. "
+                "Fewer columns keeps the database smaller and searches faster."
+            ),
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=280,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 12), sticky="ew")
+        ctk.CTkLabel(
+            guide_col,
+            text=(
+                "Split-tree visualization can read retention-time and null-verification metadata "
+                "from selected columns to build the tree — include those columns if you plan to "
+                "use that feature."
+            ),
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=280,
+            justify="left",
+            anchor="w",
+        ).grid(row=2, column=0, padx=12, pady=(0, 12), sticky="ew")
+        ctk.CTkLabel(
+            guide_col,
+            text=(
+                "Compound ID, chromatographic data, and variant columns are excluded automatically. "
+                "You can leave everything unchecked and continue — metadata can be added later "
+                "by reconfiguring."
+            ),
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=280,
+            justify="left",
+            anchor="w",
+        ).grid(row=3, column=0, padx=12, pady=(0, 12), sticky="ew")
+
+        self.metadata_selection_label = ctk.CTkLabel(
+            guide_col,
+            text="",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=280,
+            justify="left",
+            anchor="w",
+        )
+        self.metadata_selection_label.grid(row=4, column=0, padx=12, pady=(8, 8), sticky="w")
+
+        picker_col = ctk.CTkFrame(parent)
+        picker_col.grid(row=1, column=1, padx=(6, 16), pady=(0, 12), sticky="nsew")
+        picker_col.grid_columnconfigure(0, weight=1)
+        picker_col.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            picker_col,
+            text="2. Available columns",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            picker_col,
+            text="Check each metadata field to include in the processed database.",
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=520,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 8), sticky="ew")
+
+        self.metadata_columns = self._get_metadata_columns()
+
+        if self.metadata_columns:
+            metadata_buttons_frame = ctk.CTkFrame(picker_col, fg_color="transparent")
+            metadata_buttons_frame.grid(row=2, column=0, padx=8, pady=(0, 6), sticky="ew")
+            ctk.CTkButton(
                 metadata_buttons_frame,
-                text="Select All",
+                text="Select all",
                 command=self._select_all_metadata,
-                width=120
-            )
-            select_all_button.grid(row=0, column=0, padx=5, pady=5)
-            
-            deselect_all_button = ctk.CTkButton(
+                width=110,
+            ).pack(side="left", padx=(4, 6), pady=4)
+            ctk.CTkButton(
                 metadata_buttons_frame,
-                text="Deselect All",
+                text="Deselect all",
                 command=self._deselect_all_metadata,
-                width=120
+                width=110,
+                fg_color="gray40",
+            ).pack(side="left", padx=(0, 6), pady=4)
+
+            self.metadata_scroll_frame = ctk.CTkScrollableFrame(picker_col)
+            self.metadata_scroll_frame.grid(
+                row=3, column=0, padx=12, pady=(0, 12), sticky="nsew"
             )
-            deselect_all_button.grid(row=0, column=1, padx=5, pady=5)
-            
-            # Selection count display
-            self.metadata_selection_label = ctk.CTkLabel(
-                metadata_selection_frame,
-                text="",
-                font=ctk.CTkFont(size=11),
-                text_color="gray"
+            self.metadata_scroll_frame.grid_columnconfigure(0, weight=1)
+            picker_col.grid_rowconfigure(3, weight=1)
+
+            self.metadata_checkboxes_frame = ctk.CTkFrame(
+                self.metadata_scroll_frame, fg_color="transparent"
             )
-            self.metadata_selection_label.grid(row=3, column=0, padx=10, pady=(0, 10), sticky="w")
-            self._update_metadata_selection_display()
+            self.metadata_checkboxes_frame.grid(row=0, column=0, sticky="ew")
+            self._create_metadata_checkboxes()
         else:
-            # No metadata columns available
-            no_metadata_label = ctk.CTkLabel(
-                metadata_selection_frame,
-                text="No additional metadata columns available. All columns are used for Compound ID or Chromatographic Data.",
-                font=ctk.CTkFont(size=11),
-                text_color="gray"
-            )
-            no_metadata_label.grid(row=1, column=0, padx=10, pady=10, sticky="w")
+            self.metadata_checkboxes_frame = ctk.CTkFrame(picker_col, fg_color="transparent")
+            ctk.CTkLabel(
+                picker_col,
+                text=(
+                    "No additional metadata columns are available — every column is already "
+                    "used for compound ID or chromatographic data."
+                ),
+                font=self._wizard_hint_font(),
+                text_color="gray",
+                wraplength=520,
+                justify="left",
+                anchor="w",
+            ).grid(row=3, column=0, padx=12, pady=(0, 12), sticky="nw")
+
+        self._update_metadata_selection_display()
 
     def _suggest_bb_columns(self) -> List[str]:
         """Prefer columns named like BB1 Name .. BB4 Name when present."""
@@ -695,33 +964,53 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         return suggestions
 
     def _populate_tab_pedigree(self, parent: ctk.CTkFrame) -> None:
+        """Step 5: library structure panel + optional index validation panel."""
         import tkinter as tk
 
-        row = 0
-        ctk.CTkLabel(
-            parent,
-            text="Step 5: DEL library structure (for pedigree / null-truncation analysis)",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).grid(row=row, column=0, columnspan=2, padx=20, pady=(10, 5), sticky="w")
-        row += 1
-        ctk.CTkLabel(
+        parent.grid_columnconfigure(0, weight=3, uniform="pedigree_step")
+        parent.grid_columnconfigure(1, weight=2, uniform="pedigree_step")
+        parent.grid_rowconfigure(1, weight=1)
+
+        instructions = ctk.CTkLabel(
             parent,
             text=(
-                "BB1 is the first building block coupled (C-terminus). BB4 is the N-terminus in a "
-                "4-cycle library. The analysis engine uses N→C order internally. Compound ID is for "
-                "display only — pedigree uses the BB columns below."
+                "Step 5: Map DEL building-block columns for pedigree and split-tree analysis. "
+                "Optionally upload a display-index CSV."
             ),
-            font=ctk.CTkFont(size=11),
-            wraplength=950,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            wraplength=_WIZARD_TEXT_WRAP,
             justify="left",
-        ).grid(row=row, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="w")
-        row += 1
+            anchor="w",
+        )
+        instructions.grid(row=0, column=0, columnspan=2, padx=16, pady=(12, 8), sticky="ew")
 
-        cycle_fr = ctk.CTkFrame(parent, fg_color="transparent")
-        cycle_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
-        row += 1
+        structure_col = ctk.CTkFrame(parent)
+        structure_col.grid(row=1, column=0, padx=(16, 6), pady=(0, 12), sticky="nsew")
+        structure_col.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            structure_col,
+            text="1. Library structure",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            structure_col,
+            text=(
+                "BB1 is the cycle 1 building block, BB2 is cycle 2, and so on. Map the spreadsheet "
+                "column that holds each cycle's building-block name. Pedigree and split-tree "
+                "analysis use these columns, not compound ID."
+            ),
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=420,
+            justify="left",
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 10), sticky="ew")
+
+        cycle_fr = ctk.CTkFrame(structure_col, fg_color="transparent")
+        cycle_fr.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="ew")
         ctk.CTkLabel(cycle_fr, text="Library cycles:", font=ctk.CTkFont(weight="bold")).pack(
-            side="left", padx=(0, 8)
+            side="left", padx=(4, 8)
         )
         self._cycle_count_var = tk.IntVar(value=self.library_cycle_count)
         for n in (2, 3, 4):
@@ -733,14 +1022,14 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 command=self._on_library_cycle_changed,
             ).pack(side="left", padx=6)
 
-        bb_fr = ctk.CTkFrame(parent)
-        bb_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=10, sticky="ew")
-        row += 1
+        bb_fr = ctk.CTkFrame(structure_col, fg_color="transparent")
+        bb_fr.grid(row=3, column=0, padx=8, pady=(0, 10), sticky="ew")
+        bb_fr.grid_columnconfigure(1, weight=1)
         if not any(self.bb_position_columns):
             self.bb_position_columns = self._suggest_bb_columns()
         self._bb_column_menus.clear()
         self._bb_column_labels.clear()
-        slot_labels = ("BB1 (C-term)", "BB2", "BB3", "BB4 (N-term)")
+        slot_labels = ("BB1", "BB2", "BB3", "BB4")
         col_opts = ["(none)"] + self.available_columns
         self._bb_column_vars: List[tk.StringVar] = []
         for i in range(4):
@@ -752,105 +1041,105 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 initial = "(none)"
             var = tk.StringVar(value=initial)
             self._bb_column_vars.append(var)
-            menu = ctk.CTkOptionMenu(bb_fr, variable=var, values=col_opts, width=280)
-            menu.grid(row=i, column=1, padx=8, pady=6, sticky="w")
+            menu = ctk.CTkOptionMenu(bb_fr, variable=var, values=col_opts)
+            menu.grid(row=i, column=1, padx=8, pady=6, sticky="ew")
             self._bb_column_menus.append(menu)
 
-        null_fr = ctk.CTkFrame(parent, fg_color="transparent")
-        null_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
-        row += 1
-        ctk.CTkLabel(null_fr, text="Null token:").pack(side="left", padx=(0, 8))
-        self._null_token_entry = ctk.CTkEntry(null_fr, width=120)
-        self._null_token_entry.insert(0, self.null_token)
-        self._null_token_entry.pack(side="left")
+        options_fr = ctk.CTkFrame(structure_col, fg_color="transparent")
+        options_fr.grid(row=4, column=0, padx=8, pady=(0, 12), sticky="ew")
+        options_fr.grid_columnconfigure(1, weight=1)
 
-        unit_fr = ctk.CTkFrame(parent, fg_color="transparent")
-        unit_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
-        row += 1
-        ctk.CTkLabel(unit_fr, text="Default analysis time unit:").pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(options_fr, text="Null token:").grid(
+            row=0, column=0, padx=8, pady=6, sticky="w"
+        )
+        self._null_token_entry = ctk.CTkEntry(options_fr, width=140)
+        self._null_token_entry.insert(0, self.null_token)
+        self._null_token_entry.grid(row=0, column=1, padx=8, pady=6, sticky="w")
+
+        ctk.CTkLabel(options_fr, text="Default time unit:").grid(
+            row=1, column=0, padx=8, pady=6, sticky="w"
+        )
+        unit_fr = ctk.CTkFrame(options_fr, fg_color="transparent")
+        unit_fr.grid(row=1, column=1, padx=8, pady=6, sticky="w")
         self._analysis_time_unit_var = tk.StringVar(value=self.analysis_time_unit)
         ctk.CTkRadioButton(
             unit_fr, text="Seconds", variable=self._analysis_time_unit_var, value="seconds"
-        ).pack(side="left", padx=4)
+        ).pack(side="left", padx=(0, 8))
         ctk.CTkRadioButton(
             unit_fr, text="Minutes", variable=self._analysis_time_unit_var, value="minutes"
-        ).pack(side="left", padx=4)
+        ).pack(side="left")
 
-        index_hdr = ctk.CTkLabel(
-            parent,
-            text="Building-block display index (optional)",
-            font=ctk.CTkFont(size=13, weight="bold"),
-        )
-        index_hdr.grid(row=row, column=0, columnspan=2, padx=20, pady=(14, 4), sticky="w")
-        row += 1
+        index_col = ctk.CTkFrame(parent)
+        index_col.grid(row=1, column=1, padx=(6, 16), pady=(0, 12), sticky="nsew")
+        index_col.grid_columnconfigure(0, weight=1)
+        index_col.grid_rowconfigure(4, weight=1)
+
         ctk.CTkLabel(
-            parent,
+            index_col,
+            text="2. Display index (optional)",
+            font=self._wizard_section_font(),
+        ).grid(row=0, column=0, padx=12, pady=(12, 2), sticky="w")
+        ctk.CTkLabel(
+            index_col,
             text=(
-                "CSV with two columns: building-block name and display index. "
-                "Leave empty to assign indices automatically (A→Z). "
-                "Null token uses index 0 when omitted from the CSV."
+                "Upload a CSV with BB name (first column) and Index (second column) to map index "
+                "numbers to building blocks for split-tree analysis. Leave empty for automatic "
+                "A→Z indexing. Null token uses index 0 when omitted."
             ),
-            font=ctk.CTkFont(size=11),
-            wraplength=950,
+            font=self._wizard_hint_font(),
+            text_color="gray",
+            wraplength=340,
             justify="left",
-        ).grid(row=row, column=0, columnspan=2, padx=20, pady=(0, 6), sticky="w")
-        row += 1
+            anchor="w",
+        ).grid(row=1, column=0, padx=12, pady=(0, 10), sticky="ew")
 
-        index_btn_fr = ctk.CTkFrame(parent, fg_color="transparent")
-        index_btn_fr.grid(row=row, column=0, columnspan=2, padx=20, pady=4, sticky="w")
-        row += 1
+        index_btn_fr = ctk.CTkFrame(index_col, fg_color="transparent")
+        index_btn_fr.grid(row=2, column=0, padx=8, pady=(0, 8), sticky="ew")
         ctk.CTkButton(
             index_btn_fr,
             text="Choose index CSV…",
-            width=160,
+            width=150,
             command=self._on_browse_bb_index_csv,
-        ).pack(side="left", padx=(0, 8))
+        ).pack(side="left", padx=(4, 6), pady=4)
         ctk.CTkButton(
             index_btn_fr,
-            text="Clear (use auto index)",
-            width=160,
+            text="Clear (auto index)",
+            width=130,
             fg_color="gray40",
             command=self._on_clear_bb_index_csv,
-        ).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(
+        ).pack(side="left", padx=(0, 6), pady=4)
+        self.validate_bb_index_button = ctk.CTkButton(
             index_btn_fr,
-            text="Validate index vs spreadsheet",
-            width=200,
+            text="Validate",
+            width=100,
             command=self._on_validate_bb_index_csv,
-        ).pack(side="left")
+        )
+        self.validate_bb_index_button.pack(side="left", padx=(0, 4), pady=4)
 
         self._bb_index_path_label = ctk.CTkLabel(
-            parent,
+            index_col,
             text="Index source: automatic (alphabetical)",
-            font=ctk.CTkFont(size=11),
+            font=self._wizard_hint_font(),
             anchor="w",
             justify="left",
-            wraplength=950,
+            wraplength=360,
         )
-        self._bb_index_path_label.grid(row=row, column=0, columnspan=2, padx=20, pady=(4, 2), sticky="w")
-        row += 1
+        self._bb_index_path_label.grid(row=3, column=0, padx=12, pady=(0, 6), sticky="ew")
 
-        self._bb_index_validation_box = ctk.CTkTextbox(parent, height=120, wrap="word")
-        self._bb_index_validation_box.grid(
-            row=row, column=0, columnspan=2, padx=20, pady=(0, 8), sticky="ew"
+        self._bb_index_validation_box = ctk.CTkTextbox(
+            index_col,
+            wrap="word",
+            activate_scrollbars=True,
+            font=self._wizard_mono_font(),
         )
+        self._bb_index_validation_box.grid(row=4, column=0, padx=12, pady=(0, 12), sticky="nsew")
         self._bb_index_validation_box.insert(
             "1.0",
-            "Upload an index CSV and click “Validate index vs spreadsheet” to compare "
-            "against building blocks detected in the BB columns above.",
+            "Upload an index CSV and click Validate to compare against building blocks "
+            "detected in the BB columns.",
         )
         self._bb_index_validation_box.configure(state="disabled")
-        row += 1
         self._refresh_bb_index_path_label()
-
-        self.accept_button = ctk.CTkButton(
-            parent,
-            text="Accept configuration",
-            command=self._on_accept_configuration,
-            state="disabled",
-            width=220,
-        )
-        self.accept_button.grid(row=row, column=0, columnspan=2, padx=20, pady=(20, 16), sticky="e")
         self._on_library_cycle_changed()
 
     def _on_library_cycle_changed(self) -> None:
@@ -862,6 +1151,24 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             active = i < n
             menu.configure(state="normal" if active else "disabled")
             lbl.configure(text_color=("gray10", "gray90") if active else "gray")
+
+    def _sync_pedigree_fields_to_ui(self) -> None:
+        """Push loaded pedigree settings into step 5 controls."""
+        if not hasattr(self, "_cycle_count_var"):
+            return
+        self._cycle_count_var.set(self.library_cycle_count)
+        self._on_library_cycle_changed()
+        if hasattr(self, "_null_token_entry"):
+            self._null_token_entry.delete(0, "end")
+            self._null_token_entry.insert(0, self.null_token)
+        if hasattr(self, "_analysis_time_unit_var"):
+            self._analysis_time_unit_var.set(self.analysis_time_unit)
+        for i, var in enumerate(self._bb_column_vars):
+            if i >= len(self.bb_position_columns):
+                var.set("(none)")
+                continue
+            col = self.bb_position_columns[i]
+            var.set(col if col else "(none)")
 
     def _read_pedigree_fields_from_ui(self) -> None:
         if not hasattr(self, "_cycle_count_var"):
@@ -950,8 +1257,9 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._refresh_bb_index_path_label()
         self._set_bb_index_validation_text(
             f"Loaded {len(index_map)} index entries from CSV.\n"
-            "Click “Validate index vs spreadsheet” to compare against this library.",
+            "Click Validate to compare against this library.",
         )
+        self._update_wizard_action_highlights()
 
     def _on_clear_bb_index_csv(self) -> None:
         self._read_pedigree_fields_from_ui()
@@ -962,6 +1270,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._set_bb_index_validation_text(
             "Using automatic alphabetical indexing for split-tree labels.",
         )
+        self._update_wizard_action_highlights()
 
     def _on_validate_bb_index_csv(self) -> None:
         from tkinter import messagebox
@@ -1013,6 +1322,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             messagebox.showinfo("Building-block index", result.summary, parent=self)
         else:
             messagebox.showwarning("Building-block index", result.summary, parent=self)
+        self._update_wizard_action_highlights()
 
     def _wizard_tab_index(self) -> int:
         name = self.tabview.get()
@@ -1040,12 +1350,14 @@ class ConfigureSpreadsheetDialog(BaseWindow):
                 self._show_error(msg)
                 return
         self._wizard_tab_last_committed = new_name
+        self._update_wizard_action_highlights()
 
     def _wizard_tab_back(self) -> None:
         i = self._wizard_tab_index()
         if i > 0:
             self.tabview.set(self._tab_names[i - 1])
             self._wizard_tab_last_committed = self.tabview.get()
+            self._update_wizard_action_highlights()
 
     def _wizard_tab_next(self) -> None:
         i = self._wizard_tab_index()
@@ -1056,6 +1368,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         if i < len(self._tab_names) - 1:
             self.tabview.set(self._tab_names[i + 1])
             self._wizard_tab_last_committed = self.tabview.get()
+            self._update_wizard_action_highlights()
 
     def _can_advance_from_tab(self, tab_index: int) -> tuple[bool, str]:
         if tab_index == 0:
@@ -1153,21 +1466,78 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.column_sample_text.configure(state="disabled")
         self._refresh_delimiter_step_reference()
         self._invalidate_delimiter_parse()
+        self._update_wizard_action_highlights()
 
-    def _format_sample_cell(self, value: object) -> str:
-        """Format a spreadsheet cell for the column sample preview."""
-        try:
-            if value is None or pd.isna(value):
-                return "(empty)"
-        except (ValueError, TypeError):
-            pass
-        text = str(value).strip()
-        if len(text) > 220:
-            return f"{text[:217]}..."
-        return text
+    @staticmethod
+    def _build_column_sample_preview(
+        df: pd.DataFrame,
+        cid_col: str,
+        chrom_col: str,
+    ) -> Tuple[Optional[str], Optional[str], Optional[List[str]]]:
+        """
+        Pick random spreadsheet rows and format a paired column preview.
+
+        Returns:
+            (preview_text, error_message, chrom_values)
+        """
+        if cid_col not in df.columns or chrom_col not in df.columns:
+            return None, "Selected columns are missing from the loaded data.", None
+
+        valid_mask = ~(df[cid_col].isna() & df[chrom_col].isna())
+        valid_positions = df.index[valid_mask].tolist()
+        if not valid_positions:
+            return None, "No rows found with data in at least one of the selected columns.", None
+
+        k = min(3, len(valid_positions))
+        picked = random.sample(valid_positions, k=k)
+
+        def format_cell(value: object) -> str:
+            try:
+                if value is None or pd.isna(value):
+                    return "(empty)"
+            except (ValueError, TypeError):
+                pass
+            text = str(value).strip()
+            if len(text) > 220:
+                return f"{text[:217]}..."
+            return text
+
+        lines: List[str] = []
+        chrom_values: List[str] = []
+        for n, pos in enumerate(picked, start=1):
+            row = df.loc[pos]
+            row_number = int(pos) + 1 if isinstance(pos, int) else int(df.index.get_loc(pos)) + 1
+            lines.append(f"--- Sample {n} · data row {row_number} of {len(df)} ---\n")
+            lines.append(f"{cid_col}:\n  {format_cell(row[cid_col])}\n\n")
+            lines.append(f"{chrom_col}:\n  {format_cell(row[chrom_col])}\n\n")
+            if pd.notna(row[chrom_col]):
+                chrom_values.append(str(row[chrom_col]).strip())
+            else:
+                chrom_values.append("")
+
+        return "".join(lines), None, chrom_values
+
+    def _schedule_on_main(self, callback: Callable, *args) -> None:
+        if not self.winfo_exists():
+            return
+        self.after(0, lambda: self._run_on_main(callback, *args))
+
+    def _run_on_main(self, callback: Callable, *args) -> None:
+        if not self.winfo_exists():
+            return
+        callback(*args)
+
+    def _set_column_sample_loading(self, active: bool, message: str = "") -> None:
+        self._sample_loading = active
+        if hasattr(self, "column_sample_status"):
+            self.column_sample_status.configure(text=message)
+        if hasattr(self, "show_column_sample_button"):
+            self.show_column_sample_button.configure(state="disabled" if active else "normal")
 
     def _on_show_column_samples(self) -> None:
         """Display random rows: Compound ID and chromatographic text from the same row."""
+        if self._sample_loading:
+            return
         if not self.selected_compound_id_column or not self.selected_chromatographic_data_column:
             self._show_error("Select both columns before showing sample data.")
             return
@@ -1182,37 +1552,38 @@ class ConfigureSpreadsheetDialog(BaseWindow):
 
         cid_col = self.selected_compound_id_column
         chrom_col = self.selected_chromatographic_data_column
-        if cid_col not in df.columns or chrom_col not in df.columns:
-            self._show_error("Selected columns are missing from the loaded data.")
+        self._set_column_sample_loading(True, "Loading sample rows…")
+
+        def worker() -> None:
+            preview, error, chrom_values = self._build_column_sample_preview(
+                df,
+                cid_col,
+                chrom_col,
+            )
+            self._schedule_on_main(
+                self._on_column_samples_ready,
+                preview,
+                error,
+                chrom_values,
+            )
+
+        self._sample_worker_thread = threading.Thread(target=worker, daemon=True)
+        self._sample_worker_thread.start()
+
+    def _on_column_samples_ready(
+        self,
+        preview: Optional[str],
+        error: Optional[str],
+        chrom_values: Optional[List[str]],
+    ) -> None:
+        self._set_column_sample_loading(False, "")
+
+        if error or preview is None or chrom_values is None:
+            self._show_error(error or "Could not build sample preview.")
+            self._update_wizard_action_highlights()
             return
 
-        valid_positions: List[int] = []
-        for pos in range(len(df)):
-            row = df.iloc[pos]
-            if pd.isna(row[cid_col]) and pd.isna(row[chrom_col]):
-                continue
-            valid_positions.append(pos)
-
-        if not valid_positions:
-            self._show_error("No rows found with data in at least one of the selected columns.")
-            return
-
-        k = min(3, len(valid_positions))
-        picked = random.sample(valid_positions, k=k)
-
-        lines: List[str] = []
-        chrom_values: List[str] = []
-        for n, pos in enumerate(picked, start=1):
-            row = df.iloc[pos]
-            lines.append(f"--- Sample {n} · data row {pos + 1} of {len(df)} ---\n")
-            lines.append(f"{cid_col}:\n  {self._format_sample_cell(row[cid_col])}\n\n")
-            lines.append(f"{chrom_col}:\n  {self._format_sample_cell(row[chrom_col])}\n\n")
-            if pd.notna(row[chrom_col]):
-                chrom_values.append(str(row[chrom_col]).strip())
-            else:
-                chrom_values.append("")
-
-        self._column_pair_sample_text = "".join(lines)
+        self._column_pair_sample_text = preview
         self._sample_chrom_strings = chrom_values
         self._refresh_delimiter_step_reference()
 
@@ -1223,7 +1594,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
 
         self._columns_sample_confirmed = True
         self._validate_selections()
-        logger.info("User confirmed column selections via sample data preview (%s rows)", k)
+        logger.info("User confirmed column selections via sample data preview")
     
     def _update_compound_display(self) -> None:
         """Update Compound ID selection display."""
@@ -1755,7 +2126,14 @@ class ConfigureSpreadsheetDialog(BaseWindow):
     
     def _update_metadata_selection_display(self) -> None:
         """Update metadata selection count display."""
-        if not hasattr(self, 'metadata_selection_label') or not self.metadata_columns:
+        if not hasattr(self, "metadata_selection_label"):
+            return
+
+        if not self.metadata_columns:
+            self.metadata_selection_label.configure(
+                text="No extra metadata columns are available for this spreadsheet.",
+                text_color="gray",
+            )
             return
         
         count = len(self.selected_metadata_columns)
@@ -1810,143 +2188,148 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         if not hasattr(self, "validation_label") or not hasattr(self, "accept_button"):
             return False
 
-        errors = []
+        result = False
+        try:
+            errors = []
         
-        # Check Compound ID column
-        if not self.selected_compound_id_column:
-            errors.append("Please select a Compound ID column")
-        elif self.selected_compound_id_column not in self.available_columns:
-            errors.append(f"Selected Compound ID column '{self.selected_compound_id_column}' not found in spreadsheet")
+            # Check Compound ID column
+            if not self.selected_compound_id_column:
+                errors.append("Please select a Compound ID column")
+            elif self.selected_compound_id_column not in self.available_columns:
+                errors.append(f"Selected Compound ID column '{self.selected_compound_id_column}' not found in spreadsheet")
         
-        # Check Chromatographic Data column
-        if not self.selected_chromatographic_data_column:
-            errors.append("Please select a Chromatographic Data column")
-        elif self.selected_chromatographic_data_column not in self.available_columns:
-            errors.append(f"Selected Chromatographic Data column '{self.selected_chromatographic_data_column}' not found in spreadsheet")
+            # Check Chromatographic Data column
+            if not self.selected_chromatographic_data_column:
+                errors.append("Please select a Chromatographic Data column")
+            elif self.selected_chromatographic_data_column not in self.available_columns:
+                errors.append(f"Selected Chromatographic Data column '{self.selected_chromatographic_data_column}' not found in spreadsheet")
         
-        # Check that columns are different
-        if (self.selected_compound_id_column and 
-            self.selected_chromatographic_data_column and
-            self.selected_compound_id_column == self.selected_chromatographic_data_column):
-            errors.append("Compound ID and Chromatographic Data columns must be different")
+            # Check that columns are different
+            if (self.selected_compound_id_column and 
+                self.selected_chromatographic_data_column and
+                self.selected_compound_id_column == self.selected_chromatographic_data_column):
+                errors.append("Compound ID and Chromatographic Data columns must be different")
 
-        if self.selected_variant_column:
-            if self.selected_variant_column not in self.available_columns:
+            if self.selected_variant_column:
+                if self.selected_variant_column not in self.available_columns:
+                    errors.append(
+                        f"Variant column '{self.selected_variant_column}' not found in spreadsheet"
+                    )
+                if self.selected_variant_column == self.selected_compound_id_column:
+                    errors.append("Variant column must differ from Compound ID column")
+                if self.selected_variant_column == self.selected_chromatographic_data_column:
+                    errors.append("Variant column must differ from Chromatographic Data column")
+        
+            if (
+                self.selected_compound_id_column
+                and self.selected_chromatographic_data_column
+                and self.selected_compound_id_column != self.selected_chromatographic_data_column
+                and self.selected_compound_id_column in self.available_columns
+                and self.selected_chromatographic_data_column in self.available_columns
+                and not self._columns_sample_confirmed
+            ):
                 errors.append(
-                    f"Variant column '{self.selected_variant_column}' not found in spreadsheet"
+                    'Click "Show sample data" to verify paired values from the same rows before continuing.'
                 )
-            if self.selected_variant_column == self.selected_compound_id_column:
-                errors.append("Variant column must differ from Compound ID column")
-            if self.selected_variant_column == self.selected_chromatographic_data_column:
-                errors.append("Variant column must differ from Chromatographic Data column")
         
-        if (
-            self.selected_compound_id_column
-            and self.selected_chromatographic_data_column
-            and self.selected_compound_id_column != self.selected_chromatographic_data_column
-            and self.selected_compound_id_column in self.available_columns
-            and self.selected_chromatographic_data_column in self.available_columns
-            and not self._columns_sample_confirmed
-        ):
-            errors.append(
-                'Click "Show sample data" to verify paired values from the same rows before continuing.'
-            )
-        
-        if errors:
-            error_text = "Validation errors:\n" + "\n".join(f"• {error}" for error in errors)
-            self.validation_label.configure(text=error_text, text_color="red")
-            self.accept_button.configure(state="disabled")
-            return False
+            if errors:
+                error_text = "Validation errors:\n" + "\n".join(f"• {error}" for error in errors)
+                self.validation_label.configure(text=error_text, text_color="red")
+                self.accept_button.configure(state="disabled")
+                return False
 
-        if not self._delimiter_parse_confirmed:
-            self.validation_label.configure(
-                text=(
-                    "✓ Column selections verified. On step 2, enter delimiters and click Test parse."
-                ),
-                text_color="green",
-            )
-            self.accept_button.configure(state="disabled")
-            return False
-        
-        # Phase 7: Time & Count validation
-        if self.parsed_data_points:
-            # Data is structured, so validate time and count selections
-            if self.selected_time_index is None:
-                errors.append("Please select a Time field index")
-            elif self.items_per_point and self.selected_time_index >= self.items_per_point:
-                errors.append(f"Time index {self.selected_time_index} is out of range (0-{self.items_per_point - 1})")
-            else:
-                # Validate Time field contains numeric values
-                if self.selected_time_index is not None:
-                    time_values = [point[self.selected_time_index] for point in self.parsed_data_points[:10]]
-                    non_numeric = [v for v in time_values if DataParser.try_parse_numeric(v) is None]
-                    if non_numeric:
-                        errors.append(f"Time field contains non-numeric values: {non_numeric[0]}")
-            
-            if not self.selected_count_indices:
-                errors.append("Please select at least one Count field")
-            else:
-                # Validate count indices are in range
-                for count_idx in self.selected_count_indices:
-                    if self.items_per_point and count_idx >= self.items_per_point:
-                        errors.append(f"Count index {count_idx} is out of range (0-{self.items_per_point - 1})")
-                
-                # Validate time and count are different
-                if self.selected_time_index is not None and self.selected_time_index in self.selected_count_indices:
-                    errors.append("Time field and Count fields must be different")
-                
-                # Collect count names and validate (in sorted order of indices)
-                count_names = []
-                for count_idx in sorted(self.selected_count_indices):
-                    entry = self.count_name_entries.get(count_idx)
-                    if entry:
-                        name = entry.get().strip()
-                        if not name:
-                            errors.append(f"Please enter a name for count field {count_idx}")
-                        else:
-                            count_names.append(name)
-                    else:
-                        errors.append(f"Missing name entry for count field {count_idx}")
-                
-                # Check for duplicate names
-                if count_names and len(count_names) != len(set(count_names)):
-                    errors.append("Count names must be unique")
-                
-                # Only update if no errors (to preserve partial input)
-                if not errors:
-                    self.count_names = count_names
-        
-        if errors:
-            error_text = "Validation errors:\n" + "\n".join(f"• {error}" for error in errors)
-            self.validation_label.configure(text=error_text, text_color="red")
-            self.accept_button.configure(state="disabled")
-            return False
-
-        if self.parsed_data_points and self.selected_time_index is not None and self.selected_count_indices:
-            if not self._data_assignments_confirmed:
+            if not self._delimiter_parse_confirmed:
                 self.validation_label.configure(
                     text=(
-                        '✓ Time and count fields look valid. Click "Test data assignments" on step 3, '
-                        "then use Accept configuration below on this tab."
+                        "✓ Column selections verified. On step 2, enter delimiters and click Test parse."
                     ),
                     text_color="green",
                 )
                 self.accept_button.configure(state="disabled")
                 return False
-            self.validation_label.configure(
-                text=(
-                    "✓ Configuration is complete and valid. "
-                    "Use Accept configuration below when you are done with metadata."
-                ),
-                text_color="green",
-            )
-        else:
-            self.validation_label.configure(
-                text="✓ Basic configuration is valid. Complete time and count selection to finalize.",
-                text_color="green",
-            )
-        self.accept_button.configure(state="normal")
-        return True
+        
+            # Phase 7: Time & Count validation
+            if self.parsed_data_points:
+                # Data is structured, so validate time and count selections
+                if self.selected_time_index is None:
+                    errors.append("Please select a Time field index")
+                elif self.items_per_point and self.selected_time_index >= self.items_per_point:
+                    errors.append(f"Time index {self.selected_time_index} is out of range (0-{self.items_per_point - 1})")
+                else:
+                    # Validate Time field contains numeric values
+                    if self.selected_time_index is not None:
+                        time_values = [point[self.selected_time_index] for point in self.parsed_data_points[:10]]
+                        non_numeric = [v for v in time_values if DataParser.try_parse_numeric(v) is None]
+                        if non_numeric:
+                            errors.append(f"Time field contains non-numeric values: {non_numeric[0]}")
+            
+                if not self.selected_count_indices:
+                    errors.append("Please select at least one Count field")
+                else:
+                    # Validate count indices are in range
+                    for count_idx in self.selected_count_indices:
+                        if self.items_per_point and count_idx >= self.items_per_point:
+                            errors.append(f"Count index {count_idx} is out of range (0-{self.items_per_point - 1})")
+                
+                    # Validate time and count are different
+                    if self.selected_time_index is not None and self.selected_time_index in self.selected_count_indices:
+                        errors.append("Time field and Count fields must be different")
+                
+                    # Collect count names and validate (in sorted order of indices)
+                    count_names = []
+                    for count_idx in sorted(self.selected_count_indices):
+                        entry = self.count_name_entries.get(count_idx)
+                        if entry:
+                            name = entry.get().strip()
+                            if not name:
+                                errors.append(f"Please enter a name for count field {count_idx}")
+                            else:
+                                count_names.append(name)
+                        else:
+                            errors.append(f"Missing name entry for count field {count_idx}")
+                
+                    # Check for duplicate names
+                    if count_names and len(count_names) != len(set(count_names)):
+                        errors.append("Count names must be unique")
+                
+                    # Only update if no errors (to preserve partial input)
+                    if not errors:
+                        self.count_names = count_names
+        
+            if errors:
+                error_text = "Validation errors:\n" + "\n".join(f"• {error}" for error in errors)
+                self.validation_label.configure(text=error_text, text_color="red")
+                self.accept_button.configure(state="disabled")
+                return False
+
+            if self.parsed_data_points and self.selected_time_index is not None and self.selected_count_indices:
+                if not self._data_assignments_confirmed:
+                    self.validation_label.configure(
+                        text=(
+                            '✓ Time and count fields look valid. Click "Test data assignments" on step 3, '
+                            "then use Accept configuration below on this tab."
+                        ),
+                        text_color="green",
+                    )
+                    self.accept_button.configure(state="disabled")
+                    return False
+                self.validation_label.configure(
+                    text=(
+                        "✓ Configuration is complete and valid. "
+                        "Use Accept configuration below when you are done with metadata."
+                    ),
+                    text_color="green",
+                )
+            else:
+                self.validation_label.configure(
+                    text="✓ Basic configuration is valid. Complete time and count selection to finalize.",
+                    text_color="green",
+                )
+            self.accept_button.configure(state="normal")
+            return True
+        finally:
+            if hasattr(self, "next_tab_btn"):
+                self._update_wizard_action_highlights()
     
     def _on_accept_configuration(self) -> None:
         """Handle Accept Configuration button click (Phase 7 - final step)."""
@@ -1976,7 +2359,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         if self.bb_index_map and not self.bb_index_validated:
             self._show_error(
                 "Validate the building-block index CSV against this spreadsheet "
-                '("Validate index vs spreadsheet" on step 5) before accepting.'
+                'Click Validate on step 5 before accepting.'
             )
             return
 
@@ -2226,12 +2609,15 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.bb_index_validated = False
         if hasattr(self, "_refresh_bb_index_path_label"):
             self._refresh_bb_index_path_label()
+        vcol = getattr(config, "compound_variant_column", None)
         if vcol and str(vcol).strip() and str(vcol).strip() in self.available_columns:
             self.selected_variant_column = str(vcol).strip()
             self.variant_var.set(self.selected_variant_column)
         else:
             self.selected_variant_column = None
             self.variant_var.set("(none)")
+
+        self._sync_pedigree_fields_to_ui()
 
         if self.selected_compound_id_column:
             self.compound_var.set(self.selected_compound_id_column)
@@ -2275,7 +2661,16 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.count_names = self.count_names[: len(self.selected_count_indices)]
             self._update_field_selection_ui()
 
-        self._data_assignments_confirmed = False
+        if (
+            parse_ok
+            and self.selected_time_index is not None
+            and self.selected_count_indices
+            and len(self.count_names) == len(self.selected_count_indices)
+        ):
+            self._display_structured_data(use_assignment_headers=True)
+            self._data_assignments_confirmed = True
+        else:
+            self._data_assignments_confirmed = False
         self._validate_selections()
 
         try:

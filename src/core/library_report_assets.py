@@ -40,6 +40,11 @@ def session_report_assets_dir(database_path: Path) -> Path:
     return directory
 
 
+def save_report_figure(fig: object, path: Path, *, dpi: int = REPORT_DPI) -> Path:
+    """Persist a matplotlib figure for embedding in a session library report."""
+    return _save_figure(fig, path, dpi=dpi)
+
+
 def _save_figure(fig: object, path: Path, *, dpi: int = REPORT_DPI) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(  # type: ignore[union-attr]

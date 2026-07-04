@@ -100,6 +100,8 @@ class LibraryScanData:
     signal_quality_min_prominence: Optional[float] = None
     signal_quality_min_pct_area: Optional[float] = None
     signal_quality_by_channel: Dict[str, List] = field(default_factory=dict)
+    source_database_name: str = ""
+    scanned_at: Optional[datetime] = None
 
     def totals_by_channel(self, channel: str) -> List[float]:
         """Per-entry total count for one channel."""

@@ -1,6 +1,6 @@
 # DEL cycle bundle glossary
 
-This guide describes the files written by **Export DEL cycle bundle…** on the Pedigree tab. Field definitions are the same for every export; only row counts and grid files depend on your library.
+This guide describes the files written by **Export analysis bundle…** on the RT assignment tab. Field definitions are the same for every export; only row counts and grid files depend on your library.
 
 ## Bundle contents
 

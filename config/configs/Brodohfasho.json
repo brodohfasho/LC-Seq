@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "name": "Brodohfasho",
+  "config": {
+    "compound_id_column": "Common_Name (N-->C)",
+    "chromatographic_data_column": "all_datapoints",
+    "compound_variant_column": "lid",
+    "delimiters": [
+      ";",
+      ":",
+      ","
+    ],
+    "time_column_index": 0,
+    "count_column_indices": [
+      2
+    ],
+    "count_names": [
+      "Deduplicated Count"
+    ],
+    "selected_metadata_columns": [
+      "All Stereochem (N-->C)",
+      "BB2 Name",
+      "NumHDonors",
+      "enumerated_smiles",
+      "BB1 Name",
+      "BB3 Name",
+      "Exact Mass (COOH)",
+      "AlogP (RDKit)",
+      "TPSA (Å2)",
+      "Cyclized RT (min)",
+      "Linear RT (min)",
+      "null_rt_threshold",
+      "null_rt_verified",
+      "assigned_rt (s)",
+      "rt_source"
+    ],
+    "null_token": "AgxNull",
+    "library_cycle_count": 3,
+    "bb_position_columns": [
+      "BB1 Name",
+      "BB2 Name",
+      "BB3 Name",
+      ""
+    ],
+    "bb_index_map": {},
+    "bb_index_csv_path": null,
+    "analysis_time_unit": "seconds"
+  }
+}

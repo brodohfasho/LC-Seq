@@ -36,12 +36,18 @@ from src.core.library_report_assets import (
     BRANCHES_PER_GRID_PAGE,
     BRANCH_GRID_COLS,
     BRANCH_GRID_ROWS,
+    merge_report_pedigree_figures,
 )
 from src.core.library_report_models import (
     LibraryReportAuditTrail,
     LibraryReportOptions,
     LibraryReportPedigreeBranchFigure,
     LibraryReportPedigreeFigures,
+)
+from src.core.library_report_session import (
+    PedigreeVizReportArtifact,
+    RtAssignmentReportArtifact,
+    SplittreeVizReportArtifact,
 )
 
 logger = logging.getLogger(__name__)
@@ -186,6 +192,99 @@ def _append_bb_index_reference(
     story.append(Spacer(1, 0.16 * inch))
 
 
+def _append_rt_assignment_section(
+    story: list,
+    artifact: RtAssignmentReportArtifact,
+    *,
+    heading_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+) -> None:
+    story.append(PageBreak())
+    story.append(Paragraph("RT assignment", heading_style))
+    story.append(
+        Paragraph(
+            "Summary of the RT assignment run captured from the active session.",
+            body_style,
+        )
+    )
+    story.append(Spacer(1, 0.12 * inch))
+    mode_label = {
+        "pedigree": "Pedigree",
+        "direct_pick": "Direct pick",
+    }.get(artifact.analysis_mode, artifact.analysis_mode)
+    rows = [
+        ["Analysis mode", mode_label],
+        ["Count channel", artifact.channel],
+        ["Time unit", artifact.time_unit],
+        ["Null RT tolerance", f"{artifact.rt_threshold:g}"],
+        ["Isoform filter", artifact.isoform],
+        ["Peak picker", artifact.peak_picking_algorithm or "—"],
+        ["RT resolution source", artifact.rt_source],
+        ["Full products", f"{artifact.n_products:,}"],
+        ["Null-verified products", f"{artifact.n_verified:,}"],
+        ["RT from pedigree", f"{artifact.n_rt_from_pedigree:,}"],
+        ["RT from peak pick", f"{artifact.n_rt_from_peak_pick:,}"],
+        ["RT from metadata", f"{artifact.n_rt_from_metadata:,}"],
+        ["Captured", _format_timestamp(artifact.generated_at)],
+    ]
+    story.append(_styled_table(rows, col_widths=[2.0 * inch, 4.4 * inch]))
+
+
+def _append_splittree_session_section(
+    story: list,
+    artifact: SplittreeVizReportArtifact,
+    *,
+    heading_style: ParagraphStyle,
+    caption_style: ParagraphStyle,
+    body_style: ParagraphStyle,
+    subheading_style: ParagraphStyle,
+) -> None:
+    story.append(PageBreak())
+    story.append(Paragraph("Split-tree visualization", heading_style))
+    story.append(
+        Paragraph(
+            "Split-tree figure generated on the Split-tree visualization tab "
+            "with the settings recorded in the audit trail.",
+            body_style,
+        )
+    )
+    story.append(Spacer(1, 0.12 * inch))
+    config_rows = [
+        ["RT source", artifact.rt_source],
+        ["RT column", artifact.rt_column or "—"],
+        ["Verification column", artifact.verified_column or "—"],
+        ["Isoform", artifact.isoform],
+        ["View", artifact.view_mode],
+        ["Branch BB1", artifact.branch_bb1 or "—"],
+        ["Color mode", artifact.color_mode],
+        ["Color by RT", "Yes" if artifact.color_by_rt else "No"],
+        ["Pass-rate cutoff (%)", f"{artifact.pass_pct_cutoff:g}"],
+        ["Null RT threshold", f"{artifact.rt_threshold:g}"],
+        ["Tree RT source", artifact.del_rt_source],
+        ["Verified products", f"{artifact.n_verified:,}"],
+        ["Captured", _format_timestamp(artifact.generated_at)],
+    ]
+    story.append(_styled_table(config_rows, col_widths=[2.0 * inch, 4.4 * inch]))
+    story.append(Spacer(1, 0.16 * inch))
+    if artifact.image_path.is_file():
+        title = (
+            f"Split-tree ({artifact.view_mode})"
+            if artifact.view_mode
+            else "Split-tree"
+        )
+        story.append(Paragraph(title, subheading_style))
+        if artifact.caption:
+            story.append(Paragraph(artifact.caption, caption_style))
+        try:
+            story.append(
+                _scaled_image(artifact.image_path, max_w=6.8 * inch, max_h=6.8 * inch)
+            )
+        except Exception as exc:
+            logger.warning("Could not embed split-tree figure: %s", exc)
+            story.append(Paragraph(f"(Image unavailable: {exc})", caption_style))
+        story.append(Spacer(1, 0.2 * inch))
+
+
 def _append_pedigree_tier_section(
     story: list,
     pedigree: LibraryReportPedigreeFigures,
@@ -196,7 +295,7 @@ def _append_pedigree_tier_section(
     subheading_style: ParagraphStyle,
 ) -> None:
     story.append(PageBreak())
-    story.append(Paragraph("Pedigree analysis", heading_style))
+    story.append(Paragraph("Pedigree visualization", heading_style))
     story.append(
         Paragraph(
             "Pedigree tier-ring using the display options active in Library Data "
@@ -368,6 +467,9 @@ def generate_library_report_pdf(
     plot_results: Optional[Sequence[PlotResult]] = None,
     report_options: Optional[LibraryReportOptions] = None,
     audit: Optional[LibraryReportAuditTrail] = None,
+    rt_assignment: Optional[RtAssignmentReportArtifact] = None,
+    pedigree_viz: Optional[PedigreeVizReportArtifact] = None,
+    splittree_viz: Optional[SplittreeVizReportArtifact] = None,
     pedigree_figures: Optional[LibraryReportPedigreeFigures] = None,
 ) -> Path:
     """
@@ -387,12 +489,21 @@ def generate_library_report_pdf(
     opts = report_options or LibraryReportOptions(
         include_metrics=bool(snapshot.metric_results),
         include_plots=bool(plots),
-        include_pedigree=False,
-        include_del_cycle=False,
+        include_rt_assignment=rt_assignment is not None,
+        include_pedigree_viz=pedigree_viz is not None,
+        include_splittree=splittree_viz is not None,
         metric_ids=list(snapshot.selected_metrics),
         plot_ids=list(snapshot.selected_plots),
         channels=list(snapshot.selected_channels),
     )
+    if pedigree_viz is not None:
+        pedigree_figures = merge_report_pedigree_figures(
+            pedigree_figures,
+            LibraryReportPedigreeFigures(
+                tier_ring_path=pedigree_viz.image_path,
+                tier_ring_caption=pedigree_viz.caption,
+            ),
+        )
 
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
@@ -463,10 +574,12 @@ def generate_library_report_pdf(
         sections.append("Summary metrics")
     if opts.include_plots:
         sections.append("Visualizations")
-    if opts.include_pedigree:
-        sections.append("Pedigree analysis")
-    if opts.include_del_cycle:
-        sections.append("DEL-cycle analysis")
+    if opts.include_rt_assignment:
+        sections.append("RT assignment")
+    if opts.include_pedigree_viz:
+        sections.append("Pedigree visualization")
+    if opts.include_splittree:
+        sections.append("Split-tree visualization")
     summary_rows.append(["Report sections", ", ".join(sections) or "—"])
     story.append(_styled_table(summary_rows, col_widths=[1.6 * inch, 4.8 * inch]))
 
@@ -484,8 +597,27 @@ def generate_library_report_pdf(
 
     story.append(PageBreak())
     story.append(Paragraph("Methodology", heading_style))
-    story.append(Paragraph(_METHODOLOGY_TEXT, body_style))
-    story.append(Spacer(1, 0.2 * inch))
+    if opts.include_metrics or opts.include_plots:
+        story.append(Paragraph(_METHODOLOGY_TEXT, body_style))
+        story.append(Spacer(1, 0.2 * inch))
+    else:
+        story.append(
+            Paragraph(
+                "This report embeds session artifacts generated in Library Analysis. "
+                "Run additional analyses in the app before generating a report if you "
+                "need library QC methodology sections.",
+                body_style,
+            )
+        )
+        story.append(Spacer(1, 0.2 * inch))
+
+    if opts.include_rt_assignment and rt_assignment is not None:
+        _append_rt_assignment_section(
+            story,
+            rt_assignment,
+            heading_style=heading_style,
+            body_style=body_style,
+        )
 
     if opts.include_metrics:
         coverage_metrics = [
@@ -557,7 +689,7 @@ def generate_library_report_pdf(
                     story.append(Paragraph(f"(Plot image unavailable: {exc})", caption_style))
                 story.append(Spacer(1, 0.2 * inch))
 
-    if pedigree_figures is not None and (opts.include_pedigree or opts.include_del_cycle):
+    if pedigree_figures is not None and opts.include_pedigree_viz:
         _append_pedigree_section(
             story,
             pedigree_figures,
@@ -566,8 +698,18 @@ def generate_library_report_pdf(
             body_style=body_style,
             subheading_style=subheading_style,
             branch_label_style=branch_label_style,
-            include_pedigree=opts.include_pedigree,
-            include_del_cycle=opts.include_del_cycle,
+            include_pedigree=True,
+            include_del_cycle=False,
+        )
+
+    if opts.include_splittree and splittree_viz is not None:
+        _append_splittree_session_section(
+            story,
+            splittree_viz,
+            heading_style=heading_style,
+            caption_style=caption_style,
+            body_style=body_style,
+            subheading_style=subheading_style,
         )
 
     doc = SimpleDocTemplate(

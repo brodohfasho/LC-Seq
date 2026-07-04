@@ -143,8 +143,9 @@ class TestLibraryReportPdf:
             report_options=LibraryReportOptions(
                 include_metrics=True,
                 include_plots=False,
-                include_pedigree=False,
-                include_del_cycle=False,
+                include_rt_assignment=False,
+                include_pedigree_viz=False,
+                include_splittree=False,
                 metric_ids=[METRIC_TOTAL_COUNT_PER_ENTRY],
                 channels=["Count"],
             ),
