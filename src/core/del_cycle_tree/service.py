@@ -1104,3 +1104,118 @@ def resolve_compound_rt_assignments_for_path(
         )
     finally:
         store.close()
+
+
+def build_del_cycle_tree_from_session_cache(
+    session_data: DelCycleTreeData,
+    config: SpreadsheetConfig,
+    compounds: Sequence[Compound],
+    *,
+    isoform_label: str = "All",
+    rt_threshold: Optional[float] = None,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> DelCycleTreeData:
+    """
+    Rebuild a split-tree from cached session RT assignment data.
+
+    When ``isoform_label`` is ``All``, returns ``session_data`` unchanged.
+    Otherwise filters compounds by isoform and re-nests cached RTs without
+    re-running peak picking or loading chromatograms.
+    """
+    if isoform_label.strip().lower() == "all":
+        return session_data
+
+    threshold = rt_threshold if rt_threshold is not None else session_data.rt_threshold
+    filtered = filter_compounds_by_variant(
+        list(compounds),
+        [isoform_label.strip()],
+    )
+    _report_fraction(
+        progress_callback,
+        _LOAD_PROGRESS_END,
+        f"Filtering session RT assignment for isoform “{isoform_label.strip()}”…",
+    )
+
+    position_rts = flatten_del_tree_rts(session_data.tree)
+    null_token = normalize_bb_name(config.null_token)
+    index_discovery_rows = index_discovery_rows_from_compounds(filtered, config)
+    discovery_canonical = build_bb_name_canonical_map(index_discovery_rows, null_token)
+    row_canonical = build_bb_name_canonical_map(
+        [DelCycleRow(positions=pos, rt=rt) for pos, rt in position_rts.items()],
+        null_token,
+    )
+    canonical_by_lower = merge_bb_name_canonical_maps(discovery_canonical, row_canonical)
+
+    rows: List[DelCycleRow] = []
+    for compound in filtered:
+        positions = positions_c_to_n(compound, config)
+        if positions is None:
+            continue
+        canonical = canonicalize_positions(
+            tuple(normalize_bb_name(bb) for bb in positions),
+            null_token=null_token,
+            canonical_by_lower=canonical_by_lower,
+        )
+        rt = position_rts.get(canonical)
+        if rt is None and canonical != positions:
+            rt = position_rts.get(positions)
+        if rt is None:
+            continue
+        rows.append(DelCycleRow(positions=positions, rt=float(rt)))
+
+    rows = dedupe_rows_by_position(rows)
+    if not rows:
+        raise ValueError(
+            f"No session RT rows match isoform filter {isoform_label!r}. "
+            "Run RT assignment for the full library first."
+        )
+
+    resolution = DelCycleRtResolution(
+        rt_source=session_data.rt_source,
+        peak_picking_algorithm=session_data.peak_picking_algorithm,
+        n_rt_from_pedigree=session_data.n_rt_from_pedigree,
+        n_rt_from_peak_pick=session_data.n_rt_from_peak_pick,
+        n_rt_from_metadata=session_data.n_rt_from_metadata,
+    )
+    return _finalize_del_cycle_tree(
+        rows,
+        config,
+        rt_threshold=threshold,
+        rt_source=session_data.rt_source,
+        rt_resolution=resolution,
+        pedigree_passed_lookup=session_data.pedigree_passed_by_product or None,
+        index_discovery_rows=index_discovery_rows,
+        progress_callback=progress_callback,
+    )
+
+
+def build_del_cycle_tree_from_session_cache_for_path(
+    db_path: Path,
+    config: SpreadsheetConfig,
+    session_data: DelCycleTreeData,
+    *,
+    isoform_label: str = "All",
+    rt_threshold: Optional[float] = None,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> DelCycleTreeData:
+    """Thread-safe wrapper: metadata-only compound load, then session-cache rebuild."""
+    if isoform_label.strip().lower() == "all":
+        return session_data
+
+    store = DataStore(db_path=db_path, use_memory=False)
+    try:
+        compounds = load_all_compound_metadata(
+            store,
+            metadata_columns=config.selected_metadata_columns,
+            progress_callback=progress_callback,
+        )
+        return build_del_cycle_tree_from_session_cache(
+            session_data,
+            config,
+            compounds,
+            isoform_label=isoform_label,
+            rt_threshold=rt_threshold,
+            progress_callback=progress_callback,
+        )
+    finally:
+        store.close()

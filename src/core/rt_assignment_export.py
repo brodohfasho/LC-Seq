@@ -45,6 +45,12 @@ def assigned_rt_column_name(time_unit: str) -> str:
     return f"assigned_rt ({unit_suffix})"
 
 
+def product_rt_column_name(time_unit: str) -> str:
+    """Standard product RT column header for ``del_cycle_products.csv``."""
+    unit_suffix = "min" if str(time_unit).lower().startswith("min") else "s"
+    return f"rt ({unit_suffix})"
+
+
 def parse_null_rt_verified_metadata(value: object) -> Optional[bool]:
     """Parse TRUE/FALSE pass-fail cells exported by LC-Seq (or common synonyms)."""
     if value is None:

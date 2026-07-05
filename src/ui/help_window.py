@@ -1,6 +1,6 @@
 # src/ui/help_window.py
 """
-In-app scientist help viewer (plain-English analysis guides).
+In-app scientist help viewer (plain-English analysis guides with markdown styling).
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from src.core.help_content import (
     get_help_topic,
     list_help_topics,
 )
+from src.core.help_markdown import render_markdown_to_textbox
 from src.ui.base_window import BaseWindow
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class HelpWindow(BaseWindow):
         super().__init__(
             parent,
             title="LC-Seq Analysis Help",
-            transient_parent=False,
+            transient_parent=True,
             modal=False,
             width=900,
             height=640,
@@ -81,6 +82,7 @@ class HelpWindow(BaseWindow):
             initial_topic = "peak_picking"
         self._show_topic(initial_topic)
         self.center_window(900, 640)
+        self._raise_to_front()
 
     def _show_topic(self, topic_id: str) -> None:
         topic = get_help_topic(topic_id)
@@ -88,16 +90,23 @@ class HelpWindow(BaseWindow):
             return
         self._active_topic = topic_id
         self._title_label.configure(text=topic.title)
-        self._text.configure(state="normal")
-        self._text.delete("1.0", "end")
-        self._text.insert("1.0", format_help_with_related(topic_id))
-        self._text.configure(state="disabled")
+        render_markdown_to_textbox(self._text, format_help_with_related(topic_id))
 
         for tid, btn in self._topic_buttons.items():
             if tid == topic_id:
                 btn.configure(fg_color=("#dbeafe", "#1f3d5c"))
             else:
                 btn.configure(fg_color="transparent")
+
+    def _raise_to_front(self) -> None:
+        """Keep the help viewer above its parent window (Windows z-order)."""
+        if self.parent is not None:
+            try:
+                self.transient(self.parent)
+            except Exception:
+                pass
+        self.lift()
+        self.focus_force()
 
     def on_close(self) -> None:
         global _SINGLETON
@@ -112,8 +121,8 @@ def open_help_window(parent, topic_id: str = "peak_picking") -> HelpWindow:
     if _SINGLETON is not None:
         try:
             if _SINGLETON.winfo_exists():
-                _SINGLETON.lift()
-                _SINGLETON.focus_force()
+                _SINGLETON.parent = parent
+                _SINGLETON._raise_to_front()
                 if get_help_topic(topic_id):
                     _SINGLETON._show_topic(topic_id)
                 return _SINGLETON

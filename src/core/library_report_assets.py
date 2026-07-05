@@ -100,6 +100,20 @@ def build_pedigree_tier_report_figure(
     return tier_path, tier_caption
 
 
+def _sorted_bb1_branch_names(del_data: DelCycleTreeData) -> List[str]:
+    """BB1 branch names sorted by display index (#N), then alphabetically."""
+    null = del_data.null_token
+    names = [name for name in del_data.bb1_names if name != null]
+    return sorted(
+        names,
+        key=lambda name: (
+            lookup_bb_display_index(name, del_data.bb_index_global, null_token=null)
+            or 10**9,
+            name.lower(),
+        ),
+    )
+
+
 def build_del_cycle_report_figures(
     del_data: DelCycleTreeData,
     *,
@@ -107,28 +121,31 @@ def build_del_cycle_report_figures(
     del_color_by_rt: bool,
     del_pass_pct_cutoff: float = 0.0,
     output_dir: Path,
+    include_full_tree: bool = True,
 ) -> LibraryReportPedigreeFigures:
     """Render DEL-cycle full tree and BB1 branch plots for the report."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    del_full_path = output_dir / "del_cycle_full.png"
-    del_fig = render_del_cycle_tree_figure(
-        del_data,
-        view=DelCycleTreeView.FULL,
-        color_by_rt=del_color_by_rt,
-        color_mode=del_color_mode,
-        pass_pct_cutoff=del_pass_pct_cutoff,
-        figsize=REPORT_DEL_FULL_FIGSIZE,
-    )
-    _save_figure(del_fig, del_full_path)
-    del_full_caption = (
-        f"DEL-cycle full tree — {del_data.n_verified:,} RT-verified products, "
-        f"RT source: {del_data.rt_source}, threshold {del_data.rt_threshold:g}."
-    )
+    del_full_path: Optional[Path] = None
+    del_full_caption = ""
+    if include_full_tree:
+        del_full_path = output_dir / "del_cycle_full.png"
+        del_fig = render_del_cycle_tree_figure(
+            del_data,
+            view=DelCycleTreeView.FULL,
+            color_by_rt=del_color_by_rt,
+            color_mode=del_color_mode,
+            pass_pct_cutoff=del_pass_pct_cutoff,
+            figsize=REPORT_DEL_FULL_FIGSIZE,
+        )
+        _save_figure(del_fig, del_full_path)
+        del_full_caption = (
+            f"DEL-cycle full tree — {del_data.n_verified:,} RT-verified products, "
+            f"RT source: {del_data.rt_source}, threshold {del_data.rt_threshold:g}."
+        )
 
-    null = del_data.null_token
-    branch_names = [name for name in del_data.bb1_names if name != null]
+    branch_names = _sorted_bb1_branch_names(del_data)
     branch_figures: List[LibraryReportPedigreeBranchFigure] = []
     for bb1_name in branch_names:
         safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in bb1_name)

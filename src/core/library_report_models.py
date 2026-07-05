@@ -169,7 +169,7 @@ class LibraryReportAuditTrail:
                     ["RT analysis mode", self.rt_analysis_mode or "—"],
                     ["RT assignment channel", self.pedigree_channel or "—"],
                     ["RT assignment time unit", self.pedigree_time_unit or "—"],
-                    ["RT assignment tolerance", f"{self.pedigree_tolerance:g}"],
+                    ["Null RT threshold", f"{self.pedigree_tolerance:g}"],
                     ["RT assignment isoform", self.pedigree_isoform],
                     ["Peak picker", self.pedigree_peak_picker or "—"],
                 ]
@@ -192,7 +192,7 @@ class LibraryReportAuditTrail:
                     ["Split-tree view", self.splittree_view_mode or "—"],
                     ["DEL color mode", self.del_color_mode],
                     ["DEL color leaves by RT", "Yes" if self.del_color_by_rt else "No"],
-                    ["DEL RT threshold", f"{self.del_rt_threshold:g}"],
+                    ["Null RT threshold", f"{self.del_rt_threshold:g}"],
                     ["DEL RT resolution source", self.del_rt_source or "—"],
                 ]
             )

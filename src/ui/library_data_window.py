@@ -33,6 +33,7 @@ from src.core.library_report_session import (
     missing_report_sections,
 )
 from src.core.library_report_assets import (
+    build_del_cycle_report_figures,
     build_pedigree_tier_report_figure,
     session_report_assets_dir,
 )
@@ -58,11 +59,13 @@ from src.core.library_metrics import LIBRARY_METRIC_DEFINITIONS, SIGNAL_QUALITY_
 from src.core.library_metrics_store import (
     database_paths_match,
     any_session_scan_exists,
+    delete_all_saved_snapshots,
     delete_all_session_scans,
     export_scan_pickle,
     get_latest_snapshot_path,
     get_library_data_dir,
     list_session_scan_paths,
+    list_snapshots,
     load_scan_pickle,
     load_session_scan,
     load_snapshot,
@@ -91,7 +94,7 @@ from src.core.pedigree_analysis_store import (
     session_pedigree_dir,
 )
 from src.core.pedigree_backend import pedigree_backend_available
-from src.core.pedigree_export import export_pedigree_csv, export_product_prominence_csv
+from src.core.pedigree_export import export_pedigree_csv
 from src.core.pedigree_render import (
     PedigreeTreeRenderOptions,
     build_default_tree_render_options,
@@ -116,6 +119,7 @@ from src.core.del_cycle_tree import (
     build_assignments_from_del_cycle_tree,
     build_del_cycle_tree_for_path,
     build_del_cycle_tree_from_metadata_for_path,
+    build_del_cycle_tree_from_session_cache_for_path,
     registered_metadata_column_names,
     validate_registered_metadata_columns,
     export_del_cycle_package,
@@ -123,7 +127,10 @@ from src.core.del_cycle_tree import (
     resolve_compound_rt_assignments_for_path,
 )
 from src.core.del_cycle_tree.models import MetadataRtColumnInfo
-from src.core.del_cycle_tree.bb_index_scheme import format_bb_branch_label
+from src.core.del_cycle_tree.bb_index_scheme import (
+    format_bb_branch_label,
+    lookup_bb_display_index,
+)
 from src.core.del_cycle_tree.render import COLOR_MODE_NOTEBOOK, COLOR_MODE_PEDIGREE
 from src.models.analysis_settings import AnalysisSettings
 from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeTierSummary
@@ -260,6 +267,7 @@ class LibraryDataWindow(BaseWindow):
         self._config: Optional[SpreadsheetConfig] = None
         self._index_db_mode = False
         self._worker_thread: Optional[threading.Thread] = None
+        self._worker_busy = False
         self._metrics_frame: Optional[ctk.CTkScrollableFrame] = None
         self._plot_list_frame: Optional[ctk.CTkScrollableFrame] = None
         self._content_tabview: Optional[ctk.CTkTabview] = None
@@ -474,19 +482,32 @@ class LibraryDataWindow(BaseWindow):
         op_id = self._worker_op_id
 
         def invoke() -> None:
-            if not self._ui_is_active():
-                return
-            if op_id != self._active_operation_id:
-                return
             try:
-                callback(*args)
-            except tk.TclError:
-                pass
+                if not self._ui_is_active():
+                    return
+                if op_id != self._active_operation_id:
+                    return
+                try:
+                    callback(*args)
+                except tk.TclError:
+                    pass
+            finally:
+                if op_id == self._active_operation_id:
+                    self._worker_busy = False
+                    try:
+                        self._update_action_states()
+                    except tk.TclError:
+                        pass
 
         try:
             self.after(0, invoke)
         except tk.TclError:
-            pass
+            if op_id == self._active_operation_id:
+                self._worker_busy = False
+                try:
+                    self._update_action_states()
+                except tk.TclError:
+                    pass
 
     def _clear_main_reference(self, event: tk.Event) -> None:
         if event.widget != self:
@@ -781,22 +802,42 @@ class LibraryDataWindow(BaseWindow):
         self._metrics_btn.pack(fill="x", pady=(0, 8))
         self._busy_sensitive_widgets.append(self._metrics_btn)
 
-        self._save_btn, self._load_last_btn, self._browse_btn = self._pack_save_load_row(
+        self._save_btn = ctk.CTkButton(
             actions,
-            save_command=self._on_save,
-            load_command=self._on_load_last,
-            browse_command=self._on_browse_saved,
+            text="Save results",
+            command=self._on_save,
         )
+        self._save_btn.pack(fill="x", pady=(0, 4))
+        self._busy_sensitive_widgets.append(self._save_btn)
 
-        self._export_metrics_sidebar_btn = ctk.CTkButton(
-            actions,
-            text="Export metrics CSV…",
+        metrics_load_row = ctk.CTkFrame(actions, fg_color="transparent")
+        metrics_load_row.pack(fill="x", pady=(0, 4))
+        self._load_last_btn = ctk.CTkButton(
+            metrics_load_row,
+            text="Load last",
+            width=90,
             fg_color="gray40",
-            state="disabled",
-            command=self._on_export_metrics_csv,
+            command=self._on_load_last,
         )
-        self._export_metrics_sidebar_btn.pack(fill="x", pady=(0, 4))
-        self._busy_sensitive_widgets.append(self._export_metrics_sidebar_btn)
+        self._load_last_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
+        self._clear_metrics_results_btn = ctk.CTkButton(
+            metrics_load_row,
+            text="Clear all results",
+            width=90,
+            fg_color="gray40",
+            command=self._on_clear_all_metrics_results,
+        )
+        self._clear_metrics_results_btn.pack(side="left", expand=True, fill="x")
+        self._busy_sensitive_widgets.extend([self._load_last_btn, self._clear_metrics_results_btn])
+
+        self._browse_btn = ctk.CTkButton(
+            actions,
+            text="Browse…",
+            fg_color="gray40",
+            command=self._on_browse_saved,
+        )
+        self._browse_btn.pack(fill="x", pady=(0, 4))
+        self._busy_sensitive_widgets.append(self._browse_btn)
 
         ctk.CTkLabel(
             panel,
@@ -1169,7 +1210,7 @@ class LibraryDataWindow(BaseWindow):
         _ped_old_field(old_col, "Max Gaussian σ", self._pedigree_gaussian_stddev_var)
         _ped_old_field(old_col, "Minimum RT", self._pedigree_gaussian_min_rt_var)
 
-        ctk.CTkLabel(pedigree_box, text="Tolerance", font=ctk.CTkFont(size=11, weight="bold")).pack(
+        ctk.CTkLabel(pedigree_box, text="Null RT Threshold", font=ctk.CTkFont(size=11, weight="bold")).pack(
             anchor="w", pady=(6, 0)
         )
         tol_entry = ctk.CTkEntry(pedigree_box, textvariable=self._pedigree_tolerance_var)
@@ -1378,19 +1419,135 @@ class LibraryDataWindow(BaseWindow):
 
     def _session_del_cycle_isoform_matches(self) -> bool:
         """True when cached RT-assignment tree can be reused for the current viz filter."""
-        if self._del_cycle_tree_data is None:
-            return False
-        return self._splittree_isoform_label() == "All"
+        return self._can_reuse_session_del_cycle_tree(self._splittree_isoform_label())
+
+    def _cached_session_del_cycle_isoform(self) -> str:
+        return (self._del_cycle_tree_isoform or "All").strip() or "All"
+
+    def _can_reuse_session_del_cycle_tree(self, isoform: str = "All") -> bool:
+        """True when session RT assignment data can be rendered without re-picking peaks."""
+        _ = isoform
+        return self._del_cycle_tree_data is not None
+
+    def _resolve_splittree_figure(
+        self,
+        data: DelCycleTreeData,
+        *,
+        view_mode: str,
+        branch_selection: str,
+        color_by_rt: bool,
+        color_mode: str,
+        pass_pct_cutoff: float,
+    ) -> Tuple[object, str]:
+        view = (
+            DelCycleTreeView.BRANCH
+            if view_mode == _SPLITTREE_VIEW_BRANCH
+            else DelCycleTreeView.FULL
+        )
+        selected_branch = branch_selection
+        if view == DelCycleTreeView.BRANCH:
+            branches = self._sorted_bb1_branch_names(data)
+            resolved = self._resolve_del_branch_bb1(data, branch_selection)
+            if resolved in branches:
+                selected_branch = resolved
+            elif branches:
+                selected_branch = branches[0]
+        figure = render_del_cycle_tree_figure(
+            data,
+            view=view,
+            branch_bb1=selected_branch if view == DelCycleTreeView.BRANCH else None,
+            color_by_rt=color_by_rt,
+            color_mode=color_mode,
+            pass_pct_cutoff=pass_pct_cutoff,
+        )
+        return figure, selected_branch
+
+    def _render_splittree_from_cached_session(
+        self,
+        isoform: str,
+        *,
+        show_loading: bool,
+    ) -> None:
+        """Render split-tree from cached RT assignment data (no compound re-analysis)."""
+        session_data = self._del_cycle_tree_data
+        if session_data is None or self._config is None or self._db_path is None:
+            return
+        isoform = (isoform or "All").strip() or "All"
+        isoform_filter = isoform.lower() != "all"
+        if show_loading:
+            detail = (
+                f"Filtering session RT assignment for isoform “{isoform}”…"
+                if isoform_filter
+                else "Rendering split-tree from session RT assignment (no re-analysis)…"
+            )
+            self._show_loading_page("Generating split-tree", detail)
+        view_mode = self._splittree_view_mode_var.get()
+        branch_selection = self._pedigree_del_branch_var.get().strip()
+        color_by_rt = bool(self._pedigree_del_color_rt_var.get())
+        color_mode = self._del_tree_color_mode()
+        pass_pct_cutoff = self._read_del_tree_pass_pct_cutoff()
+        settings = self._parse_pedigree_settings()
+        rt_threshold = float(settings.tolerance) if settings is not None else session_data.rt_threshold
+        db_path = self._db_path
+        config = self._config
+
+        def worker() -> None:
+            try:
+                def progress(step: int, total: int, status: str) -> None:
+                    if not show_loading:
+                        return
+                    if total == 1000:
+                        fraction = step / 1000.0
+                    else:
+                        fraction = step / total if total > 0 else 0.0
+                    self._thread_loading_progress(
+                        min(0.95, fraction),
+                        status or "Building split-tree from session RT assignment…",
+                    )
+
+                if isoform_filter:
+                    data = build_del_cycle_tree_from_session_cache_for_path(
+                        db_path,
+                        config,
+                        session_data,
+                        isoform_label=isoform,
+                        rt_threshold=rt_threshold,
+                        progress_callback=progress if show_loading else None,
+                    )
+                else:
+                    data = session_data
+                if show_loading:
+                    self._thread_loading_progress(0.96, "Rendering split-tree figure…")
+                figure, selected_branch = self._resolve_splittree_figure(
+                    data,
+                    view_mode=view_mode,
+                    branch_selection=branch_selection,
+                    color_by_rt=color_by_rt,
+                    color_mode=color_mode,
+                    pass_pct_cutoff=pass_pct_cutoff,
+                )
+                self._bind_worker_callback(
+                    self._on_splittree_session_ready,
+                    data,
+                    figure,
+                    selected_branch,
+                    isoform,
+                )
+            except LibraryOperationCancelled:
+                raise
+            except Exception as exc:
+                logger.error("Cached session split-tree render failed: %s", exc, exc_info=True)
+                self._bind_worker_callback(self._on_splittree_metadata_failed, str(exc))
+
+        self._start_worker(worker)
+        self._update_action_states()
 
     def _reuse_session_del_cycle_for_splittree(self) -> bool:
         """Render split-tree from cached session RT data without rebuilding."""
-        if not self._session_del_cycle_isoform_matches():
-            return False
         isoform = self._splittree_isoform_label()
-        self._splittree_viz_data = self._del_cycle_tree_data
-        self._splittree_viz_isoform = isoform
-        self._update_del_branch_choices(self._splittree_viz_data)
-        self._show_del_cycle_tree_preview(self._splittree_viz_data)
+        if not self._can_reuse_session_del_cycle_tree(isoform):
+            return False
+        self._render_splittree_from_cached_session(isoform, show_loading=False)
         return True
 
     def _format_splittree_rt_column_status(
@@ -2051,7 +2208,8 @@ class LibraryDataWindow(BaseWindow):
             metrics_actions,
             text="Export metrics CSV…",
             width=150,
-            fg_color="gray40",
+            fg_color="#0969da",
+            hover_color="#1f6feb",
             state="disabled",
             command=self._on_export_metrics_csv,
         )
@@ -2384,6 +2542,14 @@ class LibraryDataWindow(BaseWindow):
         )
 
     def _confirm_library_scan(self, entry_count: int) -> bool:
+        overwrite_note = ""
+        if self._cached_scan is not None:
+            loaded = self._scan_entry_count(self._cached_scan)
+            overwrite_note = (
+                f"A library scan is already loaded ({loaded:,} entries parsed). "
+                "Running a new scan will replace it and discard metrics, plots, and "
+                "other results that depend on the current scan.\n\n"
+            )
         index_note = (
             "Index databases parse raw chromatogram text for each entry, so this step "
             "is often the slowest part of a session.\n\n"
@@ -2393,6 +2559,7 @@ class LibraryDataWindow(BaseWindow):
         return self._confirm_long_operation(
             f"This will scan {entry_count:,} library entries across the selected "
             f"count channel(s).\n\n"
+            f"{overwrite_note}"
             f"{index_note}"
             "Large libraries can take several minutes. You can cancel while the scan "
             "runs, but partial results will be discarded.\n\n"
@@ -2657,7 +2824,7 @@ class LibraryDataWindow(BaseWindow):
         caption = (
             f"Split-tree — {data.n_verified:,} verified of "
             f"{len(data.verified_sequences):,} products "
-            f"(RT source: {data.rt_source}, threshold {data.rt_threshold:g})."
+            f"(RT source: {data.rt_source}, null RT threshold {data.rt_threshold:g})."
         )
         self._splittree_artifact = SplittreeVizReportArtifact(
             generated_at=datetime.now(timezone.utc),
@@ -2705,7 +2872,7 @@ class LibraryDataWindow(BaseWindow):
                 ready=metrics is not None,
                 detail=(
                     f"{len(metric_ids)} metric(s) across {len(channels)} channel(s) — "
-                    f"captured {_format_report_time(metrics.generated_at)}."
+                    f"captured {self._format_report_time(metrics.generated_at)}."
                     if metrics is not None
                     else "Run Calculate metrics on the Metrics tab first."
                 ),
@@ -2719,7 +2886,7 @@ class LibraryDataWindow(BaseWindow):
                 ready=plots is not None,
                 detail=(
                     f"{len(plot_ids)} plot type(s) across {len(plots.channels)} channel(s) — "
-                    f"captured {_format_report_time(plots.generated_at)}."
+                    f"captured {self._format_report_time(plots.generated_at)}."
                     if plots is not None
                     else "Run Generate plots on the Plots tab first."
                 ),
@@ -2734,7 +2901,7 @@ class LibraryDataWindow(BaseWindow):
                 detail=(
                     f"{rt_assignment.analysis_mode.replace('_', ' ')} mode — "
                     f"{rt_assignment.n_verified:,} verified products, "
-                    f"captured {_format_report_time(rt_assignment.generated_at)}."
+                    f"captured {self._format_report_time(rt_assignment.generated_at)}."
                     if rt_assignment is not None
                     else "Run RT assignment on the RT assignment tab first."
                 ),
@@ -2746,7 +2913,7 @@ class LibraryDataWindow(BaseWindow):
                 ready=pedigree_viz is not None,
                 detail=(
                     f"Tier-ring — {pedigree_viz.n_nodes:,} nodes, "
-                    f"captured {_format_report_time(pedigree_viz.generated_at)}."
+                    f"captured {self._format_report_time(pedigree_viz.generated_at)}."
                     if pedigree_viz is not None
                     else "Run pedigree RT assignment to capture the tier-ring figure."
                 ),
@@ -2758,7 +2925,7 @@ class LibraryDataWindow(BaseWindow):
                 ready=splittree is not None,
                 detail=(
                     f"{splittree.view_mode} view ({splittree.rt_source} RT source) — "
-                    f"captured {_format_report_time(splittree.generated_at)}."
+                    f"captured {self._format_report_time(splittree.generated_at)}."
                     if splittree is not None
                     else "Click Generate plot on the Split-tree visualization tab first."
                 ),
@@ -2947,13 +3114,49 @@ class LibraryDataWindow(BaseWindow):
         rt_assignment = session.rt_assignment if report_options.include_rt_assignment else None
         pedigree_viz = session.pedigree_viz if report_options.include_pedigree_viz else None
         splittree_viz = session.splittree_viz if report_options.include_splittree else None
+        del_data = (
+            self._splittree_viz_data or self._del_cycle_tree_data
+            if report_options.include_splittree
+            else None
+        )
+        db_path = self._db_path
+        splittree_color_mode = (
+            splittree_viz.color_mode if splittree_viz is not None else self._del_tree_color_mode()
+        )
+        splittree_color_by_rt = (
+            splittree_viz.color_by_rt
+            if splittree_viz is not None
+            else bool(self._pedigree_del_color_rt_var.get())
+        )
+        splittree_pass_pct = (
+            splittree_viz.pass_pct_cutoff
+            if splittree_viz is not None
+            else self._read_del_tree_pass_pct_cutoff()
+        )
+        splittree_shows_full = (
+            splittree_viz.view_mode.strip().lower() in ("full tree", "full")
+            if splittree_viz is not None
+            else True
+        )
 
         self._show_loading_page("Exporting library report", "Writing PDF…")
         self._update_action_states()
 
         def worker() -> None:
             try:
-                self._thread_loading_progress(0.5, "Writing PDF report…")
+                self._thread_loading_progress(0.35, "Rendering split-tree figures for report…")
+                pedigree_figures = None
+                if del_data is not None and report_options.include_splittree:
+                    assets_dir = session_report_assets_dir(db_path) / "del_cycle_report"
+                    pedigree_figures = build_del_cycle_report_figures(
+                        del_data,
+                        del_color_mode=splittree_color_mode,
+                        del_color_by_rt=splittree_color_by_rt,
+                        del_pass_pct_cutoff=splittree_pass_pct,
+                        output_dir=assets_dir,
+                        include_full_tree=not splittree_shows_full,
+                    )
+                self._thread_loading_progress(0.65, "Writing PDF report…")
                 generate_library_report_pdf(
                     snapshot,
                     pdf_path,
@@ -2963,6 +3166,7 @@ class LibraryDataWindow(BaseWindow):
                     rt_assignment=rt_assignment,
                     pedigree_viz=pedigree_viz,
                     splittree_viz=splittree_viz,
+                    pedigree_figures=pedigree_figures,
                 )
                 self._bind_worker_callback(
                     self._on_report_export_ready,
@@ -3006,6 +3210,7 @@ class LibraryDataWindow(BaseWindow):
         if not self._ui_is_active():
             return
         self._worker_thread = None
+        self._worker_busy = False
         self._del_build_show_loading = False
         self._hide_loading_page()
         self._update_action_states()
@@ -3023,6 +3228,7 @@ class LibraryDataWindow(BaseWindow):
         self._cancel_requested.clear()
         self._active_operation_id += 1
         self._worker_op_id = self._active_operation_id
+        self._worker_busy = True
 
         def wrapped() -> None:
             try:
@@ -3138,6 +3344,8 @@ class LibraryDataWindow(BaseWindow):
         return min_prominence, min_pct_area
 
     def _is_busy(self) -> bool:
+        if self._worker_busy:
+            return True
         if self._worker_thread is None:
             return False
         return self._worker_thread.is_alive()
@@ -3152,8 +3360,12 @@ class LibraryDataWindow(BaseWindow):
         has_scan_cache = has_scan or any_session_scan_exists()
         has_plots = bool(self._get_selected_plot_ids()) and has_channels
         try:
+            scan_enabled = has_channels and not busy
             self._scan_btn.configure(
-                state="normal" if has_channels and not busy else "disabled"
+                state="normal" if scan_enabled else "disabled",
+                fg_color="gray40" if has_scan else "#238636",
+                hover_color="gray50" if has_scan else "#2ea043",
+                font=ctk.CTkFont(size=14) if has_scan else _primary_action_font(),
             )
             self._clear_scan_btn.configure(
                 state="normal" if has_scan_cache and not busy else "disabled"
@@ -3202,8 +3414,9 @@ class LibraryDataWindow(BaseWindow):
             self._export_metrics_csv_btn.configure(
                 state="normal" if has_metrics and not busy else "disabled"
             )
-            self._export_metrics_sidebar_btn.configure(
-                state="normal" if has_metrics and not busy else "disabled"
+            saved_snapshot_count = len(list_snapshots())
+            self._clear_metrics_results_btn.configure(
+                state="normal" if saved_snapshot_count > 0 and not busy else "disabled"
             )
             has_report_content = self._session_has_report_artifacts()
             self._export_report_btn.configure(
@@ -3727,7 +3940,6 @@ class LibraryDataWindow(BaseWindow):
                 self._clear_plots_view()
                 self._update_plots_summary([])
                 self._update_status_label()
-                self._focus_tab(_TAB_METRICS)
             except tk.TclError:
                 pass
             finally:
@@ -3934,6 +4146,42 @@ class LibraryDataWindow(BaseWindow):
             )
             return
         self._load_snapshot_from_path(path)
+
+    def _on_clear_all_metrics_results(self) -> None:
+        if self._is_busy():
+            return
+        saved_paths = list_snapshots()
+        if not saved_paths:
+            messagebox.showinfo(
+                "Library Analysis",
+                "No saved Library QC metrics results were found.",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Clear all results",
+            f"Delete all {len(saved_paths):,} saved Library QC metrics result file(s)?\n\n"
+            "This removes snapshot JSON files and their plot folders under "
+            f"{get_library_data_dir()}.\n\n"
+            "This does not clear the in-memory library scan or unsaved metrics on screen.\n\n"
+            "Continue?",
+            parent=self,
+            icon="warning",
+        ):
+            return
+        deleted = delete_all_saved_snapshots()
+        if (
+            self._current_snapshot_path is not None
+            and not self._current_snapshot_path.is_file()
+        ):
+            self._current_snapshot_path = None
+        self._update_status_label()
+        self._update_action_states()
+        messagebox.showinfo(
+            "Library Analysis",
+            f"Removed {deleted:,} saved result file(s).",
+            parent=self,
+        )
 
     def _on_browse_saved(self) -> None:
         path = filedialog.askopenfilename(
@@ -4167,9 +4415,7 @@ class LibraryDataWindow(BaseWindow):
                     "Signal-quality metrics (significant peaks): peak height, SNR, and dynamic "
                     "range use the tallest peak with p-value < α from the same peak picker "
                     "as Chromatogram Visualizer. Baseline μ and σ come from a σ-clipped median "
-                    f"(iteratively drop points above mean+2σ). α = {snapshot.signal_quality_alpha:g}. "
-                    "These are library-wide screening values—not pedigree-validated product "
-                    "prominence."
+                    f"(iteratively drop points above mean+2σ). α = {snapshot.signal_quality_alpha:g}."
                 ),
                 font=ctk.CTkFont(size=11),
                 anchor="w",
@@ -4642,10 +4888,10 @@ class LibraryDataWindow(BaseWindow):
         try:
             tolerance = float(self._pedigree_tolerance_var.get().strip())
         except ValueError:
-            messagebox.showerror("Pedigree", "Tolerance must be a number.", parent=self)
+            messagebox.showerror("Pedigree", "Null RT threshold must be a number.", parent=self)
             return None
         if tolerance <= 0:
-            messagebox.showerror("Pedigree", "Tolerance must be positive.", parent=self)
+            messagebox.showerror("Pedigree", "Null RT threshold must be positive.", parent=self)
             return None
         try:
             alpha = float(self._pedigree_alpha_var.get().strip())
@@ -4704,7 +4950,7 @@ class LibraryDataWindow(BaseWindow):
         )
         parts = [
             f"{result.n_chromatograms:,} chromatograms · channel {result.channel} · "
-            f"picker={picker_label} · tolerance={result.settings.tolerance:g} "
+            f"picker={picker_label} · null RT threshold={result.settings.tolerance:g} "
             f"{result.settings.time_unit}"
         ]
         if result.settings.uses_modern_peak_picker:
@@ -5080,116 +5326,15 @@ class LibraryDataWindow(BaseWindow):
     def _generate_splittree_from_session(self) -> None:
         if self._data_store is None or self._config is None or self._db_path is None:
             return
-        if self._reuse_session_del_cycle_for_splittree():
-            return
-        if self._del_cycle_tree_data is None and self._pedigree_result is None:
+        if self._del_cycle_tree_data is None:
             messagebox.showinfo(
                 "Split-tree visualization",
                 "Run RT assignment on the RT assignment tab first, then generate the plot.",
                 parent=self,
             )
             return
-        settings = self._parse_pedigree_settings()
-        if settings is None:
-            return
-        channel = self._pedigree_channel_var.get().strip()
-        if not channel:
-            messagebox.showinfo(
-                "Split-tree visualization",
-                "Select a count channel on the RT assignment tab first.",
-                parent=self,
-            )
-            return
-
         isoform = self._splittree_isoform_label()
-        iso_note = f" (isoform: {isoform})" if isoform != "All" else ""
-        if isoform != "All":
-            loading_detail = (
-                f"Filtering split-tree for isoform{iso_note} — "
-                "building tree from session RT assignment…"
-            )
-        else:
-            loading_detail = f"Building split-tree from session RT assignment{iso_note}…"
-        self._show_loading_page("Generating split-tree", loading_detail)
-        db_path = self._db_path
-        config = self._config
-        scan = self._cached_scan
-        use_pedigree = (
-            self._pedigree_result is not None
-            and self._last_rt_analysis_mode == _RT_ANALYSIS_PEDIGREE
-        )
-        pedigree_result = self._pedigree_result if use_pedigree else None
-        rt_threshold = float(settings.tolerance)
-        time_unit = settings.time_unit
-        color_by_rt = bool(self._pedigree_del_color_rt_var.get())
-        color_mode = self._del_tree_color_mode()
-        pass_pct_cutoff = self._read_del_tree_pass_pct_cutoff()
-        view_mode = self._splittree_view_mode_var.get()
-        branch_selection = self._pedigree_del_branch_var.get().strip()
-
-        def worker() -> None:
-            try:
-                def progress(step: int, total: int, status: str) -> None:
-                    if total == 1000:
-                        fraction = step / 1000.0
-                    else:
-                        fraction = step / total if total > 0 else 0.0
-                    self._thread_loading_progress(
-                        min(0.95, fraction),
-                        status or "Building split-tree…",
-                    )
-
-                data = build_del_cycle_tree_for_path(
-                    db_path,
-                    config,
-                    settings,
-                    channel,
-                    time_unit,  # type: ignore[arg-type]
-                    rt_threshold=rt_threshold,
-                    pedigree_result=pedigree_result,
-                    isoform_label=isoform,
-                    scan=scan,
-                    use_metadata_rt=False,
-                    progress_callback=progress,
-                )
-                view = (
-                    DelCycleTreeView.BRANCH
-                    if view_mode == _SPLITTREE_VIEW_BRANCH
-                    else DelCycleTreeView.FULL
-                )
-                selected_branch = branch_selection
-                if view == DelCycleTreeView.BRANCH:
-                    null = data.null_token
-                    branches = [name for name in data.bb1_names if name != null]
-                    resolved = self._resolve_del_branch_bb1(data, branch_selection)
-                    if resolved in branches:
-                        selected_branch = resolved
-                    elif branches:
-                        selected_branch = branches[0]
-                self._thread_loading_progress(0.96, "Rendering split-tree figure…")
-                figure = render_del_cycle_tree_figure(
-                    data,
-                    view=view,
-                    branch_bb1=selected_branch if view == DelCycleTreeView.BRANCH else None,
-                    color_by_rt=color_by_rt,
-                    color_mode=color_mode,
-                    pass_pct_cutoff=pass_pct_cutoff,
-                )
-                self._bind_worker_callback(
-                    self._on_splittree_session_ready,
-                    data,
-                    figure,
-                    selected_branch,
-                    isoform,
-                )
-            except LibraryOperationCancelled:
-                raise
-            except Exception as exc:
-                logger.error("Session split-tree build failed: %s", exc, exc_info=True)
-                self._bind_worker_callback(self._on_splittree_metadata_failed, str(exc))
-
-        self._start_worker(worker)
-        self._update_action_states()
+        self._render_splittree_from_cached_session(isoform, show_loading=True)
 
     def _on_splittree_session_ready(
         self,
@@ -5295,8 +5440,7 @@ class LibraryDataWindow(BaseWindow):
                 )
                 selected_branch = branch_selection
                 if view == DelCycleTreeView.BRANCH:
-                    null = data.null_token
-                    branches = [name for name in data.bb1_names if name != null]
+                    branches = self._sorted_bb1_branch_names(data)
                     resolved = self._resolve_del_branch_bb1(data, branch_selection)
                     if resolved in branches:
                         selected_branch = resolved
@@ -5407,6 +5551,19 @@ class LibraryDataWindow(BaseWindow):
         except Exception as exc:
             messagebox.showerror("Pedigree tree", str(exc), parent=self)
 
+    def _sorted_bb1_branch_names(self, data: DelCycleTreeData) -> List[str]:
+        """BB1 branch names sorted by display index (#N), then alphabetically."""
+        null = data.null_token
+        names = [name for name in data.bb1_names if name != null]
+        return sorted(
+            names,
+            key=lambda name: (
+                lookup_bb_display_index(name, data.bb_index_global, null_token=null)
+                or 10**9,
+                name.lower(),
+            ),
+        )
+
     def _resolve_del_branch_bb1(
         self,
         data: DelCycleTreeData,
@@ -5415,7 +5572,7 @@ class LibraryDataWindow(BaseWindow):
         """Map branch dropdown text (``#N name`` or raw name) to a BB1 tree key."""
         selection = (selection or self._pedigree_del_branch_var.get()).strip()
         null = data.null_token
-        branches = [name for name in data.bb1_names if name != null]
+        branches = self._sorted_bb1_branch_names(data)
         if not branches:
             return ""
         if selection in self._del_branch_label_to_name:
@@ -5438,7 +5595,7 @@ class LibraryDataWindow(BaseWindow):
 
     def _update_del_branch_choices(self, data: DelCycleTreeData) -> None:
         null = data.null_token
-        bb1_names = [name for name in data.bb1_names if name != null]
+        bb1_names = self._sorted_bb1_branch_names(data)
         self._del_branch_label_to_name = {
             format_bb_branch_label(name, data.bb_index_global, null_token=null): name
             for name in bb1_names
@@ -5488,7 +5645,7 @@ class LibraryDataWindow(BaseWindow):
                     f"RT: {data.rt_source} (pedigree={data.n_rt_from_pedigree:,}, "
                     f"direct-pick={data.n_rt_from_peak_pick:,}, "
                     f"metadata={data.n_rt_from_metadata:,}) · "
-                    f"picker: {picker_label} · threshold: {data.rt_threshold:g}"
+                    f"picker: {picker_label} · null RT threshold: {data.rt_threshold:g}"
                     f"{agree_note}{iso_note}"
                 ),
                 wraplength=_SIDEBAR_WRAP,
@@ -5555,6 +5712,7 @@ class LibraryDataWindow(BaseWindow):
         self._splittree_artifact = None
         self._rt_assignment_artifact = None
         self._pedigree_viz_artifact = None
+        # Keep _del_cycle_tree_data until a new RT assignment completes successfully.
         if self._rt_analysis_mode_var.get() == _RT_ANALYSIS_PEDIGREE:
             self._last_rt_analysis_mode = _RT_ANALYSIS_PEDIGREE
             self._on_run_pedigree()
@@ -5684,8 +5842,7 @@ class LibraryDataWindow(BaseWindow):
                         else DelCycleTreeView.FULL
                     )
                     if view == DelCycleTreeView.BRANCH:
-                        null = data.null_token
-                        branches = [name for name in data.bb1_names if name != null]
+                        branches = self._sorted_bb1_branch_names(data)
                         resolved = self._resolve_del_branch_bb1(data, branch_selection)
                         if resolved in branches:
                             selected_branch = resolved
@@ -6097,7 +6254,7 @@ class LibraryDataWindow(BaseWindow):
     _PEDIGREE_HELP_MENU: Tuple[Tuple[str, str], ...] = (
         ("pedigree_analysis", "Pedigree analysis"),
         ("pedigree_split_tree", "Split-tree figure"),
-        ("del_cycle_bundle_glossary", "DEL cycle bundle glossary"),
+        ("del_cycle_bundle_glossary", "Export analysis bundle glossary"),
     )
 
     def _show_pedigree_help_menu(self) -> None:
@@ -6473,6 +6630,8 @@ class LibraryDataWindow(BaseWindow):
 
         del_data = self._del_cycle_tree_data
         pedigree_result = self._pedigree_result
+        analysis_settings = self._peek_pedigree_settings()
+        rt_analysis_mode = self._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
         self._show_loading_page(
             "Exporting analysis bundle",
             "Starting export…",
@@ -6486,24 +6645,14 @@ class LibraryDataWindow(BaseWindow):
                 result = export_del_cycle_package(
                     del_data,
                     dest,
+                    analysis_settings=analysis_settings,
+                    rt_analysis_mode=rt_analysis_mode,
+                    pedigree_result=pedigree_result,
                     progress_callback=export_progress,
                 )
-                prominence_path = None
-                if (
-                    pedigree_result is not None
-                    and pedigree_result.product_prominence is not None
-                    and pedigree_result.product_prominence.entries
-                ):
-                    prominence_path = result.output_dir / "product_prominence.csv"
-                    export_product_prominence_csv(
-                        pedigree_result.product_prominence,
-                        prominence_path,
-                        result=pedigree_result,
-                    )
                 self._bind_worker_callback(
                     self._on_del_cycle_export_ready,
                     result,
-                    prominence_path,
                 )
             except LibraryOperationCancelled:
                 raise
@@ -6517,7 +6666,6 @@ class LibraryDataWindow(BaseWindow):
     def _on_del_cycle_export_ready(
         self,
         result: DelCycleExportResult,
-        prominence_path: Optional[Path] = None,
     ) -> None:
         if not self._ui_is_active():
             return
@@ -6538,8 +6686,8 @@ class LibraryDataWindow(BaseWindow):
                     text_color="green",
                 )
             extra = ""
-            if prominence_path is not None:
-                extra = f"\n- {prominence_path.name}"
+            if result.prominence_csv is not None:
+                extra = f"\n- {result.prominence_csv.name}"
             messagebox.showinfo(
                 "Analysis bundle",
                 f"Exported {result.file_count} file(s) to:\n{result.output_dir}\n\n"
@@ -6570,31 +6718,6 @@ class LibraryDataWindow(BaseWindow):
         self._hide_loading_page()
         self._update_action_states()
         messagebox.showerror("DEL-cycle tree", message, parent=self)
-
-    def _on_export_product_prominence_csv(self) -> None:
-        if self._pedigree_result is None or self._pedigree_result.product_prominence is None:
-            return
-        prom = self._pedigree_result.product_prominence
-        if not prom.entries:
-            messagebox.showinfo(
-                "Product prominence",
-                "No pedigree-validated product prominences to export.",
-                parent=self,
-            )
-            return
-        dest = filedialog.asksaveasfilename(
-            parent=self,
-            title="Export product prominence CSV",
-            defaultextension=".csv",
-            filetypes=[("CSV", "*.csv")],
-        )
-        if not dest:
-            return
-        try:
-            export_product_prominence_csv(prom, dest, result=self._pedigree_result)
-            messagebox.showinfo("Product prominence", f"Saved to:\n{dest}", parent=self)
-        except Exception as exc:
-            messagebox.showerror("Product prominence", str(exc), parent=self)
 
     def _on_export_pedigree_tree(self) -> None:
         if self._pedigree_result is None:

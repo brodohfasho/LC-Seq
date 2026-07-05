@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 
 from src.core.del_cycle_tree.export import export_del_cycle_package
 from src.core.del_cycle_tree.models import DelCycleTreeData, VerifiedSequence
+from src.models.analysis_settings import AnalysisSettings
 
 
 def _sample_data() -> DelCycleTreeData:
@@ -82,17 +83,62 @@ def test_products_csv_schema(tmp_path: Path) -> None:
 
 def test_audit_metadata_csv(tmp_path: Path) -> None:
     data = _sample_data()
-    result = export_del_cycle_package(data, tmp_path)
+    settings = AnalysisSettings(
+        count_channel="signal",
+        time_unit="seconds",
+        peak_picking_algorithm="old_school",
+        tolerance=30.0,
+        gaussian_minimum_rt=600.0,
+        gaussian_fit_width=90.0,
+        gaussian_stddev_threshold=120.0,
+    )
+    result = export_del_cycle_package(
+        data,
+        tmp_path,
+        analysis_settings=settings,
+        rt_analysis_mode="direct_pick",
+    )
 
     with result.audit_csv.open(encoding="utf-8", newline="") as fh:
         audit = {row["field"]: row["value"] for row in csv.DictReader(fh)}
 
+    assert audit["analysis_time_unit"] == "seconds"
+    assert audit["null_rt_threshold"] == "30.0"
+    assert audit["null_rt_threshold_unit"] == "seconds"
+    assert audit["gaussian_minimum_rt_seconds"] == "600.0"
     assert audit["rt_threshold"] == "0.5"
     assert audit["rt_source"] == "pedigree"
-    assert audit["peak_picking_algorithm"] == "gaussian"
+    assert audit["rt_analysis_mode"] == "direct_pick"
     assert audit["n_rt_from_pedigree"] == "6"
     assert audit["n_products"] == "6"
     assert audit["full_null_rt"] == "10.0"
+
+    with result.products_csv.open(encoding="utf-8", newline="") as fh:
+        products = list(csv.DictReader(fh))
+    assert "rt (s)" in products[0]
+
+
+def test_products_csv_rt_column_minutes(tmp_path: Path) -> None:
+    data = _sample_data()
+    settings = AnalysisSettings(
+        count_channel="signal",
+        time_unit="minutes",
+        peak_picking_algorithm="modern",
+        tolerance=0.5,
+    )
+    result = export_del_cycle_package(
+        data,
+        tmp_path,
+        analysis_settings=settings,
+        rt_analysis_mode="direct_pick",
+    )
+
+    with result.products_csv.open(encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+
+    assert rows
+    assert "rt (min)" in rows[0]
+    assert "rt (s)" not in rows[0]
 
 
 def test_summary_flags_majority_failed_bb1(tmp_path: Path) -> None:
@@ -166,6 +212,8 @@ def test_del_cycle_bundle_glossary_help_topic() -> None:
     assert "grids/" in text
     assert "green fill" in text
     assert "del_cycle_flagged_building_blocks.csv" in text
+    assert "product_prominence.csv" in text
+    assert "compound_id" in text
 
 
 def test_flagged_building_blocks_csv(tmp_path: Path) -> None:

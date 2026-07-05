@@ -596,3 +596,42 @@ def test_metadata_tree_uses_user_verified_column_override() -> None:
     )
     assert data.verified_sequences[("A", "B", "C")].success is False
 
+
+def test_build_del_cycle_tree_from_session_cache_all_returns_same_object() -> None:
+    """Session split-tree reuse must not re-run peak picking for isoform All."""
+    from src.core.del_cycle_tree.service import build_del_cycle_tree_from_session_cache
+    from src.models.compound import Compound
+    from src.models.spreadsheet_config import SpreadsheetConfig
+
+    session = DelCycleTreeData(
+        library_cycle_count=3,
+        null_token="AgxNull",
+        rt_threshold=0.5,
+        tree={"A": {"B": {"C": 12.0}}},
+        pruned_tree={},
+        verified_sequences={},
+        full_null_rt=None,
+        rt_source="peak_pick",
+        peak_picking_algorithm="old_school",
+    )
+    config = SpreadsheetConfig(
+        compound_id_column="id",
+        chromatographic_data_column="data",
+        library_cycle_count=3,
+        bb_position_columns=["BB1", "BB2", "BB3", ""],
+        null_token="AgxNull",
+    )
+    compounds = [
+        Compound(
+            compound_id="p1",
+            metadata={"BB1": "A", "BB2": "B", "BB3": "C"},
+        )
+    ]
+    result = build_del_cycle_tree_from_session_cache(
+        session,
+        config,
+        compounds,
+        isoform_label="All",
+    )
+    assert result is session
+

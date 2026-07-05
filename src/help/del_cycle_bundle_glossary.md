@@ -1,4 +1,4 @@
-# DEL cycle bundle glossary
+# Export analysis bundle glossary
 
 This guide describes the files written by **Export analysis bundle…** on the RT assignment tab. Field definitions are the same for every export; only row counts and grid files depend on your library.
 
@@ -7,10 +7,11 @@ This guide describes the files written by **Export analysis bundle…** on the R
 | File | Description |
 |------|-------------|
 | `del_cycle_products.csv` | One row per full-length product (no null building blocks). |
-| `del_cycle_audit_metadata.csv` | Run metadata and audit counters (key/value rows). |
+| `del_cycle_audit_metadata.csv` | Run configuration, metadata, and audit counters (key/value rows). |
 | `del_cycle_summary_report.csv` | Pass/fail statistics by cycle-1 hub, cycle-2 BB, and BB1+BB2 arms. |
 | `del_cycle_flagged_building_blocks.csv` | Residues flagged repeatedly as majority-failure contexts. |
 | `grids/del_grid_bb1_*.xlsx` | Color-coded BB2 × BB3 matrices, one workbook per cycle-1 BB (**3-cycle libraries only**). |
+| `product_prominence.csv` | Optional. Included automatically when **Pedigree** RT assignment produced product prominence (no separate export button). |
 
 For libraries with fewer than three coupling cycles, no `grids/` folder is created.
 
@@ -20,9 +21,9 @@ For libraries with fewer than three coupling cycles, no `grids/` folder is creat
 
 **bb1_index … bb4_index** — Display index for tree labeling (from automatic alphabetical order or your optional BB index CSV). The null token uses index 0 and is omitted from product rows.
 
-**rt (s)** — Retention time in seconds for the full product.
+**rt (s)** or **rt (min)** — Retention time for the full product in the analysis time unit recorded in the audit metadata (`analysis_time_unit`).
 
-**rt_verified** — `TRUE` / `FALSE` — product RT matches expected truncation pattern within the configured RT threshold (notebook-style DEL-cycle verification).
+**rt_verified** — `TRUE` / `FALSE` — product RT matches expected truncation pattern within the configured null RT threshold (notebook-style DEL-cycle verification).
 
 **pedigree_passed** — `TRUE` / `FALSE` when pedigree split-tree analysis marked the product as passed; blank if pedigree was not run for this library.
 
@@ -33,25 +34,50 @@ For libraries with fewer than three coupling cycles, no `grids/` folder is creat
 | Field | Definition |
 |-------|------------|
 | `bb_cycle_1` … `bb_cycle_N` | Building-block name at each coupling cycle. |
-| `rt (s)` | Product retention time (seconds). |
+| `rt (s)` or `rt (min)` | Product retention time in the active analysis time unit (column name matches `analysis_time_unit` in the audit file). |
 | `rt_verified` | RT verification outcome (`TRUE` / `FALSE`). |
 | `pedigree_passed` | Pedigree pass outcome (`TRUE` / `FALSE`), or blank if unavailable. |
 | `bb1_index` … `bb4_index` | Display index for the BB name in that coupling column. |
 
 ## del_cycle_audit_metadata.csv
 
-Two columns: `field`, `value`. One row per metadata key.
+Two columns: `field`, `value`. One row per metadata key. When you export after an RT assignment run, this file records the **same parameters shown on the RT assignment tab** plus summary counters from the analysis.
+
+### Run configuration (when exported from Library Analysis)
 
 | Field | Definition |
 |-------|------------|
 | `exported_at_utc` | ISO timestamp when the bundle was written. |
 | `library_cycle_count` | Number of coupling cycles (2–4). |
 | `null_token` | Spreadsheet token for unused coupling positions. |
-| `rt_threshold` | RT verification tolerance (seconds). |
-| `rt_source` | How product RTs were resolved (e.g. pedigree). |
-| `peak_picking_algorithm` | Peak picker used when RTs were re-picked. |
+| `analysis_time_unit` | `seconds` or `minutes` — unit for RT assignment inputs and for time-scaled picker parameters. |
+| `count_channel` | Count channel used for peak picking / RT resolution. |
+| `peak_picking_algorithm` | `modern` or `old_school`. |
+| `rt_analysis_mode` | `direct_pick` (direct pick) or `pedigree` (full-library pedigree RT assignment). |
+| `modern_alpha` | Modern picker significance α (modern mode only). |
+| `min_prominence` | Minimum peak prominence filter (modern mode only). |
+| `min_pct_area` | Minimum peak area percent filter (modern mode only). |
+| `gaussian_min_height_factor` | Old-school min height factor (old-school mode only). |
+| `gaussian_fit_width_seconds` or `gaussian_fit_width_minutes` | Old-school Gaussian fit width in the active time unit. |
+| `gaussian_max_sigma_seconds` or `gaussian_max_sigma_minutes` | Old-school maximum Gaussian σ in the active time unit. |
+| `gaussian_minimum_rt_seconds` or `gaussian_minimum_rt_minutes` | Old-school **Minimum RT** picker cutoff in the active time unit (peaks below this RT are ignored). |
+| `null_rt_threshold` | **Null RT Threshold** on the RT assignment tab — maximum allowed RT difference between a full product and its expected truncation references for null verification to pass. |
+| `null_rt_threshold_unit` | Unit for `null_rt_threshold` (`seconds` or `minutes`). |
+
+**Important:** `null_rt_threshold` is **not** the old-school **Minimum RT** picker setting. For example, with time unit **seconds**, a Null RT Threshold of **30** means verification passes when the product RT is more than 30 seconds away from conflicting truncation RTs; a Minimum RT of **600** means peak picking ignores chromatogram signal below 600 s.
+
+| Field | Definition |
+|-------|------------|
+| `rt_threshold` | Legacy alias for `null_rt_threshold` (same numeric value). Kept for older scripts. |
+
+### Analysis counters
+
+| Field | Definition |
+|-------|------------|
+| `rt_source` | How product RTs were resolved (`peak_pick`, `pedigree`, `metadata`, or mixed labels). |
+| `peak_picking_algorithm` | Algorithm recorded on the DEL tree (may differ from audit config if data were reused). |
 | `n_rt_from_pedigree` | Products whose RT came from pedigree analysis. |
-| `n_rt_from_peak_pick` | Products whose RT came from peak picking. |
+| `n_rt_from_peak_pick` | Products whose RT came from direct peak picking. |
 | `n_rt_from_metadata` | Products whose RT came from spreadsheet metadata. |
 | `n_rt_verified_pedigree_agree` | Products where RT verification and pedigree pass agree. |
 | `full_null_rt` | RT (s) of the all-null truncation reference. |
@@ -119,6 +145,20 @@ Pick one workbook (fixed BB1). Scan across a row to see which BB3 partners work 
 
 Open in Excel or compatible spreadsheet software to see fill colors.
 
+## product_prominence.csv (optional)
+
+Written when **Run RT assignment** used **Pedigree** mode and prominence could be measured at validated product RTs. **Direct pick** runs do not produce this file (no pedigree node records). There is no standalone “Export product prominence” menu item — use **Export analysis bundle…**.
+
+| Field | Definition |
+|-------|------------|
+| `compound_id` | Library compound identifier. |
+| `node_id` | Pedigree tree node id for the full product. |
+| `chosen_rt` | Retention time chosen by pedigree evaluation (active time unit). |
+| `prominence` | Peak prominence at `chosen_rt` on the compound chromatogram (counts). |
+| `passed` | `1` if the product passed pedigree; `0` otherwise (file lists passed products with measured prominence). |
+| `bb_cycle_1` … `bb_cycle_N` | Building-block names at each coupling cycle. |
+| `channel` | Count channel used for the pedigree run. |
+
 ## Related help
 
-Use **Help** on the Pedigree tab for pedigree analysis and split-tree figure guides.
+Use **Help** on the RT assignment tab for split-tree visualization and this glossary. Pedigree tier-ring details are under **Pedigree analysis** and **Split-tree figure**.

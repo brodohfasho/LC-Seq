@@ -216,7 +216,7 @@ def _append_rt_assignment_section(
         ["Analysis mode", mode_label],
         ["Count channel", artifact.channel],
         ["Time unit", artifact.time_unit],
-        ["Null RT tolerance", f"{artifact.rt_threshold:g}"],
+        ["Null RT threshold", f"{artifact.rt_threshold:g}"],
         ["Isoform filter", artifact.isoform],
         ["Peak picker", artifact.peak_picking_algorithm or "—"],
         ["RT resolution source", artifact.rt_source],
@@ -326,21 +326,37 @@ def _append_del_cycle_section(
     body_style: ParagraphStyle,
     subheading_style: ParagraphStyle,
     branch_label_style: ParagraphStyle,
+    include_full_tree: bool = True,
+    include_section_heading: bool = True,
 ) -> None:
-    story.append(PageBreak())
-    story.append(Paragraph("DEL-cycle analysis", heading_style))
-    story.append(
-        Paragraph(
-            "DEL-cycle split trees using the tolerance, coloring, and pass-rate "
-            "settings active in Library Data when the report was generated.",
-            body_style,
-        )
+    branches = [
+        branch
+        for branch in pedigree.del_branch_figures
+        if branch.image_path.is_file()
+    ]
+    has_full = (
+        include_full_tree
+        and pedigree.del_full_tree_path is not None
+        and pedigree.del_full_tree_path.is_file()
     )
-    story.append(Spacer(1, 0.12 * inch))
+    if not has_full and not branches:
+        return
+
+    story.append(PageBreak())
+    if include_section_heading:
+        story.append(Paragraph("DEL-cycle analysis", heading_style))
+        story.append(
+            Paragraph(
+                "DEL-cycle split trees using the null RT threshold, coloring, and pass-rate "
+                "settings active in Library Data when the report was generated.",
+                body_style,
+            )
+        )
+        story.append(Spacer(1, 0.12 * inch))
 
     bb_index_shown = False
 
-    if pedigree.del_full_tree_path is not None and pedigree.del_full_tree_path.is_file():
+    if has_full:
         story.append(Paragraph("DEL-cycle tree (full)", subheading_style))
         if pedigree.del_full_tree_caption:
             story.append(Paragraph(pedigree.del_full_tree_caption, caption_style))
@@ -360,15 +376,12 @@ def _append_del_cycle_section(
         )
         bb_index_shown = True
 
-    branches = [
-        branch
-        for branch in pedigree.del_branch_figures
-        if branch.image_path.is_file()
-    ]
     if not branches:
         return
 
-    story.append(PageBreak())
+    if has_full:
+        story.append(PageBreak())
+
     story.append(Paragraph("DEL-cycle BB1 branches", subheading_style))
     if not bb_index_shown:
         _append_bb_index_reference(
@@ -711,6 +724,22 @@ def generate_library_report_pdf(
             body_style=body_style,
             subheading_style=subheading_style,
         )
+        if pedigree_figures is not None and pedigree_figures.del_branch_figures:
+            splittree_shows_full = splittree_viz.view_mode.strip().lower() in (
+                "full tree",
+                "full",
+            )
+            _append_del_cycle_section(
+                story,
+                pedigree_figures,
+                heading_style=heading_style,
+                caption_style=caption_style,
+                body_style=body_style,
+                subheading_style=subheading_style,
+                branch_label_style=branch_label_style,
+                include_full_tree=not splittree_shows_full,
+                include_section_heading=False,
+            )
 
     doc = SimpleDocTemplate(
         str(target),

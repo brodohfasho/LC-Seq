@@ -25,7 +25,7 @@ class HelpTopic:
 
 HELP_TOPICS: Tuple[HelpTopic, ...] = (
     HelpTopic("peak_picking", "Peak picking", "peak_picking.md", ("integration", "glossary")),
-    HelpTopic("integration", "Peak integration", "integration.md", ("peak_picking",)),
+    HelpTopic("integration", "Peak integration (plot shading)", "integration.md", ("peak_picking", "pedigree_analysis")),
     HelpTopic("null_truncates", "Null truncates & BB columns", "null_truncates.md", ("lineage_analysis", "pedigree_analysis")),
     HelpTopic("lineage_analysis", "Lineage analysis", "lineage_analysis.md", ("null_truncates", "pedigree_analysis")),
     HelpTopic("pedigree_analysis", "Library pedigree (split-tree)", "pedigree_analysis.md", ("null_truncates", "lineage_analysis", "pedigree_split_tree", "del_cycle_bundle_glossary")),
@@ -37,7 +37,7 @@ HELP_TOPICS: Tuple[HelpTopic, ...] = (
     ),
     HelpTopic(
         "del_cycle_bundle_glossary",
-        "DEL cycle bundle glossary",
+        "Export analysis bundle glossary",
         "del_cycle_bundle_glossary.md",
         ("pedigree_analysis", "pedigree_split_tree"),
     ),

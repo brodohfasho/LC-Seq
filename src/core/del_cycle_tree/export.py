@@ -15,7 +15,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from src.core.del_cycle_tree.bb_index_scheme import lookup_bb_display_index
 from src.core.del_cycle_tree.models import DelCycleTreeData, VerifiedSequence
-from src.core.pedigree_export import bb_cycle_field_names
+from src.core.pedigree_export import bb_cycle_field_names, export_product_prominence_csv
+from src.core.rt_assignment_export import product_rt_column_name
+from src.models.analysis_settings import AnalysisSettings
+from src.models.pedigree_result import PedigreeAnalysisResult
 
 _PASS_FILL = PatternFill(start_color="00CC00", end_color="00CC00", fill_type="solid")
 _FAIL_FILL = PatternFill(start_color="FF0000", end_color="FF0000", fill_type="solid")
@@ -23,8 +26,7 @@ _MAJOR_FAIL_PASS_PCT = 50.0
 
 ProgressCallback = Callable[[float, str], None]
 
-_AUDIT_FIELDS = (
-    "rt_threshold",
+_AUDIT_COUNTER_FIELDS = (
     "rt_source",
     "peak_picking_algorithm",
     "n_rt_from_pedigree",
@@ -48,10 +50,11 @@ class DelCycleExportResult:
     summary_csv: Path
     flagged_csv: Path
     grid_files: Tuple[Path, ...] = field(default_factory=tuple)
+    prominence_csv: Optional[Path] = None
 
     @property
     def file_count(self) -> int:
-        return 4 + len(self.grid_files)
+        return 4 + len(self.grid_files) + (1 if self.prominence_csv is not None else 0)
 
 
 def _report_progress(
@@ -72,12 +75,12 @@ def _safe_filename(name: str) -> str:
     return text or "unnamed"
 
 
-def _products_fieldnames(library_cycle_count: int) -> List[str]:
+def _products_fieldnames(library_cycle_count: int, *, rt_column: str) -> List[str]:
     cycles = bb_cycle_field_names(library_cycle_count)
     index_cols = [f"bb{k}_index" for k in range(1, 5)]
     return [
         *cycles,
-        "rt (s)",
+        rt_column,
         "rt_verified",
         "pedigree_passed",
         *index_cols,
@@ -113,9 +116,8 @@ def _cycle_columns(positions: Tuple[str, ...], n_cycles: int) -> Dict[str, str]:
     return out
 
 
-def _audit_metadata(data: DelCycleTreeData, *, n_products: int) -> Dict[str, object]:
+def _audit_counters(data: DelCycleTreeData, *, n_products: int) -> Dict[str, object]:
     return {
-        "rt_threshold": data.rt_threshold,
         "rt_source": data.rt_source,
         "peak_picking_algorithm": data.peak_picking_algorithm,
         "n_rt_from_pedigree": data.n_rt_from_pedigree,
@@ -127,6 +129,98 @@ def _audit_metadata(data: DelCycleTreeData, *, n_products: int) -> Dict[str, obj
         "n_rt_verified": data.n_verified,
         "n_pedigree_passed": data.n_pedigree_passed,
     }
+
+
+def _analysis_settings_audit_rows(
+    settings: AnalysisSettings,
+    *,
+    rt_analysis_mode: Optional[str] = None,
+) -> List[Tuple[str, object]]:
+    """Key/value audit rows describing how RT assignment was configured."""
+    unit = settings.time_unit
+    rows: List[Tuple[str, object]] = [
+        ("analysis_time_unit", unit),
+        ("count_channel", settings.count_channel),
+        ("peak_picking_algorithm", settings.peak_picking_algorithm),
+    ]
+    if rt_analysis_mode:
+        rows.append(("rt_analysis_mode", rt_analysis_mode))
+    if settings.peak_picking_algorithm == "modern":
+        rows.extend(
+            [
+                ("modern_alpha", settings.alpha),
+                ("min_prominence", settings.min_prominence),
+                ("min_pct_area", settings.min_pct_area),
+            ]
+        )
+    else:
+        rows.extend(
+            [
+                ("gaussian_min_height_factor", settings.gaussian_min_height_factor),
+                (f"gaussian_fit_width_{unit}", settings.gaussian_fit_width),
+                (f"gaussian_max_sigma_{unit}", settings.gaussian_stddev_threshold),
+                (f"gaussian_minimum_rt_{unit}", settings.gaussian_minimum_rt),
+            ]
+        )
+    rows.extend(
+        [
+            (
+                "null_rt_threshold",
+                settings.tolerance,
+            ),
+            ("null_rt_threshold_unit", unit),
+        ]
+    )
+    return rows
+
+
+def _audit_metadata_rows(
+    data: DelCycleTreeData,
+    *,
+    n_products: int,
+    analysis_settings: Optional[AnalysisSettings] = None,
+    rt_analysis_mode: Optional[str] = None,
+) -> List[Tuple[str, object]]:
+    """Ordered audit metadata rows for ``del_cycle_audit_metadata.csv``."""
+    exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    rows: List[Tuple[str, object]] = [
+        ("exported_at_utc", exported_at),
+        ("library_cycle_count", data.library_cycle_count),
+        ("null_token", data.null_token),
+    ]
+    if analysis_settings is not None:
+        rows.extend(
+            _analysis_settings_audit_rows(
+                analysis_settings,
+                rt_analysis_mode=rt_analysis_mode,
+            )
+        )
+    else:
+        unit = "seconds"
+        rows.extend(
+            [
+                (
+                    "null_rt_threshold",
+                    data.rt_threshold,
+                ),
+                ("null_rt_threshold_unit", unit),
+                (
+                    "rt_threshold",
+                    data.rt_threshold,
+                ),
+            ]
+        )
+    counters = _audit_counters(data, n_products=n_products)
+    if analysis_settings is not None:
+        rows.append(
+            (
+                "rt_threshold",
+                data.rt_threshold,
+            )
+        )
+    for key in _AUDIT_COUNTER_FIELDS:
+        rows.append((key, counters[key]))
+    return rows
 
 
 def _iter_full_products(
@@ -142,11 +236,17 @@ def _iter_full_products(
         yield positions, info
 
 
-def _product_row(data: DelCycleTreeData, positions: Tuple[str, ...], info: VerifiedSequence) -> Dict[str, object]:
+def _product_row(
+    data: DelCycleTreeData,
+    positions: Tuple[str, ...],
+    info: VerifiedSequence,
+    *,
+    rt_column: str,
+) -> Dict[str, object]:
     indices = _cycle_indices(positions, data.bb_index_global, null_token=data.null_token)
     pedigree_passed = data.pedigree_passed_by_product.get(positions)
     row: Dict[str, object] = {
-        "rt (s)": info.rt,
+        rt_column: info.rt,
         "rt_verified": _bool_csv(bool(info.success)),
         "pedigree_passed": (
             _bool_csv(bool(pedigree_passed))
@@ -190,26 +290,42 @@ def _bb1_names_for_export(data: DelCycleTreeData) -> List[str]:
     return [name for name in data.bb1_names if name != null]
 
 
-def _write_products_csv(data: DelCycleTreeData, path: Path) -> None:
-    fieldnames = _products_fieldnames(data.library_cycle_count)
+def _write_products_csv(
+    data: DelCycleTreeData,
+    path: Path,
+    *,
+    time_unit: str = "seconds",
+) -> None:
+    rt_column = product_rt_column_name(time_unit)
+    fieldnames = _products_fieldnames(data.library_cycle_count, rt_column=rt_column)
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for positions, info in _iter_full_products(data):
-            writer.writerow(_product_row(data, positions, info))
+            writer.writerow(
+                _product_row(data, positions, info, rt_column=rt_column)
+            )
 
 
-def _write_audit_csv(data: DelCycleTreeData, path: Path, *, n_products: int) -> None:
-    meta = _audit_metadata(data, n_products=n_products)
-    exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+def _write_audit_csv(
+    data: DelCycleTreeData,
+    path: Path,
+    *,
+    n_products: int,
+    analysis_settings: Optional[AnalysisSettings] = None,
+    rt_analysis_mode: Optional[str] = None,
+) -> None:
+    rows = _audit_metadata_rows(
+        data,
+        n_products=n_products,
+        analysis_settings=analysis_settings,
+        rt_analysis_mode=rt_analysis_mode,
+    )
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["field", "value"])
-        writer.writerow(["exported_at_utc", exported_at])
-        writer.writerow(["library_cycle_count", data.library_cycle_count])
-        writer.writerow(["null_token", data.null_token])
-        for key in _AUDIT_FIELDS:
-            writer.writerow([key, meta[key]])
+        for key, value in rows:
+            writer.writerow([key, value])
 
 
 def _prefix_stats(
@@ -644,6 +760,9 @@ def export_del_cycle_package(
     data: DelCycleTreeData,
     output_dir: str | Path,
     *,
+    analysis_settings: Optional[AnalysisSettings] = None,
+    rt_analysis_mode: Optional[str] = None,
+    pedigree_result: Optional[PedigreeAnalysisResult] = None,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> DelCycleExportResult:
     """
@@ -655,8 +774,10 @@ def export_del_cycle_package(
     - ``del_cycle_summary_report.csv`` — flagged BB1/BB2 majority-failure patterns
     - ``del_cycle_flagged_building_blocks.csv`` — aggregated problematic residues with commentary
     - ``grids/del_grid_bb1_*.xlsx`` — one color-coded BB2×BB3 grid per BB1 (3-cycle only)
+    - ``product_prominence.csv`` — optional, when ``pedigree_result`` includes prominence data
 
-    Field definitions and grid interpretation: **Help → DEL cycle bundle glossary** in the app.
+    Field definitions and grid interpretation:
+    **Help → Export analysis bundle glossary** on the RT assignment tab.
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -670,9 +791,20 @@ def export_del_cycle_package(
     grids_dir = out_dir / "grids"
 
     _report_progress(progress_callback, 0.05, "Writing product table…")
-    _write_products_csv(data, products_csv)
+    export_time_unit = (
+        analysis_settings.time_unit
+        if analysis_settings is not None
+        else "seconds"
+    )
+    _write_products_csv(data, products_csv, time_unit=export_time_unit)
     _report_progress(progress_callback, 0.15, "Writing audit metadata…")
-    _write_audit_csv(data, audit_csv, n_products=len(products))
+    _write_audit_csv(
+        data,
+        audit_csv,
+        n_products=len(products),
+        analysis_settings=analysis_settings,
+        rt_analysis_mode=rt_analysis_mode,
+    )
     _report_progress(progress_callback, 0.22, "Writing summary report…")
     _write_summary_csv(data, summary_csv)
     _report_progress(progress_callback, 0.28, "Writing flagged building blocks…")
@@ -684,6 +816,19 @@ def export_del_cycle_package(
         progress_start=0.32,
         progress_end=0.92,
     )
+    prominence_csv: Optional[Path] = None
+    if (
+        pedigree_result is not None
+        and pedigree_result.product_prominence is not None
+        and pedigree_result.product_prominence.entries
+    ):
+        _report_progress(progress_callback, 0.94, "Writing product prominence…")
+        prominence_csv = out_dir / "product_prominence.csv"
+        export_product_prominence_csv(
+            pedigree_result.product_prominence,
+            prominence_csv,
+            result=pedigree_result,
+        )
     _report_progress(progress_callback, 1.0, "Export complete.")
 
     return DelCycleExportResult(
@@ -693,6 +838,7 @@ def export_del_cycle_package(
         summary_csv=summary_csv,
         flagged_csv=flagged_csv,
         grid_files=tuple(grid_files),
+        prominence_csv=prominence_csv,
     )
 
 

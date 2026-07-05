@@ -8,7 +8,9 @@ In a DNA-encoded library (DEL), each compound is built step by step. A **truncat
 
 In your spreadsheet, **BB1** is the first coupled position (C-terminus in peptide/DEL convention). **BB3** in a 3-cycle library is the last coupled position (N-terminus).
 
-The analysis engine reads BB values from **mapped columns**, not by splitting the compound name. This avoids errors when a BB name contains dashes (e.g. `DLeu-DLeu-Pro`).
+The analysis engine reads BB values from **mapped columns** on **Configure Spreadsheet → DEL / Pedigree**, not by splitting the compound name. This avoids errors when a BB name contains dashes (e.g. `DLeu-DLeu-Pro`).
+
+Optional **BB index CSV** (Configure Spreadsheet) supplies display indices used in split-tree labels and export columns (`bb1_index`, …).
 
 ## Null token
 
@@ -16,4 +18,6 @@ The **null token** marks an empty position. Only non-null BBs define the equival
 
 ## Why this matters
 
-Lineage and pedigree analysis use BB columns to walk from the all-null root → intermediate classes → full product. Configure BB columns on **Configure Spreadsheet → DEL / Pedigree** before running analysis.
+Lineage and pedigree analysis use BB columns to walk from the all-null root → intermediate classes → full product. **RT assignment** and **Export analysis bundle** write **bb_cycle_1** … **bb_cycle_N** columns using the same mapping.
+
+Configure BB columns before running **Library Analysis** or lineage/pedigree workflows.

@@ -534,6 +534,47 @@ def get_latest_snapshot_path(database_path: Path) -> Optional[Path]:
     return matches[0] if matches else None
 
 
+def delete_snapshot_artifacts(json_path: Path) -> bool:
+    """
+    Remove one saved snapshot JSON file and its companion ``*_plots`` directory.
+
+    Returns:
+        True when the JSON file was removed or was already absent.
+    """
+    path = Path(json_path)
+    ok = True
+    try:
+        if path.is_file():
+            path.unlink()
+            logger.info("Removed library data snapshot: %s", path)
+    except OSError as exc:
+        logger.warning("Could not delete library data snapshot %s: %s", path, exc)
+        ok = False
+    plots_dir = snapshot_plots_dir(path)
+    if plots_dir.is_dir():
+        try:
+            shutil.rmtree(plots_dir)
+            logger.info("Removed snapshot plot directory: %s", plots_dir)
+        except OSError as exc:
+            logger.warning("Could not delete snapshot plot directory %s: %s", plots_dir, exc)
+            ok = False
+    return ok
+
+
+def delete_all_saved_snapshots() -> int:
+    """
+    Delete every saved library metrics snapshot under ``output/library_data``.
+
+    Returns:
+        Number of snapshot JSON files successfully removed.
+    """
+    deleted = 0
+    for path in list_snapshots(newest_first=False):
+        if delete_snapshot_artifacts(path):
+            deleted += 1
+    return deleted
+
+
 def database_paths_match(saved_path: str, active_path: Path) -> bool:
     """True when two database paths refer to the same file."""
     try:
