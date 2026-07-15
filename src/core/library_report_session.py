@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.core.library_metrics import LibraryComputationSnapshot, MetricResult, PlotResult
+from src.core.library_signal_quality import SignalQualityComputeOptions
 from src.core.library_report_models import LibraryReportOptions
 from src.core.pedigree_render import PedigreeTreeRenderOptions
 from src.models.analysis_settings import AnalysisSettings
@@ -173,7 +174,7 @@ def build_report_snapshot(session: LibraryReportSession) -> LibraryComputationSn
             entries_skipped=snap.entries_skipped or session.scan_entries_skipped,
             metric_results=list(snap.metric_results),
             plot_results=list(plots.plot_results) if plots else [],
-            signal_quality_alpha=snap.signal_quality_alpha,
+            signal_quality_options=snap.signal_quality_options,
         )
     return LibraryComputationSnapshot(
         processed_at=generated_at,
@@ -188,5 +189,5 @@ def build_report_snapshot(session: LibraryReportSession) -> LibraryComputationSn
         entries_skipped=session.scan_entries_skipped,
         metric_results=[],
         plot_results=list(plots.plot_results) if plots else [],
-        signal_quality_alpha=0.001,
+        signal_quality_options=SignalQualityComputeOptions(),
     )

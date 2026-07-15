@@ -1,4 +1,5 @@
-"""End-to-end test of the LC-Seq CLI on the real xlsx.
+# docs/archive/lcseq-standalone/tests/test_e2e.py
+"""End-to-end test of the archived LC-Seq CLI on the real xlsx.
 
 Exercises the full pipeline: parse_xlsx → evaluate_library → render_pruned_tree.
 Marked `slow` because xlsx parsing is ~25s.
@@ -6,13 +7,19 @@ Marked `slow` because xlsx parsing is ~25s.
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
-from lcseq.cli import main as cli_main
+_ARCHIVE = Path(__file__).resolve().parents[1]
+_REPO = Path(__file__).resolve().parents[3]
+if str(_ARCHIVE) not in sys.path:
+    sys.path.insert(0, str(_ARCHIVE))
 
-XLSX = Path(__file__).resolve().parent.parent.parent / "data" / "LDEL_ssPID_10-40_Master3.0.xlsx"
+from cli import main as cli_main
+
+XLSX = _REPO / "LC-Seq-New-master" / "data" / "LDEL_ssPID_10-40_Master3.0.xlsx"
 
 
 def _has_dot() -> bool:

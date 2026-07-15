@@ -1,3 +1,5 @@
+"""LC-Seq Python package: Rust analysis engine + pedigree tree rendering."""
+
 from ._native import (
     ClassDiagnostic,
     NodeRecord,
@@ -7,7 +9,6 @@ from ._native import (
     evaluate_library,
     find_peaks,
 )
-from .io import parse_xlsx
 from .render import render_pruned_tree
 
 __all__ = [
@@ -18,6 +19,5 @@ __all__ = [
     "diagnose_class",
     "evaluate_library",
     "find_peaks",
-    "parse_xlsx",
     "render_pruned_tree",
 ]

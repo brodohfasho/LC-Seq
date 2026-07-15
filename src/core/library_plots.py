@@ -19,7 +19,10 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from src.core.library_metrics import LibraryScanData, PlotResult, entry_total_for_channel
-from src.core.library_signal_quality import DEFAULT_SIGNAL_QUALITY_ALPHA
+from src.core.library_signal_quality import (
+    DEFAULT_SIGNAL_QUALITY_ALPHA,
+    SignalQualityComputeOptions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -399,31 +402,26 @@ def _render_total_count_per_fraction(
     return fig
 
 
+def _signal_plot_suffix(options: SignalQualityComputeOptions) -> str:
+    if options.peak_picking_algorithm == "old_school":
+        return "old-school Gaussian"
+    return f"α={options.alpha:g}"
+
+
 def _signal_stats_for_channel(
     scan: LibraryScanData,
     channel: str,
-    signal_quality_alpha: float,
+    signal_quality: SignalQualityComputeOptions,
 ) -> List:
     """Reuse scan signal-quality cache when parameters match; otherwise compute once."""
-    min_prominence = scan.signal_quality_min_prominence or 0.0
-    min_pct_area = scan.signal_quality_min_pct_area or 0.0
     if (
-        scan.signal_quality_alpha is not None
-        and abs(scan.signal_quality_alpha - signal_quality_alpha) < 1e-12
-        and scan.signal_quality_min_prominence == min_prominence
-        and scan.signal_quality_min_pct_area == min_pct_area
+        scan.signal_quality_options == signal_quality
         and channel in scan.signal_quality_by_channel
     ):
         return list(scan.signal_quality_by_channel[channel])
     from src.core.library_metrics import ensure_scan_signal_quality
 
-    ensure_scan_signal_quality(
-        scan,
-        [channel],
-        signal_quality_alpha,
-        min_prominence=min_prominence,
-        min_pct_area=min_pct_area,
-    )
+    ensure_scan_signal_quality(scan, [channel], signal_quality)
     return list(scan.signal_quality_by_channel.get(channel, []))
 
 
@@ -432,7 +430,7 @@ def _render_signal_histogram(
     channel: str,
     dpi: int,
     *,
-    signal_quality_alpha: float,
+    signal_quality: SignalQualityComputeOptions,
     value_fn: Callable,
     xlabel: str,
     title: str,
@@ -440,7 +438,7 @@ def _render_signal_histogram(
     integer_bins: bool = False,
     skip_none: bool = False,
 ) -> Figure:
-    stats_list = _signal_stats_for_channel(scan, channel, signal_quality_alpha)
+    stats_list = _signal_stats_for_channel(scan, channel, signal_quality)
     values: List[float] = []
     for stats in stats_list:
         raw = value_fn(stats)
@@ -453,7 +451,7 @@ def _render_signal_histogram(
         values,
         color=color,
         xlabel=xlabel,
-        title=f"{title} (α={signal_quality_alpha:g})",
+        title=f"{title} ({_signal_plot_suffix(signal_quality)})",
         integer_bins=integer_bins,
     )
     fig.tight_layout()
@@ -465,13 +463,14 @@ def _render_snr_excess_histogram(
     channel: str,
     dpi: int,
     *,
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
 ) -> Figure:
+    sq = signal_quality or SignalQualityComputeOptions()
     return _render_signal_histogram(
         scan,
         channel,
         dpi,
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality=sq,
         value_fn=lambda s: s.tallest_significant_snr_excess,
         xlabel="SNR excess (tallest significant peak − μ)",
         title=f"Tallest significant peak SNR excess — {channel}",
@@ -484,13 +483,14 @@ def _render_snr_ratio_histogram(
     channel: str,
     dpi: int,
     *,
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
 ) -> Figure:
+    sq = signal_quality or SignalQualityComputeOptions()
     return _render_signal_histogram(
         scan,
         channel,
         dpi,
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality=sq,
         value_fn=lambda s: s.tallest_significant_snr_ratio,
         xlabel="SNR ratio ((tallest significant peak − μ) ÷ σ)",
         title=f"Tallest significant peak SNR ratio — {channel}",
@@ -504,13 +504,14 @@ def _render_dynamic_range_histogram(
     channel: str,
     dpi: int,
     *,
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
 ) -> Figure:
+    sq = signal_quality or SignalQualityComputeOptions()
     return _render_signal_histogram(
         scan,
         channel,
         dpi,
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality=sq,
         value_fn=lambda s: s.tallest_significant_dynamic_range,
         xlabel="Dynamic range (tallest significant peak ÷ μ)",
         title=f"Tallest significant peak dynamic range — {channel}",
@@ -524,13 +525,14 @@ def _render_max_prominence_histogram(
     channel: str,
     dpi: int,
     *,
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
 ) -> Figure:
+    sq = signal_quality or SignalQualityComputeOptions()
     return _render_signal_histogram(
         scan,
         channel,
         dpi,
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality=sq,
         value_fn=lambda s: s.max_significant_prominence,
         xlabel="Max prominence (significant peaks)",
         title=f"Max significant peak prominence — {channel}",
@@ -543,13 +545,14 @@ def _render_baseline_mu_histogram(
     channel: str,
     dpi: int,
     *,
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
 ) -> Figure:
+    sq = signal_quality or SignalQualityComputeOptions()
     return _render_signal_histogram(
         scan,
         channel,
         dpi,
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality=sq,
         value_fn=lambda s: s.baseline_mu,
         xlabel="Baseline μ",
         title=f"Baseline level — {channel}",
@@ -562,13 +565,14 @@ def _render_sig_peak_count_histogram(
     channel: str,
     dpi: int,
     *,
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
 ) -> Figure:
+    sq = signal_quality or SignalQualityComputeOptions()
     return _render_signal_histogram(
         scan,
         channel,
         dpi,
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality=sq,
         value_fn=lambda s: s.significant_peak_count,
         xlabel="Significant peak count",
         title=f"Significant peaks per entry — {channel}",
@@ -674,9 +678,8 @@ def generate_plots(
     output_dir: Path,
     *,
     dpi: int = 120,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
     signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
-    min_prominence: float = 0.0,
-    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> List[PlotResult]:
     """
@@ -685,6 +688,7 @@ def generate_plots(
     Returns:
         List of :class:`PlotResult` with ``image_path`` set for each generated file.
     """
+    sq = signal_quality or SignalQualityComputeOptions(alpha=signal_quality_alpha)
     output_dir.mkdir(parents=True, exist_ok=True)
     results: List[PlotResult] = []
 
@@ -709,9 +713,7 @@ def generate_plots(
         ensure_scan_signal_quality(
             scan,
             list(signal_channels),
-            signal_quality_alpha,
-            min_prominence=min_prominence,
-            min_pct_area=min_pct_area,
+            sq,
             progress_callback=progress_callback,
         )
 
@@ -726,9 +728,7 @@ def generate_plots(
         target = output_dir / _safe_plot_filename(plot_id, channel)
         try:
             if definition.category == "signal":
-                fig = definition.render_fn(
-                    scan, channel, dpi, signal_quality_alpha=signal_quality_alpha
-                )
+                fig = definition.render_fn(scan, channel, dpi, signal_quality=sq)
             else:
                 fig = definition.render_fn(scan, channel, dpi)
             try:

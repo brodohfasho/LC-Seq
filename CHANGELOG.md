@@ -2,6 +2,75 @@
 
 All notable releases of LC-Seq are documented here.
 
+## [2.0.0] - 2026-07-05
+
+Major release: Library Analysis, pedigree and lineage workflows, DEL-cycle tree, and export bundle — built on the Rust `lcseq` analysis engine with Python fallbacks where noted.
+
+### Features
+
+#### Spreadsheet and DEL library setup
+- Configure Spreadsheet: BB position columns, null token, library cycle count, optional **BB index CSV** (UTF-8 / Excel) with validation
+- Named spreadsheet presets (`config/configs/`, local only)
+- Saved configurations round-trip through `SpreadsheetConfig`
+
+#### Chromatogram database and visualizer (from 1.0.0, refined)
+- Index and full SQLite database builds under `output/databases/`
+- Multi-compound overlay plots, metadata search, plot export (PNG, PDF, SVG)
+
+#### Peak analysis
+- **Modern** negative-binomial peak picker (Rust when built; Python fallback with parity check)
+- **Old-school** Gaussian peak picker (scipy; Rust path for pedigree when extension is rebuilt)
+- Peak Analysis panel: integration bounds, prominence, engine label (`lcseq (Rust)` vs `Python fallback`)
+
+#### Library Analysis (formerly Library Data)
+- Library-wide scan: signal quality, metrics, fraction plots, session cache (`scan.pkl`)
+- **Pedigree analysis** — null-truncation split tree via Rust `evaluate_library`; pass/fail per tier; CSV and tree PNG/SVG/PDF export
+- **Lineage analysis** — per-class diagnostics (`diagnose_class`) with matplotlib overlays
+- **DEL-cycle analysis** — combinatorial tree build, pass-rate coloring, branch views
+- **DEL-cycle export bundle** — products CSV, audit metadata, summary/flagged building blocks, optional product prominence, Excel saturation grids (background export + progress UI)
+- Library report PDF (pedigree and/or DEL-cycle sections)
+
+#### Help
+- In-app Help topics for peak picking, pedigree, lineage, DEL-cycle, export bundle, signal quality, and glossary
+- Markdown rendering in the Help window (headings, tables, bold, code)
+
+### Analysis engine
+
+- **Rust `lcseq` extension** bundled in the Windows release zip (pedigree and lineage work without a user Rust install)
+- **Python fallback** peak picker in source installs when the extension is missing or fails startup parity check
+- **Graphviz** (optional): high-quality pedigree split-tree layout; matplotlib tier-ring fallback when `dot` is not on PATH
+
+### Windows executable
+
+- PyInstaller one-folder build (`LC-Seq.exe`); versioned zip `LC-Seq-v2.0.0-windows.zip`
+- Release zip contains only `dist/LC-Seq/` (exe + bundled runtime) — not the full git tree, tests, or dev scripts
+
+### Windows install (SmartScreen / antivirus)
+
+LC-Seq is **not code-signed**. On first launch, Windows Defender SmartScreen may show **“Windows protected your PC”** or **“Unknown publisher”**. This is expected for unsigned academic software.
+
+1. Extract the **entire** zip (keep `LC-Seq.exe` and `_internal/` in the same folder).
+2. Double-click `LC-Seq.exe`.
+3. If SmartScreen blocks the app: **More info** → **Run anyway**.
+
+Some third-party antivirus tools may flag PyInstaller bundles or the bundled Rust extension (`lcseq._native`). If quarantined, restore the file and allowlist the extracted `LC-Seq` folder. The project is open source; build steps are in [docs/BUILD.md](docs/BUILD.md).
+
+No Rust or Python install is required for the release zip.
+
+### Documentation
+
+- [docs/LC-Seq-New-master-ANALYSIS.md](docs/LC-Seq-New-master-ANALYSIS.md) — Rust engine integration guide
+- Updated in-app help under `src/help/`
+- [docs/INSTALL.md](docs/INSTALL.md), [docs/BUILD.md](docs/BUILD.md), [docs/RELEASE.md](docs/RELEASE.md)
+
+### Known limitations
+
+- Windows-first; packaged build tested on Windows 10/11 x64
+- Release zip bundles `lcseq` (Rust) — maintainers need Rust only when **building** the zip, not end users
+- No automated GUI smoke tests; manual QA recommended for BB index CSV, pedigree ↔ DEL numbering, and export bundle on large libraries
+- DEL-cycle tree and export logic are Python (`src/core/del_cycle_tree/`); only peak picking inside that path uses the Rust engine when available
+- Very large libraries: full scan and grid export can take significant time and disk; session caches grow under `output/library_data/`
+
 ## [1.0.0] - 2026-05-19
 
 First public release (companion to publication).
@@ -32,4 +101,5 @@ First public release (companion to publication).
 - Executable uses its own data directory (see INSTALL.md)
 - Very large spreadsheets: prefer index databases; full DB builds can take time and disk space
 
+[2.0.0]: https://github.com/brodohfasho/LC-Seq/releases/tag/v2.0.0
 [1.0.0]: https://github.com/brodohfasho/LC-Seq/releases/tag/v1.0.0

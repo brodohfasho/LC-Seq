@@ -103,17 +103,27 @@ class LibraryReportAuditTrail:
     computed_plots: bool = False
     computed_pedigree: bool = False
     computed_del_tree: bool = False
-    # Metrics module
+    # Library QC metrics module (when include_metrics)
     fraction_count: int = 96
-    signal_quality_alpha: float = 0.001
-    min_prominence: float = 0.0
-    min_pct_area: float = 0.0
-    # Pedigree module (when included)
+    qc_peak_picking_algorithm: str = "modern"
+    qc_signal_quality_alpha: float = 0.001
+    qc_time_unit: str = "seconds"
+    qc_gaussian_min_height_factor: float = 0.35
+    qc_gaussian_fit_width: float = 30.0
+    qc_gaussian_stddev_threshold: float = 2.0
+    qc_gaussian_minimum_rt: float = 600.0
+    # RT assignment module (when included)
+    rt_min_prominence: float = 0.0
+    rt_min_pct_area: float = 0.0
     pedigree_channel: str = ""
     pedigree_time_unit: str = ""
     pedigree_tolerance: float = 0.0
     pedigree_alpha: float = 0.001
     pedigree_peak_picker: str = ""
+    rt_gaussian_min_height_factor: float = 0.35
+    rt_gaussian_fit_width: float = 30.0
+    rt_gaussian_stddev_threshold: float = 2.0
+    rt_gaussian_minimum_rt: float = 600.0
     pedigree_isoform: str = "All"
     pedigree_max_display_tier: Optional[int] = None
     pedigree_include_failed: bool = True
@@ -152,11 +162,23 @@ class LibraryReportAuditTrail:
                     ["Metrics selected", ", ".join(opts.metric_ids) or "—"],
                     ["Report channels", ", ".join(opts.channels) or "—"],
                     ["Fraction count", str(self.fraction_count)],
-                    ["Peak significance α", f"{self.signal_quality_alpha:g}"],
-                    ["Min prominence", f"{self.min_prominence:g}"],
-                    ["Min % area", f"{self.min_pct_area:g}"],
+                    ["QC peak picker", self._qc_picker_label()],
                 ]
             )
+            if self.qc_peak_picking_algorithm == "old_school":
+                rows.extend(
+                    [
+                        ["QC time unit", self.qc_time_unit or "—"],
+                        ["QC min height factor", f"{self.qc_gaussian_min_height_factor:g}"],
+                        ["QC Gaussian fit width", f"{self.qc_gaussian_fit_width:g}"],
+                        ["QC max Gaussian σ", f"{self.qc_gaussian_stddev_threshold:g}"],
+                        ["QC minimum RT", f"{self.qc_gaussian_minimum_rt:g}"],
+                    ]
+                )
+            else:
+                rows.append(
+                    ["QC peak significance α", f"{self.qc_signal_quality_alpha:g}"]
+                )
         if opts.include_plots:
             rows.extend(
                 [
@@ -171,9 +193,26 @@ class LibraryReportAuditTrail:
                     ["RT assignment time unit", self.pedigree_time_unit or "—"],
                     ["Null RT threshold", f"{self.pedigree_tolerance:g}"],
                     ["RT assignment isoform", self.pedigree_isoform],
-                    ["Peak picker", self.pedigree_peak_picker or "—"],
+                    ["RT peak picker", self.pedigree_peak_picker or "—"],
                 ]
             )
+            if self.pedigree_peak_picker == "old-school Gaussian":
+                rows.extend(
+                    [
+                        ["RT min height factor", f"{self.rt_gaussian_min_height_factor:g}"],
+                        ["RT Gaussian fit width", f"{self.rt_gaussian_fit_width:g}"],
+                        ["RT max Gaussian σ", f"{self.rt_gaussian_stddev_threshold:g}"],
+                        ["RT minimum RT", f"{self.rt_gaussian_minimum_rt:g}"],
+                    ]
+                )
+            else:
+                rows.extend(
+                    [
+                        ["RT peak significance α", f"{self.pedigree_alpha:g}"],
+                        ["RT min prominence", f"{self.rt_min_prominence:g}"],
+                        ["RT min % area", f"{self.rt_min_pct_area:g}"],
+                    ]
+                )
         if opts.include_pedigree_viz:
             rows.extend(
                 [
@@ -205,3 +244,8 @@ class LibraryReportAuditTrail:
         if when.tzinfo is None:
             return when.strftime("%Y-%m-%d %H:%M:%S")
         return when.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    def _qc_picker_label(self) -> str:
+        if self.qc_peak_picking_algorithm == "old_school":
+            return "old-school Gaussian"
+        return "modern NB"

@@ -14,9 +14,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
-from src.core.lcseq_backend import get_peak_picker_backend
+from src.core.lcseq_backend import (
+    _attach_integration_bounds,
+    find_peaks_for_settings,
+    get_peak_picker_backend,
+)
+from src.core.peak_picker_gaussian import find_peaks_gaussian
 from src.core.peak_quality_filter import filter_detected_peaks
-from src.models.analysis_settings import AnalysisSettings
+from src.models.analysis_settings import (
+    DEFAULT_GAUSSIAN_MIN_HEIGHT_FACTOR,
+    DEFAULT_GAUSSIAN_FIT_WIDTH_MINUTES,
+    DEFAULT_GAUSSIAN_MINIMUM_RT_MINUTES,
+    DEFAULT_GAUSSIAN_STDDEV_THRESHOLD_MINUTES,
+    AnalysisSettings,
+    TimeUnit,
+)
+from src.models.peak_result import PickedPeak
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +37,51 @@ ProgressCallback = Callable[[int, int, str], None]
 
 DEFAULT_SIGNAL_QUALITY_ALPHA = 0.001
 MIN_POINTS_FOR_SIGNAL = 3
+
+
+@dataclass(frozen=True)
+class SignalQualityComputeOptions:
+    """Peak-picker settings for library QC signal metrics and plots."""
+
+    peak_picking_algorithm: str = "modern"
+    alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA
+    time_unit: TimeUnit = "seconds"
+    gaussian_min_height_factor: float = DEFAULT_GAUSSIAN_MIN_HEIGHT_FACTOR
+    gaussian_fit_width: float = DEFAULT_GAUSSIAN_FIT_WIDTH_MINUTES
+    gaussian_stddev_threshold: float = DEFAULT_GAUSSIAN_STDDEV_THRESHOLD_MINUTES
+    gaussian_minimum_rt: float = DEFAULT_GAUSSIAN_MINIMUM_RT_MINUTES
+
+    def cache_key(self) -> tuple:
+        return (
+            self.peak_picking_algorithm,
+            round(float(self.alpha), 12),
+            self.time_unit,
+            round(float(self.gaussian_min_height_factor), 12),
+            round(float(self.gaussian_fit_width), 12),
+            round(float(self.gaussian_stddev_threshold), 12),
+            round(float(self.gaussian_minimum_rt), 12),
+        )
+
+    def picker_label(self) -> str:
+        if self.peak_picking_algorithm == "old_school":
+            return "old-school Gaussian"
+        return "modern NB"
+
+    def to_analysis_settings(self, channel: str) -> AnalysisSettings:
+        """Build settings for shared peak-picking helpers."""
+        return AnalysisSettings(
+            count_channel=channel,
+            time_unit=self.time_unit,
+            chromatogram_time_unit=self.time_unit,
+            peak_picking_algorithm=self.peak_picking_algorithm,  # type: ignore[arg-type]
+            alpha=self.alpha,
+            min_prominence=0.0,
+            min_pct_area=0.0,
+            gaussian_min_height_factor=self.gaussian_min_height_factor,
+            gaussian_fit_width=self.gaussian_fit_width,
+            gaussian_stddev_threshold=self.gaussian_stddev_threshold,
+            gaussian_minimum_rt=self.gaussian_minimum_rt,
+        )
 
 
 @dataclass(frozen=True)
@@ -44,12 +102,36 @@ class EntrySignalStats:
     tallest_significant_snr_ratio: Optional[float]
     tallest_significant_dynamic_range: Optional[float]
     signal_quality_alpha: float
+    peak_picking_algorithm: str = "modern"
+
+
+def _pick_peaks_for_signal_quality(
+    times: Sequence[float],
+    intensity: Sequence[float],
+    channel: str,
+    options: SignalQualityComputeOptions,
+) -> List[PickedPeak]:
+    settings = options.to_analysis_settings(channel)
+    if options.peak_picking_algorithm == "old_school":
+        raw = find_peaks_gaussian(
+            times,
+            intensity,
+            min_height_threshold_factor=settings.gaussian_min_height_factor,
+            fit_width=settings.gaussian_fit_width,
+            stddev_threshold=settings.gaussian_stddev_threshold,
+            minimum_rt=settings.gaussian_minimum_rt,
+        )
+        return _attach_integration_bounds(times, raw)
+    backend = get_peak_picker_backend()
+    picked = backend.find_peaks(times, intensity, options.alpha)
+    return filter_detected_peaks(picked, settings)
 
 
 def compute_entry_signal_stats(
     entry,
     channel: str,
     *,
+    options: Optional[SignalQualityComputeOptions] = None,
     alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
     min_prominence: float = 0.0,
     min_pct_area: float = 0.0,
@@ -57,8 +139,17 @@ def compute_entry_signal_stats(
     """
     Compute signal-quality scalars for one scanned entry.
 
-    Peak height, SNR, and dynamic range use the tallest statistically significant peak.
-  """
+    Peak height, SNR, and dynamic range use the tallest peak after picker-specific
+    detection (modern α-significance or old-school Gaussian).
+    """
+    if options is None:
+        options = SignalQualityComputeOptions(alpha=alpha)
+        if min_prominence > 0 or min_pct_area > 0:
+            logger.debug(
+                "compute_entry_signal_stats: min_prominence/min_pct_area ignored; "
+                "use RT assignment settings for quality filters."
+            )
+
     if channel not in entry.counts_by_channel:
         return None
     intensity = [float(x) for x in entry.counts_by_channel[channel]]
@@ -71,14 +162,7 @@ def compute_entry_signal_stats(
     mu = float(baseline.mu)
     sigma = float(baseline.sigma)
 
-    picked = backend.find_peaks(times, intensity, alpha)
-    quality_settings = AnalysisSettings(
-        count_channel=channel,
-        alpha=alpha,
-        min_prominence=min_prominence,
-        min_pct_area=min_pct_area,
-    )
-    picked = filter_detected_peaks(picked, quality_settings)
+    picked = _pick_peaks_for_signal_quality(times, intensity, channel, options)
     sig_count = len(picked)
     prominences = [float(p.prominence) for p in picked]
     max_prom = max(prominences) if prominences else 0.0
@@ -100,6 +184,7 @@ def compute_entry_signal_stats(
     if mu > 1e-12:
         tallest_sig_dynamic = tallest_sig_height / mu
 
+    report_alpha = options.alpha if options.peak_picking_algorithm == "modern" else 0.0
     return EntrySignalStats(
         compound_id=str(entry.compound_id),
         channel=channel,
@@ -114,7 +199,8 @@ def compute_entry_signal_stats(
         tallest_significant_snr_excess=tallest_sig_snr,
         tallest_significant_snr_ratio=tallest_sig_ratio,
         tallest_significant_dynamic_range=tallest_sig_dynamic,
-        signal_quality_alpha=alpha,
+        signal_quality_alpha=report_alpha,
+        peak_picking_algorithm=options.peak_picking_algorithm,
     )
 
 
@@ -122,6 +208,7 @@ def attach_signal_quality_to_entries(
     entries: Sequence,
     channels: Sequence[str],
     *,
+    options: Optional[SignalQualityComputeOptions] = None,
     alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
     min_prominence: float = 0.0,
     min_pct_area: float = 0.0,
@@ -133,6 +220,8 @@ def attach_signal_quality_to_entries(
     Returns:
         Mapping channel name → list of stats (one per entry that could be computed).
     """
+    if options is None:
+        options = SignalQualityComputeOptions(alpha=alpha)
     out: Dict[str, List[EntrySignalStats]] = {ch: [] for ch in channels}
     total = len(entries) * len(channels)
     done = 0
@@ -145,13 +234,7 @@ def attach_signal_quality_to_entries(
 
     for channel in channels:
         for entry in entries:
-            stats = compute_entry_signal_stats(
-                entry,
-                channel,
-                alpha=alpha,
-                min_prominence=min_prominence,
-                min_pct_area=min_pct_area,
-            )
+            stats = compute_entry_signal_stats(entry, channel, options=options)
             if stats is not None:
                 out[channel].append(stats)
             done += 1
@@ -164,7 +247,7 @@ def export_per_entry_signal_csv(
     stats_by_channel: Dict[str, List[EntrySignalStats]],
     path: str | Path,
     *,
-    alpha: float,
+    options: SignalQualityComputeOptions,
 ) -> Path:
     """Write one row per compound per channel with all per-entry signal scalars."""
     out = Path(path)
@@ -216,10 +299,14 @@ def export_per_entry_signal_csv(
         "tallest_significant_snr_ratio",
         "tallest_significant_dynamic_range",
     ]
+    meta = (
+        f"peak_picking_algorithm={options.peak_picking_algorithm}; "
+        f"signal_quality_alpha={options.alpha:g}; "
+        f"time_unit={options.time_unit}; "
+        "definitions=docs/LIBRARY_SIGNAL_QUALITY.md"
+    )
     with out.open("w", encoding="utf-8", newline="") as fh:
-        fh.write(
-            f"# signal_quality_alpha={alpha}; definitions=docs/LIBRARY_SIGNAL_QUALITY.md\n"
-        )
+        fh.write(f"# {meta}\n")
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)

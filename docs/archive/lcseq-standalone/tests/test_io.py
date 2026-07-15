@@ -1,18 +1,25 @@
-"""Tests for `lcseq.io.parse_xlsx`.
+# docs/archive/lcseq-standalone/tests/test_io.py
+"""Tests for archived ``lcseq_io.parse_xlsx``.
 
 Includes one slow test that parses the full ~100MB master xlsx — gated behind a `slow`
 mark so the fast suite still runs quickly.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from lcseq.io import _parse_datapoints, _unit_factor, parse_xlsx
+_ARCHIVE = Path(__file__).resolve().parents[1]
+_REPO = Path(__file__).resolve().parents[3]
+if str(_ARCHIVE) not in sys.path:
+    sys.path.insert(0, str(_ARCHIVE))
 
-XLSX = Path(__file__).resolve().parent.parent.parent / "data" / "LDEL_ssPID_10-40_Master3.0.xlsx"
+from lcseq_io import _parse_datapoints, _unit_factor, parse_xlsx
+
+XLSX = _REPO / "LC-Seq-New-master" / "data" / "LDEL_ssPID_10-40_Master3.0.xlsx"
 ROOT = ("AgxNull", "AgxNull", "AgxNull")
 
 

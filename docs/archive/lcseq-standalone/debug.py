@@ -1,3 +1,4 @@
+# docs/archive/lcseq-standalone/debug.py
 """Debug visualization for one equivalence class.
 
 All algorithm-relevant values (per-rep initial earliest / most-significant /
@@ -17,7 +18,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 import lcseq
-from lcseq.io import parse_xlsx
+from lcseq_io import parse_xlsx
 
 
 def _legend_handles() -> tuple[list, list[str]]:

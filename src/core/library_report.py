@@ -575,12 +575,15 @@ def generate_library_report_pdf(
         ["Entries skipped", f"{snapshot.entries_skipped:,}"],
     ]
     if opts.include_metrics:
+        qc_opts = snapshot.signal_quality_options
         summary_rows.extend(
             [
                 ["Fraction count", str(snapshot.fraction_count)],
-                ["Peak significance α", f"{snapshot.signal_quality_alpha:g}"],
+                ["QC peak picker", qc_opts.picker_label()],
             ]
         )
+        if qc_opts.peak_picking_algorithm == "modern":
+            summary_rows.append(["QC peak significance α", f"{qc_opts.alpha:g}"])
     summary_rows.append(["Count channels", ", ".join(snapshot.selected_channels) or "—"])
     sections = []
     if opts.include_metrics:
@@ -663,13 +666,17 @@ def generate_library_report_pdf(
                 story.append(Spacer(1, 0.12 * inch))
 
         if signal_metrics:
-            story.append(Paragraph("Signal-quality metrics", subheading_style))
-            story.append(
-                Paragraph(
-                    f"All signal metrics computed with α = {snapshot.signal_quality_alpha:g}.",
-                    body_style,
+            qc_opts = snapshot.signal_quality_options
+            if qc_opts.peak_picking_algorithm == "old_school":
+                signal_intro = (
+                    "All signal metrics computed with old-school Gaussian peak picking."
                 )
-            )
+            else:
+                signal_intro = (
+                    f"All signal metrics computed with modern peak picking (α = {qc_opts.alpha:g})."
+                )
+            story.append(Paragraph("Signal-quality metrics", subheading_style))
+            story.append(Paragraph(signal_intro, body_style))
             story.append(Spacer(1, 0.08 * inch))
             for metric in signal_metrics:
                 story.append(Paragraph(metric.title, styles["Heading3"]))

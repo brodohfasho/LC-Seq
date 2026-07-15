@@ -1,4 +1,5 @@
-"""LC-Seq command-line interface.
+# docs/archive/lcseq-standalone/cli.py
+"""LC-Seq command-line interface (archived standalone tooling).
 
 Wires `parse_xlsx → evaluate_library → render_pruned_tree` end-to-end.
 
@@ -18,9 +19,10 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from . import evaluate_library
-from .io import parse_xlsx
-from .render import render_pruned_tree
+from lcseq import evaluate_library
+from lcseq.render import render_pruned_tree
+
+from lcseq_io import parse_xlsx
 
 
 def _build_parser() -> argparse.ArgumentParser:

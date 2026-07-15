@@ -2,9 +2,10 @@
 
 The packaged app is a **folder** with `LC-Seq.exe` you can pin to the taskbar or place a shortcut on the desktop. Double-click launches the GUI (no terminal window).
 
-## Prerequisites
+## Prerequisites (maintainers only)
 
 - Windows 10/11
+- **[Rust](https://rustup.rs/)** on PATH (`rustc --version`) — used at **build time** to compile `lcseq`; **not** required for users who download the release zip
 - **Use the project virtual environment** with all runtime dependencies installed:
 
 ```powershell
@@ -14,7 +15,7 @@ pip install -r requirements.txt
 pip install -r requirements-build.txt
 ```
 
-The build will fail fast if `customtkinter` is missing from the active Python environment.
+The build will fail fast if `customtkinter` or the `lcseq` extension is missing from the active Python environment.
 
 ## Build
 
@@ -24,14 +25,28 @@ From the repository root:
 .\scripts\build_windows.ps1
 ```
 
+This script:
+
+1. Installs Python dependencies
+2. Runs `maturin develop --release` in `LC-Seq-New-master/` (compiles Rust into `lcseq._native`)
+3. Runs `tests/test_lcseq_backend_parity.py`
+4. Runs PyInstaller (bundles `lcseq` into `_internal/`)
+
 Or manually:
 
 ```powershell
+cd LC-Seq-New-master
+..\venv\Scripts\maturin.exe develop --release
+cd ..
 pip install -r requirements-build.txt
 pyinstaller lc_seq.spec --noconfirm
 ```
 
-Output: `dist\LC-Seq\LC-Seq.exe` (plus `_internal\` support files).
+Output: `dist\LC-Seq\LC-Seq.exe` (plus `_internal\` support files, including the Rust extension).
+
+### End users (GitHub Releases zip)
+
+Users who download **`LC-Seq-v*-windows.zip`** only need to extract and run `LC-Seq.exe`. They do **not** need Rust, Python, or maturin. Pedigree and lineage analysis work from the bundled `lcseq` extension.
 
 ## First run (packaged app)
 
@@ -71,7 +86,7 @@ That uses `config/` and `output/` at the **repo root**, not `dist\LC-Seq\`.
 .\scripts\package_release.ps1
 ```
 
-Creates `release\LC-Seq-v1.0.0-windows.zip` (version from `src/__init__.py`). Upload that file to [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases). See [RELEASE.md](RELEASE.md).
+Creates `release\LC-Seq-v2.0.0-windows.zip` (version from `src/__init__.py`). Upload that file to [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases). See [RELEASE.md](RELEASE.md).
 
 ## Troubleshooting
 

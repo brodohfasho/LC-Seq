@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "name": "MyLibrary",
+  "config": {
+    "compound_id_column": "Compound_ID",
+    "chromatographic_data_column": "chromatogram_data",
+    "compound_variant_column": null,
+    "delimiters": [";", ":", ","],
+    "time_column_index": 0,
+    "count_column_indices": [1, 2],
+    "count_names": ["Count", "Deduplicated Count"],
+    "selected_metadata_columns": []
+  }
+}

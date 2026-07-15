@@ -23,6 +23,7 @@ import pandas as pd
 from src.core.library_signal_quality import (
     DEFAULT_SIGNAL_QUALITY_ALPHA,
     EntrySignalStats,
+    SignalQualityComputeOptions,
     attach_signal_quality_to_entries,
 )
 from src.core.data_processor import DataProcessor
@@ -96,10 +97,14 @@ class LibraryScanData:
     entries_used: int = 0
     entries_skipped: int = 0
     channel_names: List[str] = field(default_factory=list)
-    signal_quality_alpha: Optional[float] = None
-    signal_quality_min_prominence: Optional[float] = None
-    signal_quality_min_pct_area: Optional[float] = None
+    signal_quality_options: Optional[SignalQualityComputeOptions] = None
     signal_quality_by_channel: Dict[str, List] = field(default_factory=dict)
+
+    @property
+    def signal_quality_alpha(self) -> Optional[float]:
+        if self.signal_quality_options is None:
+            return None
+        return self.signal_quality_options.alpha
     source_database_name: str = ""
     scanned_at: Optional[datetime] = None
 
@@ -175,7 +180,13 @@ class LibraryComputationSnapshot:
     entries_skipped: int = 0
     metric_results: List[MetricResult] = field(default_factory=list)
     plot_results: List[PlotResult] = field(default_factory=list)
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA
+    signal_quality_options: SignalQualityComputeOptions = field(
+        default_factory=SignalQualityComputeOptions
+    )
+
+    @property
+    def signal_quality_alpha(self) -> float:
+        return self.signal_quality_options.alpha
 
     @property
     def database_name(self) -> str:
@@ -209,9 +220,9 @@ class MetricComputeOptions:
     """Parameters shared by library metric compute functions."""
 
     fraction_count: int = DEFAULT_FRACTION_COUNT
-    signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA
-    min_prominence: float = 0.0
-    min_pct_area: float = 0.0
+    signal_quality: SignalQualityComputeOptions = field(
+        default_factory=SignalQualityComputeOptions
+    )
 
 
 @dataclass(frozen=True)
@@ -231,17 +242,13 @@ class MetricDefinition:
 def _ensure_signal_quality(
     scan: LibraryScanData,
     channels: Sequence[str],
-    alpha: float,
+    options: SignalQualityComputeOptions,
     *,
-    min_prominence: float = 0.0,
-    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
     """Populate ``scan.signal_quality_by_channel`` when needed."""
     if (
-        scan.signal_quality_alpha == alpha
-        and scan.signal_quality_min_prominence == min_prominence
-        and scan.signal_quality_min_pct_area == min_pct_area
+        scan.signal_quality_options == options
         and scan.signal_quality_by_channel
         and all(ch in scan.signal_quality_by_channel for ch in channels)
     ):
@@ -252,14 +259,10 @@ def _ensure_signal_quality(
     scan.signal_quality_by_channel = attach_signal_quality_to_entries(
         scan.entries,
         channels,
-        alpha=alpha,
-        min_prominence=min_prominence,
-        min_pct_area=min_pct_area,
+        options=options,
         progress_callback=progress_callback,
     )
-    scan.signal_quality_alpha = alpha
-    scan.signal_quality_min_prominence = min_prominence
-    scan.signal_quality_min_pct_area = min_pct_area
+    scan.signal_quality_options = options
 
 
 def _signal_stats_for_channel(
@@ -271,19 +274,15 @@ def _signal_stats_for_channel(
 def ensure_scan_signal_quality(
     scan: LibraryScanData,
     channels: Sequence[str],
-    alpha: float,
+    options: SignalQualityComputeOptions,
     *,
-    min_prominence: float = 0.0,
-    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> None:
-    """Populate per-entry signal stats on ``scan`` when needed (cached by α)."""
+    """Populate per-entry signal stats on ``scan`` when needed (cached by picker settings)."""
     _ensure_signal_quality(
         scan,
         channels,
-        alpha,
-        min_prominence=min_prominence,
-        min_pct_area=min_pct_area,
+        options,
         progress_callback=progress_callback,
     )
 
@@ -338,13 +337,7 @@ def _compute_signal_metric(
     *,
     skip_none: bool = False,
 ) -> List[ChannelAggregateStats]:
-    _ensure_signal_quality(
-        scan,
-        channels,
-        options.signal_quality_alpha,
-        min_prominence=options.min_prominence,
-        min_pct_area=options.min_pct_area,
-    )
+    _ensure_signal_quality(scan, channels, options.signal_quality)
     values: Dict[str, List[float]] = {}
     for name in channels:
         vals: List[float] = []
@@ -730,18 +723,13 @@ def compute_metrics_from_scan(
     *,
     channels: Sequence[str],
     fraction_count: int = DEFAULT_FRACTION_COUNT,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
     signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
-    min_prominence: float = 0.0,
-    min_pct_area: float = 0.0,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> List[MetricResult]:
     """Compute selected metrics from an existing scan (fast aggregation only)."""
-    options = MetricComputeOptions(
-        fraction_count=fraction_count,
-        signal_quality_alpha=signal_quality_alpha,
-        min_prominence=min_prominence,
-        min_pct_area=min_pct_area,
-    )
+    sq = signal_quality or SignalQualityComputeOptions(alpha=signal_quality_alpha)
+    options = MetricComputeOptions(fraction_count=fraction_count, signal_quality=sq)
     selected_channels = [name for name in channels if name in scan.channel_names]
     metric_list = list(metric_ids)
     needs_signal = any(mid in SIGNAL_QUALITY_METRIC_IDS for mid in metric_list)
@@ -749,9 +737,7 @@ def compute_metrics_from_scan(
         _ensure_signal_quality(
             scan,
             selected_channels,
-            signal_quality_alpha,
-            min_prominence=min_prominence,
-            min_pct_area=min_pct_area,
+            sq,
             progress_callback=progress_callback,
         )
 
@@ -772,7 +758,10 @@ def compute_metrics_from_scan(
         if metric_id == METRIC_AVG_COUNT_PER_FRACTION:
             title = f"{definition.title} ({fraction_count})"
         elif metric_id in SIGNAL_QUALITY_METRIC_IDS:
-            title = f"{definition.title} (α={signal_quality_alpha:g})"
+            if sq.peak_picking_algorithm == "old_school":
+                title = f"{definition.title} (old-school Gaussian)"
+            else:
+                title = f"{definition.title} (α={sq.alpha:g})"
         channel_stats = definition.compute_fn(scan, selected_channels, options)
         results.append(
             MetricResult(
@@ -795,10 +784,12 @@ def build_snapshot_from_scan(
     plot_ids: Optional[Sequence[str]] = None,
     plot_results: Optional[Sequence[PlotResult]] = None,
     fraction_count: int = DEFAULT_FRACTION_COUNT,
+    signal_quality: Optional[SignalQualityComputeOptions] = None,
     signal_quality_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> LibraryComputationSnapshot:
     """Build a snapshot with metrics computed from an existing scan."""
+    sq = signal_quality or SignalQualityComputeOptions(alpha=signal_quality_alpha)
     metrics = metric_ids if metric_ids is not None else [
         m.metric_id for m in list_library_metric_definitions()
     ]
@@ -807,7 +798,7 @@ def build_snapshot_from_scan(
         metrics,
         channels=channel_names,
         fraction_count=fraction_count,
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality=sq,
         progress_callback=progress_callback,
     )
     return LibraryComputationSnapshot(
@@ -823,7 +814,7 @@ def build_snapshot_from_scan(
         entries_skipped=scan.entries_skipped,
         metric_results=metric_results,
         plot_results=list(plot_results or []),
-        signal_quality_alpha=signal_quality_alpha,
+        signal_quality_options=sq,
     )
 
 

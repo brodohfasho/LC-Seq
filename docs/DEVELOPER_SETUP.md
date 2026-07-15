@@ -57,7 +57,7 @@ On startup, LC-Seq runs a **parity check** between the installed `lcseq` extensi
 
 ## Rebuild after changing `LC-Seq-New-master`
 
-Whenever Rust peak-picking code changes:
+Whenever Rust peak-picking or pedigree code changes:
 
 1. **Close LC-Seq** (and any Python process importing `lcseq`) so the `.pyd` is not locked.
 2. Rebuild:
@@ -74,6 +74,10 @@ cd LC-Seq-New-master
 ```
 
 If maturin reports `The process cannot access the file because it is being used by another process`, the app is still running — close it and retry.
+
+## Folder layout
+
+The active crate contains Rust source, `python/lcseq/render.py`, and dev tests only. Colleague standalone tooling (xlsx loader, CLI, debug plots) is archived under `docs/archive/lcseq-standalone/`. See [LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md).
 
 ## Feature split: what still requires Rust
 

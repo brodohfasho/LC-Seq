@@ -38,6 +38,21 @@ datas += mpl_datas
 binaries += mpl_binaries
 hiddenimports += mpl_hiddenimports
 
+try:
+    import lcseq  # noqa: F401
+
+    lcseq_datas, lcseq_binaries, lcseq_hiddenimports = collect_all("lcseq")
+    datas += lcseq_datas
+    binaries += lcseq_binaries
+    hiddenimports += lcseq_hiddenimports
+    hiddenimports += ["lcseq", "lcseq._native", "lcseq.render"]
+except ImportError as exc:
+    raise SystemExit(
+        "lcseq extension is not installed in this venv. "
+        "Run .\\scripts\\build_windows.ps1 (builds via maturin) or "
+        "maturin develop --release in LC-Seq-New-master — see docs/BUILD.md."
+    ) from exc
+
 help_dir = project_root / "src" / "help"
 if help_dir.is_dir():
     datas += [(str(help_dir / name), "src/help") for name in help_dir.iterdir() if name.is_file()]
@@ -57,6 +72,9 @@ a = Analysis(
         "PySide6",
         "PySide2",
         "matplotlib.tests",
+        "pytest",
+        "test",
+        "tests",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

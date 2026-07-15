@@ -8,7 +8,7 @@ LC-Seq stores settings under the project `config/` directory. The **Configure Sp
 |------|------------|---------|
 | `config/settings.json` | App on exit / when settings change | Window size, last paths, logging, optional embedded default spreadsheet config |
 | `config/default_config.json` | **Save as default** in Configure | Spreadsheet parsing config loaded when no named config is chosen |
-| `config/configs/<name>.json` | **Save named config** in Configure | Reusable presets per dataset format |
+| `config/configs/<name>.json` | **Save named config** in Configure | Reusable presets per dataset format (local only; gitignored) |
 
 SQLite databases are **not** in `config/`; they live under `output/databases/`.
 
@@ -69,6 +69,8 @@ A config is **complete** when all required fields are set and indices/names are 
 
 ## Named configs (`config/configs/*.json`)
 
+Saved presets live under `config/configs/` on your machine only (gitignored). See `config/examples/named_config.example.json` for the on-disk schema.
+
 Wrapper written by **Save named config**:
 
 | Key | Type | Description |
@@ -103,4 +105,4 @@ Older files without a `config` wrapper are still accepted (body treated as the s
 
 - Column names must match the loaded spreadsheet exactly.
 - `time_column_index` and `count_column_indices` refer to positions **after** delimiter parsing in the chromatogram string, not spreadsheet columns.
-- Do not commit private `settings.json` or large `config/configs/` entries if they contain paths or proprietary names (use `.gitignore` as needed).
+- Do not commit private `settings.json` or `config/configs/` presets (they are gitignored by default).

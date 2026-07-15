@@ -264,7 +264,6 @@ class TestLibraryMetricsStore:
                     channels=[ChannelAggregateStats("Count", 10.0, 2.0, 5)],
                 )
             ],
-            signal_quality_alpha=0.001,
         )
         out = tmp_path / "metrics.csv"
         export_metrics_summary_csv(snapshot, out)

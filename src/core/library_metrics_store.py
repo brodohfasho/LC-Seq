@@ -21,6 +21,10 @@ from src.core.library_metrics import (
     MetricResult,
     PlotResult,
 )
+from src.core.library_signal_quality import (
+    DEFAULT_SIGNAL_QUALITY_ALPHA,
+    SignalQualityComputeOptions,
+)
 
 if TYPE_CHECKING:
     from src.core.library_metrics import LibraryScanData
@@ -30,6 +34,40 @@ logger = logging.getLogger(__name__)
 
 SNAPSHOT_FORMAT_VERSION = "2.1"
 LEGACY_SNAPSHOT_FORMAT_VERSION = "1.0"
+
+
+def _signal_quality_options_to_dict(
+    options: SignalQualityComputeOptions,
+) -> Dict[str, Any]:
+    return {
+        "peak_picking_algorithm": options.peak_picking_algorithm,
+        "alpha": options.alpha,
+        "time_unit": options.time_unit,
+        "gaussian_min_height_factor": options.gaussian_min_height_factor,
+        "gaussian_fit_width": options.gaussian_fit_width,
+        "gaussian_stddev_threshold": options.gaussian_stddev_threshold,
+        "gaussian_minimum_rt": options.gaussian_minimum_rt,
+    }
+
+
+def _signal_quality_options_from_dict(
+    data: Optional[Dict[str, Any]],
+    *,
+    legacy_alpha: float = DEFAULT_SIGNAL_QUALITY_ALPHA,
+) -> SignalQualityComputeOptions:
+    if not data:
+        return SignalQualityComputeOptions(alpha=legacy_alpha)
+    return SignalQualityComputeOptions(
+        peak_picking_algorithm=str(data.get("peak_picking_algorithm", "modern")),
+        alpha=float(data.get("alpha", legacy_alpha)),
+        time_unit=str(data.get("time_unit", "seconds")),  # type: ignore[arg-type]
+        gaussian_min_height_factor=float(
+            data.get("gaussian_min_height_factor", 0.35)
+        ),
+        gaussian_fit_width=float(data.get("gaussian_fit_width", 30.0)),
+        gaussian_stddev_threshold=float(data.get("gaussian_stddev_threshold", 2.0)),
+        gaussian_minimum_rt=float(data.get("gaussian_minimum_rt", 600.0)),
+    )
 
 
 def get_library_data_dir() -> Path:
@@ -351,6 +389,9 @@ def snapshot_to_dict(snapshot: LibraryComputationSnapshot) -> Dict[str, Any]:
         "entries_used": snapshot.entries_used,
         "entries_skipped": snapshot.entries_skipped,
         "signal_quality_alpha": snapshot.signal_quality_alpha,
+        "signal_quality_options": _signal_quality_options_to_dict(
+            snapshot.signal_quality_options
+        ),
         "metric_results": [_metric_result_to_dict(m) for m in snapshot.metric_results],
         "plot_results": [_plot_result_to_dict(p) for p in snapshot.plot_results],
     }
@@ -373,6 +414,14 @@ def snapshot_from_dict(data: Dict[str, Any], json_path: Optional[Path] = None) -
         if isinstance(item, dict)
     ]
 
+    legacy_alpha = float(data.get("signal_quality_alpha", 0.001))
+    signal_quality_options = _signal_quality_options_from_dict(
+        data.get("signal_quality_options")
+        if isinstance(data.get("signal_quality_options"), dict)
+        else None,
+        legacy_alpha=legacy_alpha,
+    )
+
     return LibraryComputationSnapshot(
         processed_at=processed_at,
         database_path=str(data["database_path"]),
@@ -384,7 +433,7 @@ def snapshot_from_dict(data: Dict[str, Any], json_path: Optional[Path] = None) -
         entries_attempted=int(data.get("entries_attempted", 0)),
         entries_used=int(data.get("entries_used", 0)),
         entries_skipped=int(data.get("entries_skipped", 0)),
-        signal_quality_alpha=float(data.get("signal_quality_alpha", 0.001)),
+        signal_quality_options=signal_quality_options,
         metric_results=[
             _metric_result_from_dict(item) for item in data.get("metric_results", [])
         ],

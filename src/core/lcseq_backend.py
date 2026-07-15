@@ -146,7 +146,7 @@ def select_direct_pick_product_rt(
 
     Legacy notebooks fit Gaussians to all significant peaks, then assign the
     cyclized product as the **latest** retention time among accepted fits
-    (``best_mean`` loop in ``old-school/CalculateRTs.ipynb``).
+    (``best_mean`` loop in ``docs/archive/notebooks/CalculateRTs.ipynb``).
     """
     if not peaks:
         return None

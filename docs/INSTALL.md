@@ -1,11 +1,13 @@
 # Installing LC-Seq (Windows executable)
 
-Use this guide if you downloaded **`LC-Seq-*-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases). You do **not** need Python installed.
+Use this guide if you downloaded **`LC-Seq-*-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases). You do **not** need Python or Rust installed.
 
 ## Requirements
 
 - Windows 10 or 11 (64-bit)
 - ~150 MB free disk space for the app folder (more for your spreadsheets and SQLite databases)
+
+The release zip includes the pedigree analysis engine (`lcseq`) precompiled — no separate Rust install.
 
 ## Steps
 
@@ -41,6 +43,8 @@ See the [README](../README.md) sections **What it does**, **Basic workflow**, an
 
 | Issue | What to try |
 |-------|-------------|
+| **“Windows protected your PC”** (SmartScreen) | Expected for unsigned software. **More info** → **Run anyway**. LC-Seq is open source — see [BUILD.md](BUILD.md) for how the zip is built. |
+| **Antivirus blocked or deleted files** | Restore from quarantine; add an exclusion for the extracted `LC-Seq` folder. PyInstaller apps and native `.pyd` extensions are sometimes flagged heuristically. |
 | App won’t start | Extract the full zip; keep `_internal` beside `LC-Seq.exe`. |
 | “Missing DLL” | Install [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) (x64), then retry. |
 | Blank window | Re-download the zip; rebuild from source only if you are a developer ([BUILD.md](BUILD.md)). |

@@ -18,6 +18,7 @@ from src.core.library_metrics import (
     library_coverage_index,
 )
 from src.core.library_signal_quality import (
+    SignalQualityComputeOptions,
     attach_signal_quality_to_entries,
     compute_entry_signal_stats,
     export_per_entry_signal_csv,
@@ -97,7 +98,9 @@ class TestExportCsv:
         entries = [_flat_entry("X", [1.0, 2.0, 80.0, 2.0])]
         stats = attach_signal_quality_to_entries(entries, ["Count"], alpha=0.05)
         out = tmp_path / "signal.csv"
-        export_per_entry_signal_csv(stats, out, alpha=0.05)
+        export_per_entry_signal_csv(
+            stats, out, options=SignalQualityComputeOptions(alpha=0.05)
+        )
         text = out.read_text(encoding="utf-8")
         assert "signal_quality_alpha=0.05" in text
         with out.open(encoding="utf-8") as fh:

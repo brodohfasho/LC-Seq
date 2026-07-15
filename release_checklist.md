@@ -6,7 +6,7 @@ Prepared for the next release after Library Data, pedigree/split-tree, lineage, 
 
 | Item | Status |
 |------|--------|
-| `__version__` | `1.0.0` (unchanged since May 2026 public release) |
+| `__version__` | `2.0.0` |
 | Test suite | **196 passed**, 1 skipped (`pytest tests/`) |
 | Line coverage | ~**31%** overall (`pytest` + `--cov=src`) |
 | CI / GitHub Actions | **None** configured |
@@ -20,28 +20,38 @@ Prepared for the next release after Library Data, pedigree/split-tree, lineage, 
 
 ### P0 — Remove from git (dev artifacts; bloat / wrong place)
 
-These are tracked today but are not source code. They inflate clones and confuse history.
+**Status: complete (2026-07-05).** Runtime artifacts are gitignored; only `output/databases/.gitkeep` remains tracked under `output/`.
 
-| Path | Why |
-|------|-----|
-| `output/library_data/**` (PNGs, JSON snapshots, `scan.pkl`, report assets) | Local session outputs; ~80+ files. Should live only on disk beside the app. |
-| `output/pedigree_analysis/.session/**/*.png` | Same — generated pedigree previews. |
-| `_pedigree_analysis_out.json` (repo root) | One-off debug/export output. |
-| `docs/Untitled` | Empty / stray editor buffer. |
+These were tracked previously but are not source code. They inflate clones and confuse history.
 
-**Recommended follow-up:** Extend `.gitignore` with e.g. `output/library_data/`, `output/pedigree_analysis/`, `output/**/*.pkl`, `output/**/*.png`, `output/**/*.json` (keep `output/databases/.gitkeep` only).
+| Path | Why | Git status |
+|------|-----|------------|
+| `output/library_data/**` (PNGs, JSON snapshots, `scan.pkl`, report assets) | Local session outputs; ~80+ files. Should live only on disk beside the app. | Ignored + untracked |
+| `output/pedigree_analysis/.session/**/*.png` | Same — generated pedigree previews. | Ignored + untracked |
+| `_pedigree_analysis_out.json` (repo root) | One-off debug/export output. | Ignored + untracked |
+| `docs/Untitled` | Stray editor buffer (removed from repo). | Removed |
+
+**Applied in `.gitignore`:** `output/library_data/`, `output/pedigree_analysis/`, `output/**/*.pkl`, `output/**/*.png`, `output/**/*.json`, `output/**/*.pdf`, `_pedigree_analysis_out.json`. Kept `output/databases/.gitkeep` only.
+
+**Note:** `.gitignore` does not affect runtime caching — the app still reads/writes `scan.pkl`, session PNGs, and snapshots under `output/` locally.
+
+**History purge (2026-07-05):** `git filter-repo` removed `output/library_data/`, `output/pedigree_analysis/`, `_pedigree_analysis_out.json`, and `docs/Untitled` from all commits. Pack size dropped ~45 MiB → ~7 MiB. No `scan.pkl` was ever in history. **Force-push `development` required** to update the remote (`git push --force-with-lease origin development`).
 
 ### P1 — Archive or move out of main tree (historical / personal)
 
-| Path | Why | Suggested action |
-|------|-----|------------------|
-| `old-school/*.ipynb` (5 notebooks) | Pre-app Jupyter prototypes (`Null_Tree_Analysis`, chromatogram plotting, etc.). Logic largely ported into `src/`. | Move to `docs/archive/notebooks/` or external archive repo; remove from default clone. |
-| `config/configs/Atta.json`, `config/configs/Brodoh.json` | Personal spreadsheet presets (gitignored pattern is `config/*.json` but these are **tracked**). | Untrack; keep locally or document as examples under `config/examples/`. |
-| `docs/INTEGRATION_PLAN_LCSEQ_ANALYSIS.md` | ~1,100-line implementation plan; most items are **done**. | Archive or replace with a short “Architecture” doc; keep only if agents/devs still reference it. |
-| `docs/LC-Seq-New-master-ANALYSIS.md` | Rust engine inventory; useful for devs, stale risk. | Keep for devs; exclude from user-facing release notes. |
-| `docs/AGENT_INSTRUCTIONS.md` | AI/agent workflow only. | Keep in repo; exclude from release zip. |
+**Status: complete (2026-07-05).**
+
+| Path | Why | Action taken |
+|------|-----|--------------|
+| `old-school/*.ipynb` (5 notebooks) | Pre-app Jupyter prototypes. Logic largely ported into `src/`. | Moved to `docs/archive/notebooks/`; `old-school/` removed. |
+| `config/configs/Atta.json`, `Brodoh.json`, `Brodohfasho.json` | Personal spreadsheet presets (were tracked despite `config/*.json` ignore). | Untracked; `config/configs/` gitignored; example at `config/examples/named_config.example.json`. |
+| `docs/INTEGRATION_PLAN_LCSEQ_ANALYSIS.md` | ~1,100-line implementation plan; most items are **done**. | Moved to `docs/archive/`; see `docs/archive/README.md`. |
+| `docs/LC-Seq-New-master-ANALYSIS.md` | Rust engine integration guide (API, wrappers, folder layout). | **Done** — rewritten 2026-07-05. |
+| `docs/AGENT_INSTRUCTIONS.md` | AI/agent workflow only. | Unchanged in repo; documented in `docs/RELEASE.md` that release zip excludes dev docs. |
 
 ### P2 — Dev-only scripts (keep in repo; exclude from release zip)
+
+**Status: complete (2026-07-05).** Confirmed in [docs/RELEASE.md](docs/RELEASE.md) — release zip is `dist/LC-Seq/` only; dev scripts and tests are not packaged.
 
 | Path | Purpose |
 |------|---------|
@@ -80,20 +90,20 @@ Priorities: **P0** = before tagging release · **P1** = strongly recommended · 
 ### P0 — Release blockers
 
 #### Versioning & changelog
-- [ ] Bump `src/__init__.py` `__version__` (suggest **2.0.0** — pedigree, lineage, Library Data, DEL-cycle, and export bundle are major additions since 1.0.0).
-- [ ] Add `[2.0.0]` section to `CHANGELOG.md` (feature list, Rust vs Python fallback note, known limits).
-- [ ] Update README “Install” link and feature list (still describes **v1.0.0** zip and omits most new workflows).
+- [x] Bump `src/__init__.py` `__version__` (suggest **2.0.0** — pedigree, lineage, Library Data, DEL-cycle, and export bundle are major additions since 1.0.0).
+- [x] Add `[2.0.0]` section to `CHANGELOG.md` (feature list, Rust vs Python fallback note, known limits).
+- [x] Update README “Install” link and feature list (still describes **v1.0.0** zip and omits most new workflows).
 
 #### Repository hygiene
-- [ ] Stop tracking generated files under `output/` (see Part 1).
-- [ ] Confirm `.gitignore` covers session pickles, plot PNGs, report assets, local CSV/XLSX exports.
-- [ ] Remove or untrack personal config JSONs under `config/configs/`.
+- [x] Stop tracking generated files under `output/` (see Part 1).
+- [x] Confirm `.gitignore` covers session pickles, plot PNGs, report assets, local CSV/XLSX exports.
+- [x] Remove or untrack personal config JSONs under `config/configs/`.
 
 #### Release build verification (`docs/RELEASE.md`)
 - [ ] Run `scripts/build_windows.ps1` + `scripts/package_release.ps1` on a clean Windows VM.
 - [ ] Fresh-machine test: load spreadsheet → configure (incl. BB columns + optional index CSV) → index/full DB → visualizer → **Library Data** scan → pedigree → DEL cycle → **Export DEL cycle bundle**.
-- [ ] Document SmartScreen / antivirus expectations in release notes.
-- [ ] Decide release strategy for **Rust extension**: ship with `lcseq` built-in vs document Python fallback-only build (performance + parity implications).
+- [x] Document SmartScreen / antivirus expectations in release notes (draft in `CHANGELOG.md` `[2.0.0]` + `docs/RELEASE.md` paste template; confirm wording after first packaged test download).
+- [x] Decide release strategy for **Rust extension**: **Option A** — ship with `lcseq` built-in (`build_windows.ps1` runs maturin + parity test; `lc_seq.spec` bundles `lcseq`). End users do not install Rust.
 
 #### Quality gate
 - [ ] Full `pytest tests/` green on release branch.

@@ -83,6 +83,7 @@ from src.core.library_plots import (
 )
 from src.core.library_signal_quality import (
     DEFAULT_SIGNAL_QUALITY_ALPHA,
+    SignalQualityComputeOptions,
     attach_signal_quality_to_entries,
     export_per_entry_signal_csv,
 )
@@ -281,9 +282,17 @@ class LibraryDataWindow(BaseWindow):
         self._metric_vars: Dict[str, tk.BooleanVar] = {}
         self._plot_vars: Dict[str, tk.BooleanVar] = {}
         self._fraction_count_var = tk.StringVar(value=str(DEFAULT_FRACTION_COUNT))
-        self._signal_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
-        self._signal_min_prominence_var = tk.StringVar(value="5")
-        self._signal_min_pct_area_var = tk.StringVar(value="3")
+        self._qc_picker_algorithm_var = tk.StringVar(value="modern")
+        self._qc_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._qc_time_unit_var = tk.StringVar(value="seconds")
+        self._qc_gaussian_height_var = tk.StringVar(value="0.35")
+        self._qc_gaussian_fit_width_var = tk.StringVar(value="30")
+        self._qc_gaussian_stddev_var = tk.StringVar(value="2")
+        self._qc_gaussian_min_rt_var = tk.StringVar(value="600")
+        self._qc_modern_widgets: List[ctk.CTkBaseClass] = []
+        self._qc_old_school_widgets: List[ctk.CTkBaseClass] = []
+        self._qc_modern_col: Optional[ctk.CTkFrame] = None
+        self._qc_old_col: Optional[ctk.CTkFrame] = None
         self._pedigree_result: Optional[PedigreeAnalysisResult] = None
         self._pedigree_snapshot_path: Optional[Path] = None
         self._pedigree_frame: Optional[ctk.CTkScrollableFrame] = None
@@ -300,6 +309,8 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_tolerance_var = tk.StringVar(value="30")
         self._pedigree_del_pass_pct_var = tk.StringVar(value="30")
         self._pedigree_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._pedigree_min_prominence_var = tk.StringVar(value="5")
+        self._pedigree_min_pct_area_var = tk.StringVar(value="3")
         self._pedigree_picker_algorithm_var = tk.StringVar(value="modern")
         self._pedigree_gaussian_height_var = tk.StringVar(value="0.35")
         self._pedigree_gaussian_fit_width_var = tk.StringVar(value="30")
@@ -334,6 +345,8 @@ class LibraryDataWindow(BaseWindow):
         self._splittree_viz_data: Optional[DelCycleTreeData] = None
         self._splittree_viz_isoform: Optional[str] = None
         self._del_cycle_tree_isoform: Optional[str] = None
+        self._pending_splittree_isoform: Optional[str] = None
+        self._splittree_rt_assignment_status_label: Optional[ctk.CTkLabel] = None
         self._splittree_isoform_menu: Optional[ctk.CTkOptionMenu] = None
         self._splittree_tree_host: Optional[ctk.CTkFrame] = None
         self._splittree_tree_placeholder: Optional[ctk.CTkLabel] = None
@@ -898,38 +911,84 @@ class LibraryDataWindow(BaseWindow):
         frac_entry = ctk.CTkEntry(params, textvariable=self._fraction_count_var)
         frac_entry.pack(fill="x", pady=(2, 6))
         attach_tooltip(frac_entry, "Used for library coverage index.")
-        ctk.CTkLabel(params, text="Peak significance α", font=ctk.CTkFont(size=12, weight="bold")).pack(
-            anchor="w"
+
+        ctk.CTkLabel(params, text="Peak picking", font=ctk.CTkFont(size=12, weight="bold")).pack(
+            anchor="w", pady=(4, 0)
         )
-        alpha_entry = ctk.CTkEntry(params, textvariable=self._signal_alpha_var)
-        alpha_entry.pack(fill="x", pady=(2, 0))
-        self._busy_sensitive_widgets.extend([frac_entry, alpha_entry])
+        qc_picker_menu = ctk.CTkOptionMenu(
+            params,
+            variable=self._qc_picker_algorithm_var,
+            values=["modern", "old_school"],
+            command=lambda _v: self._sync_qc_picker_widgets(),
+        )
+        qc_picker_menu.pack(fill="x", pady=(2, 4))
+        self._busy_sensitive_widgets.append(qc_picker_menu)
         attach_tooltip(
-            alpha_entry,
+            qc_picker_menu,
+            "Modern: NB/Poisson significance for QC signal metrics. "
+            "Old-school: scipy height gate + Gaussian fits.",
+        )
+
+        qc_picker_cols = ctk.CTkFrame(params, fg_color="transparent")
+        qc_picker_cols.pack(fill="x", pady=(2, 4))
+        qc_picker_cols.grid_columnconfigure(0, weight=1, uniform="qcpicker")
+        qc_picker_cols.grid_columnconfigure(1, weight=1, uniform="qcpicker")
+
+        qc_modern_col = ctk.CTkFrame(
+            qc_picker_cols, fg_color=("gray85", "gray25"), corner_radius=6
+        )
+        qc_modern_col.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        qc_old_col = ctk.CTkFrame(
+            qc_picker_cols, fg_color=("gray85", "gray25"), corner_radius=6
+        )
+        qc_old_col.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+        self._qc_modern_col = qc_modern_col
+        self._qc_old_col = qc_old_col
+
+        qc_modern_hdr = ctk.CTkLabel(
+            qc_modern_col, text="Modern", font=ctk.CTkFont(size=10, weight="bold")
+        )
+        qc_modern_hdr.pack(anchor="w", padx=6, pady=(6, 2))
+        qc_alpha_lbl = ctk.CTkLabel(qc_modern_col, text="Peak significance α")
+        qc_alpha_lbl.pack(anchor="w", padx=6)
+        qc_alpha_entry = ctk.CTkEntry(qc_modern_col, textvariable=self._qc_alpha_var)
+        qc_alpha_entry.pack(fill="x", padx=6, pady=(2, 8))
+        attach_tooltip(
+            qc_alpha_entry,
             "α for significant-peak metrics and signal plots. A local maximum counts as "
-            "significant only when both height and area p-values are below α/2 "
-            "(same engine as Chromatogram Visualizer). Lower α → fewer significant peaks.",
+            "significant only when both height and area p-values are below α/2. Lower α → "
+            "fewer significant peaks.",
         )
-        ctk.CTkLabel(params, text="Min prominence", font=ctk.CTkFont(size=12, weight="bold")).pack(
-            anchor="w", pady=(6, 0)
+        self._busy_sensitive_widgets.append(qc_alpha_entry)
+        self._qc_modern_widgets.extend([qc_modern_hdr, qc_alpha_lbl, qc_alpha_entry])
+
+        qc_old_hdr = ctk.CTkLabel(
+            qc_old_col, text="Old-school", font=ctk.CTkFont(size=10, weight="bold")
         )
-        prom_entry = ctk.CTkEntry(params, textvariable=self._signal_min_prominence_var)
-        prom_entry.pack(fill="x", pady=(2, 0))
-        attach_tooltip(
-            prom_entry,
-            "Drop detected peaks below this prominence (0 = off). Also used by pedigree analysis.",
-        )
-        ctk.CTkLabel(params, text="Min % area", font=ctk.CTkFont(size=12, weight="bold")).pack(
-            anchor="w", pady=(6, 0)
-        )
-        pct_entry = ctk.CTkEntry(params, textvariable=self._signal_min_pct_area_var)
-        pct_entry.pack(fill="x", pady=(2, 0))
-        attach_tooltip(
-            pct_entry,
-            "Drop detected peaks below this share of total detected peak area (0 = off). "
-            "Also used by pedigree analysis.",
-        )
-        self._busy_sensitive_widgets.extend([prom_entry, pct_entry])
+        qc_old_hdr.pack(anchor="w", padx=6, pady=(6, 2))
+        self._qc_old_school_widgets.append(qc_old_hdr)
+
+        def _qc_old_field(parent, label: str, var: tk.StringVar) -> None:
+            lbl = ctk.CTkLabel(parent, text=label, font=ctk.CTkFont(size=10))
+            lbl.pack(anchor="w", padx=6)
+            entry = ctk.CTkEntry(parent, textvariable=var)
+            entry.pack(fill="x", padx=6, pady=(0, 4))
+            self._busy_sensitive_widgets.append(entry)
+            self._qc_old_school_widgets.extend([lbl, entry])
+
+        _qc_old_field(qc_old_col, "Min height factor", self._qc_gaussian_height_var)
+        _qc_old_field(qc_old_col, "Gaussian fit width", self._qc_gaussian_fit_width_var)
+        _qc_old_field(qc_old_col, "Max Gaussian σ", self._qc_gaussian_stddev_var)
+        _qc_old_field(qc_old_col, "Minimum RT", self._qc_gaussian_min_rt_var)
+
+        ctk.CTkButton(
+            params,
+            text="Restore QC picker defaults",
+            height=24,
+            fg_color="gray40",
+            command=self._restore_qc_picker_defaults,
+        ).pack(fill="x", pady=(0, 4))
+        self._sync_qc_picker_widgets()
 
         ctk.CTkLabel(
             panel,
@@ -1187,9 +1246,34 @@ class LibraryDataWindow(BaseWindow):
         ped_alpha_lbl = ctk.CTkLabel(modern_col, text="Peak significance α")
         ped_alpha_lbl.pack(anchor="w", padx=6)
         ped_alpha_entry = ctk.CTkEntry(modern_col, textvariable=self._pedigree_alpha_var)
-        ped_alpha_entry.pack(fill="x", padx=6, pady=(2, 8))
-        self._busy_sensitive_widgets.append(ped_alpha_entry)
-        self._pedigree_modern_widgets.extend([ped_modern_hdr, ped_alpha_lbl, ped_alpha_entry])
+        ped_alpha_entry.pack(fill="x", padx=6, pady=(2, 4))
+        ped_prom_lbl = ctk.CTkLabel(modern_col, text="Min prominence")
+        ped_prom_lbl.pack(anchor="w", padx=6)
+        ped_prom_entry = ctk.CTkEntry(
+            modern_col, textvariable=self._pedigree_min_prominence_var
+        )
+        ped_prom_entry.pack(fill="x", padx=6, pady=(2, 4))
+        attach_tooltip(ped_prom_entry, "Drop detected peaks below this prominence (0 = off).")
+        ped_pct_lbl = ctk.CTkLabel(modern_col, text="Min % area")
+        ped_pct_lbl.pack(anchor="w", padx=6)
+        ped_pct_entry = ctk.CTkEntry(modern_col, textvariable=self._pedigree_min_pct_area_var)
+        ped_pct_entry.pack(fill="x", padx=6, pady=(2, 8))
+        attach_tooltip(
+            ped_pct_entry,
+            "Drop detected peaks below this share of total detected peak area (0 = off).",
+        )
+        self._busy_sensitive_widgets.extend([ped_alpha_entry, ped_prom_entry, ped_pct_entry])
+        self._pedigree_modern_widgets.extend(
+            [
+                ped_modern_hdr,
+                ped_alpha_lbl,
+                ped_alpha_entry,
+                ped_prom_lbl,
+                ped_prom_entry,
+                ped_pct_lbl,
+                ped_pct_entry,
+            ]
+        )
 
         ped_old_hdr = ctk.CTkLabel(
             old_col, text="Old-school", font=ctk.CTkFont(size=10, weight="bold")
@@ -1252,8 +1336,9 @@ class LibraryDataWindow(BaseWindow):
         ctk.CTkLabel(
             panel,
             text=(
-                "Run library scan first (top bar). After RT assignment, open "
-                "Pedigree visualization or Split-tree visualization to view figures."
+                "Full databases can assign RTs without a scan. Run library scan first "
+                "to speed up chromatogram loading. After RT assignment, open Pedigree "
+                "visualization or Split-tree visualization to view figures."
             ),
             font=ctk.CTkFont(size=10),
             text_color="gray",
@@ -1427,7 +1512,7 @@ class LibraryDataWindow(BaseWindow):
     def _can_reuse_session_del_cycle_tree(self, isoform: str = "All") -> bool:
         """True when session RT assignment data can be rendered without re-picking peaks."""
         _ = isoform
-        return self._del_cycle_tree_data is not None
+        return self._session_rt_ready_for_splittree()
 
     def _resolve_splittree_figure(
         self,
@@ -1689,6 +1774,52 @@ class LibraryDataWindow(BaseWindow):
         self._splittree_isoform_var.set("All")
         self._pedigree_variant_choices = self._collect_variant_choices()
         self._sync_pedigree_picker_widgets()
+        self._init_qc_picker_settings()
+
+    def _init_qc_picker_settings(self) -> None:
+        """Set library QC picker defaults from loaded spreadsheet config."""
+        if self._config is None:
+            return
+        unit = self._config.analysis_time_unit
+        self._qc_time_unit_var.set(unit)
+        self._qc_alpha_var.set(str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._qc_picker_algorithm_var.set("modern")
+        self._apply_qc_gaussian_defaults(unit)
+        self._sync_qc_picker_widgets()
+
+    def _apply_qc_gaussian_defaults(self, time_unit: str) -> None:
+        unit = "minutes" if time_unit == "minutes" else "seconds"
+        g = AnalysisSettings.default_gaussian_params(unit)  # type: ignore[arg-type]
+        self._qc_gaussian_height_var.set(str(g["gaussian_min_height_factor"]))
+        self._qc_gaussian_fit_width_var.set(str(g["gaussian_fit_width"]))
+        self._qc_gaussian_stddev_var.set(str(g["gaussian_stddev_threshold"]))
+        self._qc_gaussian_min_rt_var.set(str(g["gaussian_minimum_rt"]))
+
+    def _restore_qc_picker_defaults(self) -> None:
+        self._qc_alpha_var.set(str(AnalysisSettings.default_modern_alpha()))
+        self._apply_qc_gaussian_defaults(self._qc_time_unit_var.get())
+        self._sync_qc_picker_widgets()
+
+    def _sync_qc_picker_widgets(self) -> None:
+        old_school = self._qc_picker_algorithm_var.get() == "old_school"
+        modern_state = "disabled" if old_school else "normal"
+        old_state = "normal" if old_school else "disabled"
+        modern_fg = ("gray85", "gray25") if not old_school else ("gray78", "gray20")
+        old_fg = ("gray85", "gray25") if old_school else ("gray78", "gray20")
+        if self._qc_modern_col is not None:
+            self._qc_modern_col.configure(fg_color=modern_fg)
+        if self._qc_old_col is not None:
+            self._qc_old_col.configure(fg_color=old_fg)
+        for widget in self._qc_modern_widgets:
+            try:
+                widget.configure(state=modern_state)
+            except Exception:
+                pass
+        for widget in self._qc_old_school_widgets:
+            try:
+                widget.configure(state=old_state)
+            except Exception:
+                pass
 
     def _apply_pedigree_gaussian_defaults(self, time_unit: str) -> None:
         unit = "minutes" if time_unit == "minutes" else "seconds"
@@ -2076,20 +2207,39 @@ class LibraryDataWindow(BaseWindow):
 
         ctk.CTkLabel(
             st_inner,
-            text="View",
+            text="RT assignment session",
             font=ctk.CTkFont(size=11, weight="bold"),
             anchor="w",
         ).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        self._splittree_rt_assignment_status_label = ctk.CTkLabel(
+            st_inner,
+            text="No RT assignment run in this session.",
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="nw",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        )
+        self._splittree_rt_assignment_status_label.grid(
+            row=1, column=0, sticky="ew", padx=8, pady=(0, 8)
+        )
+
+        ctk.CTkLabel(
+            st_inner,
+            text="View",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            anchor="w",
+        ).grid(row=2, column=0, sticky="w", padx=8, pady=(0, 2))
         self._splittree_view_mode_menu = ctk.CTkOptionMenu(
             st_inner,
             variable=self._splittree_view_mode_var,
             values=list(_SPLITTREE_VIEW_MODES),
             command=lambda _v: self._on_splittree_view_changed(),
         )
-        self._splittree_view_mode_menu.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
+        self._splittree_view_mode_menu.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
 
         self._pedigree_del_controls_frame = ctk.CTkFrame(st_inner, fg_color="transparent")
-        self._pedigree_del_controls_frame.grid(row=2, column=0, sticky="ew")
+        self._pedigree_del_controls_frame.grid(row=4, column=0, sticky="ew")
         self._pedigree_del_controls_frame.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
             self._pedigree_del_controls_frame,
@@ -2152,7 +2302,7 @@ class LibraryDataWindow(BaseWindow):
             wraplength=_SIDEBAR_WRAP,
             justify="left",
         )
-        self._splittree_status_label.grid(row=3, column=0, sticky="ew", padx=8, pady=(2, 8))
+        self._splittree_status_label.grid(row=5, column=0, sticky="ew", padx=8, pady=(2, 8))
 
         (
             self._splittree_tree_host,
@@ -2168,6 +2318,16 @@ class LibraryDataWindow(BaseWindow):
         )
 
         self._on_splittree_view_changed()
+
+    def _ensure_session_del_cycle_after_pedigree(self) -> None:
+        """Build DEL-cycle session data after pedigree RT assignment completes."""
+        if self._pedigree_result is None:
+            return
+        if self._is_busy():
+            self._schedule_on_main(self._ensure_session_del_cycle_after_pedigree)
+            return
+        self._last_rt_analysis_mode = _RT_ANALYSIS_PEDIGREE
+        self._refresh_del_cycle_tree(render_figure=False, show_loading=False)
 
     def _build_right_content(self, parent: ctk.CTkFrame) -> None:
         """Right column: metrics and visualization tabs."""
@@ -2449,9 +2609,10 @@ class LibraryDataWindow(BaseWindow):
         except tk.TclError:
             pass
 
-    def _hide_loading_page(self) -> None:
+    def _hide_loading_page(self, *, clear_cancel: bool = True) -> None:
         self._busy_operation = None
-        self._cancel_requested.clear()
+        if clear_cancel:
+            self._cancel_requested.clear()
         try:
             self._loading_frame.grid_remove()
             if self._content_tabview is not None:
@@ -2469,13 +2630,14 @@ class LibraryDataWindow(BaseWindow):
         self._cancel_requested.set()
         self._active_operation_id += 1
         self._worker_thread = None
+        self._worker_busy = False
         self._del_build_show_loading = False
         try:
             if self._loading_cancel_btn is not None:
                 self._loading_cancel_btn.configure(state="disabled")
         except tk.TclError:
             pass
-        self._hide_loading_page()
+        self._hide_loading_page(clear_cancel=False)
         self._update_action_states()
         if self._pedigree_status_label is not None:
             try:
@@ -2515,19 +2677,12 @@ class LibraryDataWindow(BaseWindow):
     def _signal_quality_is_cached(
         self,
         channels: List[str],
-        alpha: float,
-        *,
-        min_prominence: float = 0.0,
-        min_pct_area: float = 0.0,
+        options: SignalQualityComputeOptions,
     ) -> bool:
         scan = self._cached_scan
-        if scan is None or scan.signal_quality_alpha is None:
+        if scan is None or scan.signal_quality_options is None:
             return False
-        if abs(scan.signal_quality_alpha - alpha) >= 1e-12:
-            return False
-        if (scan.signal_quality_min_prominence or 0.0) != min_prominence:
-            return False
-        if (scan.signal_quality_min_pct_area or 0.0) != min_pct_area:
+        if scan.signal_quality_options != options:
             return False
         return all(ch in scan.signal_quality_by_channel for ch in channels)
 
@@ -2569,17 +2724,16 @@ class LibraryDataWindow(BaseWindow):
     def _confirm_metrics_computation(self, entry_count: int, metric_ids: List[str]) -> bool:
         signal_metrics = [mid for mid in metric_ids if mid in SIGNAL_QUALITY_METRIC_IDS]
         channels = self._get_selected_channels()
-        alpha = self._parse_signal_alpha()
-        min_prominence, min_pct_area = self._peek_peak_quality_params()
-        if signal_metrics and alpha is not None and self._signal_quality_is_cached(
-            channels,
-            alpha,
-            min_prominence=min_prominence,
-            min_pct_area=min_pct_area,
+        qc_settings = self._peek_qc_signal_settings()
+        if (
+            signal_metrics
+            and qc_settings is not None
+            and self._signal_quality_is_cached(channels, qc_settings)
         ):
             signal_note = (
                 "Signal metrics are selected, but per-entry peak analysis was already "
-                "computed for the current scan and α — aggregation should be relatively quick.\n\n"
+                "computed for the current scan and QC picker settings — aggregation "
+                "should be relatively quick.\n\n"
             )
         elif signal_metrics:
             signal_note = (
@@ -2602,13 +2756,11 @@ class LibraryDataWindow(BaseWindow):
     def _confirm_plot_generation(self, entry_count: int, plot_ids: List[str]) -> bool:
         signal_plots = self._selected_signal_plot_ids()
         channels = self._get_selected_channels()
-        alpha = self._parse_signal_alpha()
-        min_prominence, min_pct_area = self._peek_peak_quality_params()
-        if signal_plots and alpha is not None and self._signal_quality_is_cached(
-            channels,
-            alpha,
-            min_prominence=min_prominence,
-            min_pct_area=min_pct_area,
+        qc_settings = self._peek_qc_signal_settings()
+        if (
+            signal_plots
+            and qc_settings is not None
+            and self._signal_quality_is_cached(channels, qc_settings)
         ):
             signal_note = (
                 "Signal plots are selected, but per-entry peak analysis is already cached "
@@ -2659,7 +2811,7 @@ class LibraryDataWindow(BaseWindow):
         time_unit = self._pedigree_time_unit_var.get()
         if time_unit not in ("seconds", "minutes"):
             return None
-        min_prominence, min_pct_area = self._peek_peak_quality_params()
+        min_prominence, min_pct_area = self._peek_pedigree_quality_params()
         algorithm = self._pedigree_picker_algorithm_var.get()
         if algorithm not in ("modern", "old_school"):
             return None
@@ -2731,6 +2883,79 @@ class LibraryDataWindow(BaseWindow):
     def _picker_label(self) -> str:
         picker = self._pedigree_picker_algorithm_var.get()
         return "old-school Gaussian" if picker == "old_school" else "modern NB"
+
+    def _format_analysis_mode_label(self, mode: str) -> str:
+        if mode == _RT_ANALYSIS_PEDIGREE:
+            return "Pedigree"
+        return "Direct pick"
+
+    @staticmethod
+    def _format_peak_picking_mode_label(algorithm: str) -> str:
+        if algorithm == "old_school":
+            return "Old-school"
+        if algorithm == "modern":
+            return "Modern"
+        return algorithm or "—"
+
+    def _session_rt_assignment_available(self) -> bool:
+        return self._del_cycle_tree_data is not None or self._pedigree_result is not None
+
+    def _session_rt_ready_for_splittree(self) -> bool:
+        mode = self._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
+        if mode == _RT_ANALYSIS_PEDIGREE:
+            return self._pedigree_result is not None and self._del_cycle_tree_data is not None
+        return self._del_cycle_tree_data is not None
+
+    def _update_splittree_rt_assignment_status(self) -> None:
+        if self._splittree_rt_assignment_status_label is None:
+            return
+        if not self._session_rt_assignment_available():
+            self._splittree_rt_assignment_status_label.configure(
+                text="No RT assignment run in this session.",
+                text_color="gray",
+            )
+            return
+        mode = self._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
+        if mode == _RT_ANALYSIS_PEDIGREE and self._pedigree_result is not None:
+            picker = self._pedigree_result.settings.peak_picking_algorithm
+            lines = [
+                "Analysis mode: Pedigree",
+                f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}",
+                (
+                    f"Nodes evaluated: {len(self._pedigree_result.records):,} · "
+                    f"chromatograms: {self._pedigree_result.n_chromatograms:,}"
+                ),
+            ]
+            if self._del_cycle_tree_data is not None:
+                data = self._del_cycle_tree_data
+                lines.append(
+                    f"DEL verification: {data.n_verified:,} RT-verified of "
+                    f"{len(data.verified_sequences):,} products."
+                )
+            elif self._is_busy():
+                lines.append("Preparing DEL-cycle data for split-tree…")
+            else:
+                lines.append("DEL-cycle data not ready — click Generate plot to build.")
+            text_color = ("gray10", "gray90")
+        elif self._del_cycle_tree_data is not None:
+            data = self._del_cycle_tree_data
+            picker = data.peak_picking_algorithm or ""
+            lines = [
+                "Analysis mode: Direct pick",
+                f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}",
+                (
+                    f"RT verified: {data.n_verified:,} of "
+                    f"{len(data.verified_sequences):,} products."
+                ),
+            ]
+            text_color = ("gray10", "gray90")
+        else:
+            lines = ["No RT assignment run in this session."]
+            text_color = "gray"
+        self._splittree_rt_assignment_status_label.configure(
+            text="\n".join(lines),
+            text_color=text_color,
+        )
 
     def _capture_rt_assignment_artifact(
         self,
@@ -2938,12 +3163,39 @@ class LibraryDataWindow(BaseWindow):
         session: LibraryReportSession,
     ) -> LibraryReportAuditTrail:
         assert self._db_path is not None
-        min_prominence, min_pct_area = self._peek_peak_quality_params()
         metrics = session.qc_metrics
         rt_assignment = session.rt_assignment
         pedigree_viz = session.pedigree_viz
         splittree = session.splittree_viz
         tree_opts = pedigree_viz.tree_opts if pedigree_viz is not None else self._pedigree_tree_render_options()
+
+        qc_opts = (
+            metrics.snapshot.signal_quality_options
+            if metrics is not None
+            else self._peek_qc_signal_settings() or SignalQualityComputeOptions()
+        )
+        rt_settings = (
+            rt_assignment.settings
+            if rt_assignment is not None
+            else self._peek_pedigree_settings()
+        )
+        rt_min_prominence = rt_settings.min_prominence if rt_settings is not None else 0.0
+        rt_min_pct_area = rt_settings.min_pct_area if rt_settings is not None else 0.0
+        rt_alpha = rt_settings.alpha if rt_settings is not None else DEFAULT_SIGNAL_QUALITY_ALPHA
+        rt_picker = self._picker_label()
+        if rt_assignment is not None and rt_assignment.peak_picking_algorithm:
+            rt_picker = (
+                "old-school Gaussian"
+                if rt_assignment.peak_picking_algorithm == "old_school"
+                else "modern NB"
+            )
+        elif rt_settings is not None:
+            rt_picker = (
+                "old-school Gaussian"
+                if rt_settings.uses_old_school_peak_picker
+                else "modern NB"
+            )
+
         return LibraryReportAuditTrail(
             generated_at=datetime.now(timezone.utc),
             database_path=str(self._db_path.resolve()),
@@ -2955,13 +3207,15 @@ class LibraryDataWindow(BaseWindow):
                 if metrics is not None
                 else self._parse_fraction_count() or DEFAULT_FRACTION_COUNT
             ),
-            signal_quality_alpha=(
-                metrics.snapshot.signal_quality_alpha
-                if metrics is not None
-                else self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
-            ),
-            min_prominence=min_prominence,
-            min_pct_area=min_pct_area,
+            qc_peak_picking_algorithm=qc_opts.peak_picking_algorithm,
+            qc_signal_quality_alpha=qc_opts.alpha,
+            qc_time_unit=qc_opts.time_unit,
+            qc_gaussian_min_height_factor=qc_opts.gaussian_min_height_factor,
+            qc_gaussian_fit_width=qc_opts.gaussian_fit_width,
+            qc_gaussian_stddev_threshold=qc_opts.gaussian_stddev_threshold,
+            qc_gaussian_minimum_rt=qc_opts.gaussian_minimum_rt,
+            rt_min_prominence=rt_min_prominence,
+            rt_min_pct_area=rt_min_pct_area,
             pedigree_channel=(
                 rt_assignment.channel if rt_assignment is not None
                 else self._pedigree_channel_var.get().strip()
@@ -2974,8 +3228,20 @@ class LibraryDataWindow(BaseWindow):
                 rt_assignment.rt_threshold if rt_assignment is not None
                 else float(self._pedigree_tolerance_var.get().strip() or "0")
             ),
-            pedigree_alpha=float(self._pedigree_alpha_var.get().strip() or "0"),
-            pedigree_peak_picker=self._picker_label(),
+            pedigree_alpha=rt_alpha,
+            pedigree_peak_picker=rt_picker,
+            rt_gaussian_min_height_factor=(
+                rt_settings.gaussian_min_height_factor if rt_settings is not None else 0.35
+            ),
+            rt_gaussian_fit_width=(
+                rt_settings.gaussian_fit_width if rt_settings is not None else 30.0
+            ),
+            rt_gaussian_stddev_threshold=(
+                rt_settings.gaussian_stddev_threshold if rt_settings is not None else 2.0
+            ),
+            rt_gaussian_minimum_rt=(
+                rt_settings.gaussian_minimum_rt if rt_settings is not None else 600.0
+            ),
             pedigree_isoform=rt_assignment.isoform if rt_assignment is not None else "All",
             pedigree_max_display_tier=tree_opts.max_display_tier,
             pedigree_include_failed=tree_opts.include_failed,
@@ -3277,71 +3543,153 @@ class LibraryDataWindow(BaseWindow):
             return None
         return value
 
-    def _parse_signal_alpha(self) -> Optional[float]:
-        raw = self._signal_alpha_var.get().strip()
+    def _parse_qc_signal_settings(self) -> Optional[SignalQualityComputeOptions]:
+        algorithm = self._qc_picker_algorithm_var.get()
+        if algorithm not in ("modern", "old_school"):
+            messagebox.showerror(
+                "Library Analysis",
+                "Invalid peak picking algorithm for QC metrics.",
+                parent=self,
+            )
+            return None
+        time_unit = self._qc_time_unit_var.get()
+        if time_unit not in ("seconds", "minutes"):
+            messagebox.showerror("Library Analysis", "Invalid QC time unit.", parent=self)
+            return None
         try:
-            value = float(raw)
+            gaussian_min_height_factor = float(self._qc_gaussian_height_var.get().strip())
+            gaussian_fit_width = float(self._qc_gaussian_fit_width_var.get().strip())
+            gaussian_stddev_threshold = float(self._qc_gaussian_stddev_var.get().strip())
+            gaussian_minimum_rt = float(self._qc_gaussian_min_rt_var.get().strip())
         except ValueError:
             messagebox.showerror(
                 "Library Analysis",
-                "Peak significance α must be a number (e.g. 0.001).",
+                "Old-school QC peak picker parameters must be numbers.",
                 parent=self,
             )
             return None
-        if value <= 0.0 or value >= 1.0:
-            messagebox.showerror(
-                "Library Analysis",
-                "Peak significance α must be between 0 and 1 (exclusive).",
-                parent=self,
-            )
-            return None
-        return value
+        alpha = DEFAULT_SIGNAL_QUALITY_ALPHA
+        if algorithm == "modern":
+            try:
+                alpha = float(self._qc_alpha_var.get().strip())
+            except ValueError:
+                messagebox.showerror(
+                    "Library Analysis",
+                    "Peak significance α must be a number (e.g. 0.001).",
+                    parent=self,
+                )
+                return None
+            if alpha <= 0.0 or alpha >= 1.0:
+                messagebox.showerror(
+                    "Library Analysis",
+                    "Peak significance α must be between 0 and 1 (exclusive).",
+                    parent=self,
+                )
+                return None
+        return SignalQualityComputeOptions(
+            peak_picking_algorithm=algorithm,
+            alpha=alpha,
+            time_unit=time_unit,  # type: ignore[arg-type]
+            gaussian_min_height_factor=gaussian_min_height_factor,
+            gaussian_fit_width=gaussian_fit_width,
+            gaussian_stddev_threshold=gaussian_stddev_threshold,
+            gaussian_minimum_rt=gaussian_minimum_rt,
+        )
 
-    def _parse_peak_quality_params(self) -> Optional[tuple[float, float]]:
+    def _peek_qc_signal_settings(self) -> Optional[SignalQualityComputeOptions]:
+        algorithm = self._qc_picker_algorithm_var.get()
+        if algorithm not in ("modern", "old_school"):
+            return None
+        time_unit = self._qc_time_unit_var.get()
+        if time_unit not in ("seconds", "minutes"):
+            return None
         try:
-            min_prominence = float(self._signal_min_prominence_var.get().strip())
+            gaussian_min_height_factor = float(self._qc_gaussian_height_var.get().strip())
+            gaussian_fit_width = float(self._qc_gaussian_fit_width_var.get().strip())
+            gaussian_stddev_threshold = float(self._qc_gaussian_stddev_var.get().strip())
+            gaussian_minimum_rt = float(self._qc_gaussian_min_rt_var.get().strip())
+        except ValueError:
+            return None
+        alpha = DEFAULT_SIGNAL_QUALITY_ALPHA
+        if algorithm == "modern":
+            try:
+                alpha = float(self._qc_alpha_var.get().strip())
+            except ValueError:
+                return None
+            if alpha <= 0.0 or alpha >= 1.0:
+                return None
+        return SignalQualityComputeOptions(
+            peak_picking_algorithm=algorithm,
+            alpha=alpha,
+            time_unit=time_unit,  # type: ignore[arg-type]
+            gaussian_min_height_factor=gaussian_min_height_factor,
+            gaussian_fit_width=gaussian_fit_width,
+            gaussian_stddev_threshold=gaussian_stddev_threshold,
+            gaussian_minimum_rt=gaussian_minimum_rt,
+        )
+
+    def _parse_pedigree_quality_params(self) -> Optional[tuple[float, float]]:
+        try:
+            min_prominence = float(self._pedigree_min_prominence_var.get().strip())
         except ValueError:
             messagebox.showerror(
-                "Library Analysis",
+                "Pedigree",
                 "Min prominence must be a number (0 = off).",
                 parent=self,
             )
             return None
         try:
-            min_pct_area = float(self._signal_min_pct_area_var.get().strip())
+            min_pct_area = float(self._pedigree_min_pct_area_var.get().strip())
         except ValueError:
             messagebox.showerror(
-                "Library Analysis",
+                "Pedigree",
                 "Min % area must be a number (0 = off).",
                 parent=self,
             )
             return None
         if min_prominence < 0:
-            messagebox.showerror(
-                "Library Analysis",
-                "Min prominence must be >= 0.",
-                parent=self,
-            )
+            messagebox.showerror("Pedigree", "Min prominence must be >= 0.", parent=self)
             return None
         if min_pct_area < 0 or min_pct_area > 100:
             messagebox.showerror(
-                "Library Analysis",
+                "Pedigree",
                 "Min % area must be between 0 and 100.",
                 parent=self,
             )
             return None
         return min_prominence, min_pct_area
 
-    def _peek_peak_quality_params(self) -> tuple[float, float]:
-        """Read peak quality fields without validation dialogs (for cache checks)."""
+    def _peek_pedigree_quality_params(self) -> tuple[float, float]:
         try:
-            min_prominence = float(self._signal_min_prominence_var.get().strip())
-            min_pct_area = float(self._signal_min_pct_area_var.get().strip())
+            min_prominence = float(self._pedigree_min_prominence_var.get().strip())
+            min_pct_area = float(self._pedigree_min_pct_area_var.get().strip())
         except ValueError:
             return 0.0, 0.0
         if min_prominence < 0 or min_pct_area < 0 or min_pct_area > 100:
             return 0.0, 0.0
         return min_prominence, min_pct_area
+
+    def _apply_qc_settings_to_form(self, options: SignalQualityComputeOptions) -> None:
+        self._qc_picker_algorithm_var.set(options.peak_picking_algorithm)
+        self._qc_alpha_var.set(str(options.alpha))
+        self._qc_time_unit_var.set(options.time_unit)
+        self._qc_gaussian_height_var.set(str(options.gaussian_min_height_factor))
+        self._qc_gaussian_fit_width_var.set(str(options.gaussian_fit_width))
+        self._qc_gaussian_stddev_var.set(str(options.gaussian_stddev_threshold))
+        self._qc_gaussian_min_rt_var.set(str(options.gaussian_minimum_rt))
+        self._sync_qc_picker_widgets()
+
+    def _parse_signal_alpha(self) -> Optional[float]:
+        settings = self._parse_qc_signal_settings()
+        if settings is None:
+            return None
+        return settings.alpha
+
+    def _parse_peak_quality_params(self) -> Optional[tuple[float, float]]:
+        return self._parse_pedigree_quality_params()
+
+    def _peek_peak_quality_params(self) -> tuple[float, float]:
+        return self._peek_pedigree_quality_params()
 
     def _is_busy(self) -> bool:
         if self._worker_busy:
@@ -3441,7 +3789,7 @@ class LibraryDataWindow(BaseWindow):
             )
             pedigree_mode = self._rt_analysis_mode_var.get() == _RT_ANALYSIS_PEDIGREE
             if pedigree_mode:
-                rt_can_run = rt_can_run and has_scan and pedigree_ready
+                rt_can_run = rt_can_run and pedigree_ready
             self._rt_assignment_run_btn.configure(
                 state="normal" if rt_can_run else "disabled"
             )
@@ -3475,31 +3823,26 @@ class LibraryDataWindow(BaseWindow):
                 state="normal" if has_tree and not busy else "disabled"
             )
             if self._pedigree_status_label is not None and self._pedigree_result is None and not busy:
-                pedigree_mode = self._rt_analysis_mode_var.get() == _RT_ANALYSIS_PEDIGREE
-                if pedigree_mode and not has_scan:
+                hint = self._pedigree_status_label.cget("text")
+                stale_hint = (
+                    hint.startswith("Run library scan")
+                    or hint.startswith("Direct pick reads")
+                    or hint.startswith("Chromatograms are read")
+                    or hint == "No pedigree run yet."
+                )
+                if not has_scan and stale_hint:
                     self._pedigree_status_label.configure(
-                        text="Run library scan first (top bar). Pedigree requires a scan.",
+                        text=(
+                            "Chromatograms are read from the database. "
+                            "Run library scan first to reuse parsed traces (faster)."
+                        ),
                         text_color="gray",
                     )
-                elif not has_scan and not pedigree_mode:
-                    hint = self._pedigree_status_label.cget("text")
-                    if hint.startswith("Run library scan") or hint == "No pedigree run yet.":
-                        self._pedigree_status_label.configure(
-                            text=(
-                                "Direct pick reads chromatograms from the database. "
-                                "Run library scan first to reuse parsed traces (faster)."
-                            ),
-                            text_color="gray",
-                        )
-                elif has_scan:
-                    hint = self._pedigree_status_label.cget("text")
-                    if hint.startswith("Run library scan") or hint.startswith("Direct pick reads"):
-                        self._pedigree_status_label.configure(
-                            text=(
-                                "Scan ready. Configure options, then run RT assignment."
-                            ),
-                            text_color="gray",
-                        )
+                elif has_scan and stale_hint:
+                    self._pedigree_status_label.configure(
+                        text="Scan ready. Configure options, then run RT assignment.",
+                        text_color="gray",
+                    )
         except tk.TclError:
             pass
 
@@ -3600,7 +3943,7 @@ class LibraryDataWindow(BaseWindow):
         for name, var in self._channel_vars.items():
             var.set(name in channels)
         fraction_count = self._parse_fraction_count() or DEFAULT_FRACTION_COUNT
-        signal_alpha = self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
+        qc_settings = self._parse_qc_signal_settings() or SignalQualityComputeOptions()
         snapshot = build_snapshot_from_scan(
             scan,
             database_path=self._db_path,
@@ -3610,7 +3953,7 @@ class LibraryDataWindow(BaseWindow):
             plot_ids=[],
             plot_results=[],
             fraction_count=fraction_count,
-            signal_quality_alpha=signal_alpha,
+            signal_quality=qc_settings,
         )
         self._cached_scan = scan
         self._current_snapshot = snapshot
@@ -3779,7 +4122,7 @@ class LibraryDataWindow(BaseWindow):
                 parent=self,
             )
             return
-        if self._parse_fraction_count() is None or self._parse_signal_alpha() is None:
+        if self._parse_fraction_count() is None or self._parse_qc_signal_settings() is None:
             return
         entry_count = self._cached_scan.entries_used or self._cached_scan.entries_attempted
         if not self._confirm_metrics_computation(entry_count, metric_ids):
@@ -3799,7 +4142,7 @@ class LibraryDataWindow(BaseWindow):
         config = self._config
         kind = "index" if self._index_db_mode else "full"
         fraction_count = self._parse_fraction_count() or DEFAULT_FRACTION_COUNT
-        signal_alpha = self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
+        qc_settings = self._parse_qc_signal_settings() or SignalQualityComputeOptions()
 
         def worker() -> None:
             try:
@@ -3826,7 +4169,7 @@ class LibraryDataWindow(BaseWindow):
                     plot_ids=[],
                     plot_results=[],
                     fraction_count=fraction_count,
-                    signal_quality_alpha=signal_alpha,
+                    signal_quality=qc_settings,
                 )
                 self._bind_worker_callback(self._on_scan_ready, scan, snapshot)
             except LibraryOperationCancelled:
@@ -3849,11 +4192,9 @@ class LibraryDataWindow(BaseWindow):
             )
             return
         fraction_count = self._parse_fraction_count()
-        signal_alpha = self._parse_signal_alpha()
-        quality = self._parse_peak_quality_params()
-        if fraction_count is None or signal_alpha is None or quality is None:
+        qc_settings = self._parse_qc_signal_settings()
+        if fraction_count is None or qc_settings is None:
             return
-        min_prominence, min_pct_area = quality
 
         self._show_loading_page(
             "Calculating metrics",
@@ -3880,9 +4221,7 @@ class LibraryDataWindow(BaseWindow):
                     metric_ids,
                     channels=channels,
                     fraction_count=fraction_count,
-                    signal_quality_alpha=signal_alpha,
-                    min_prominence=min_prominence,
-                    min_pct_area=min_pct_area,
+                    signal_quality=qc_settings,
                     progress_callback=metrics_progress,
                 )
                 snapshot = LibraryComputationSnapshot(
@@ -3898,7 +4237,7 @@ class LibraryDataWindow(BaseWindow):
                     entries_skipped=scan.entries_skipped,
                     metric_results=metric_results,
                     plot_results=plot_results,
-                    signal_quality_alpha=signal_alpha,
+                    signal_quality_options=qc_settings,
                 )
                 self._raise_if_cancelled()
                 self._bind_worker_callback(self._on_metrics_ready, snapshot)
@@ -3984,11 +4323,9 @@ class LibraryDataWindow(BaseWindow):
                 parent=self,
             )
             return
-        signal_alpha = self._parse_signal_alpha()
-        quality = self._parse_peak_quality_params()
-        if signal_alpha is None or quality is None:
+        qc_settings = self._parse_qc_signal_settings()
+        if qc_settings is None:
             return
-        min_prominence, min_pct_area = quality
         entry_count = self._cached_scan.entries_used or self._cached_scan.entries_attempted
         if not self._confirm_plot_generation(entry_count, plot_ids):
             return
@@ -4016,9 +4353,7 @@ class LibraryDataWindow(BaseWindow):
                     plot_ids,
                     channels,
                     plot_dir,
-                    signal_quality_alpha=signal_alpha,
-                    min_prominence=min_prominence,
-                    min_pct_area=min_pct_area,
+                    signal_quality=qc_settings,
                     progress_callback=plot_progress,
                 )
                 self._raise_if_cancelled()
@@ -4053,7 +4388,7 @@ class LibraryDataWindow(BaseWindow):
         elif self._cached_scan is not None and self._db_path is not None:
             channels = self._get_selected_channels()
             fraction_count = self._parse_fraction_count() or DEFAULT_FRACTION_COUNT
-            signal_alpha = self._parse_signal_alpha() or DEFAULT_SIGNAL_QUALITY_ALPHA
+            qc_settings = self._peek_qc_signal_settings() or SignalQualityComputeOptions()
             scan = self._cached_scan
             kind = "index" if self._index_db_mode else "full"
             self._current_snapshot = LibraryComputationSnapshot(
@@ -4069,7 +4404,7 @@ class LibraryDataWindow(BaseWindow):
                 entries_skipped=scan.entries_skipped,
                 metric_results=[],
                 plot_results=plots,
-                signal_quality_alpha=signal_alpha,
+                signal_quality_options=qc_settings,
             )
 
         self._update_loading_progress(
@@ -4233,7 +4568,7 @@ class LibraryDataWindow(BaseWindow):
         self._sync_metric_selection(snapshot)
         self._sync_plot_selection(snapshot)
         self._fraction_count_var.set(str(snapshot.fraction_count))
-        self._signal_alpha_var.set(str(snapshot.signal_quality_alpha))
+        self._apply_qc_settings_to_form(snapshot.signal_quality_options)
         self._render_results()
         self._update_status_label()
         self._update_action_states()
@@ -4281,12 +4616,18 @@ class LibraryDataWindow(BaseWindow):
                 if scan is not None
                 else "metrics/plots only (rescan to refresh)"
             )
+            qc_opts = snapshot.signal_quality_options
+            picker_note = (
+                f"picker: {qc_opts.picker_label()}"
+                if qc_opts.peak_picking_algorithm == "old_school"
+                else f"α: {qc_opts.alpha:g}"
+            )
             self._status_label.configure(
                 text=(
                     f"Processed: {stamp}  ·  Database: {snapshot.database_name} "
                     f"({snapshot.database_kind})  ·  Entries: {snapshot.entries_used:,} / "
                     f"{snapshot.entries_attempted:,}  ·  Fractions: {snapshot.fraction_count}  ·  "
-                    f"α: {snapshot.signal_quality_alpha:g}  ·  Channels: {channels}  ·  "
+                    f"QC {picker_note}  ·  Channels: {channels}  ·  "
                     f"Metrics: {metrics_count}  ·  Plots: {plots}  ·  "
                     f"{scan_note}  ·  Source: {source}"
                 )
@@ -4319,11 +4660,9 @@ class LibraryDataWindow(BaseWindow):
                 parent=self,
             )
             return
-        alpha = self._parse_signal_alpha()
-        quality = self._parse_peak_quality_params()
-        if alpha is None or quality is None:
+        qc_settings = self._parse_qc_signal_settings()
+        if qc_settings is None:
             return
-        min_prominence, min_pct_area = quality
         dest = filedialog.asksaveasfilename(
             parent=self,
             title="Export per-entry signal CSV",
@@ -4350,12 +4689,10 @@ class LibraryDataWindow(BaseWindow):
                 stats = attach_signal_quality_to_entries(
                     scan.entries,
                     channels,
-                    alpha=alpha,
-                    min_prominence=min_prominence,
-                    min_pct_area=min_pct_area,
+                    options=qc_settings,
                     progress_callback=export_progress,
                 )
-                export_per_entry_signal_csv(stats, dest, alpha=alpha)
+                export_per_entry_signal_csv(stats, dest, options=qc_settings)
                 self._bind_worker_callback(self._on_export_csv_ready, str(dest))
             except LibraryOperationCancelled:
                 raise
@@ -4398,9 +4735,21 @@ class LibraryDataWindow(BaseWindow):
             return
 
         row = 0
-        if snapshot.signal_quality_alpha and any(
-            m.metric_id in SIGNAL_QUALITY_METRIC_IDS for m in snapshot.metric_results
-        ):
+        qc_opts = snapshot.signal_quality_options
+        if any(m.metric_id in SIGNAL_QUALITY_METRIC_IDS for m in snapshot.metric_results):
+            if qc_opts.peak_picking_algorithm == "old_school":
+                signal_note = (
+                    "Signal-quality metrics use old-school Gaussian peak picking "
+                    f"(time unit {qc_opts.time_unit}). Baseline μ and σ come from a "
+                    "σ-clipped median (iteratively drop points above mean+2σ)."
+                )
+            else:
+                signal_note = (
+                    "Signal-quality metrics (significant peaks): peak height, SNR, and dynamic "
+                    "range use the tallest peak with p-value < α from the modern peak picker. "
+                    "Baseline μ and σ come from a σ-clipped median "
+                    f"(iteratively drop points above mean+2σ). α = {qc_opts.alpha:g}."
+                )
             banner = ctk.CTkFrame(
                 self._metrics_frame,
                 corner_radius=10,
@@ -4411,12 +4760,7 @@ class LibraryDataWindow(BaseWindow):
             banner.grid(row=row, column=0, sticky="ew", pady=(4, 14), padx=2)
             ctk.CTkLabel(
                 banner,
-                text=(
-                    "Signal-quality metrics (significant peaks): peak height, SNR, and dynamic "
-                    "range use the tallest peak with p-value < α from the same peak picker "
-                    "as Chromatogram Visualizer. Baseline μ and σ come from a σ-clipped median "
-                    f"(iteratively drop points above mean+2σ). α = {snapshot.signal_quality_alpha:g}."
-                ),
+                text=signal_note,
                 font=ctk.CTkFont(size=11),
                 anchor="w",
                 wraplength=760,
@@ -4905,7 +5249,7 @@ class LibraryDataWindow(BaseWindow):
         if time_unit not in ("seconds", "minutes"):
             messagebox.showerror("Pedigree", "Invalid time unit.", parent=self)
             return None
-        quality = self._parse_peak_quality_params()
+        quality = self._parse_pedigree_quality_params()
         if quality is None:
             return None
         min_prominence, min_pct_area = quality
@@ -5326,14 +5670,19 @@ class LibraryDataWindow(BaseWindow):
     def _generate_splittree_from_session(self) -> None:
         if self._data_store is None or self._config is None or self._db_path is None:
             return
-        if self._del_cycle_tree_data is None:
+        isoform = self._splittree_isoform_label()
+        if not self._session_rt_ready_for_splittree():
+            if self._pedigree_result is not None:
+                self._pending_splittree_isoform = isoform
+                self._ensure_session_del_cycle_after_pedigree()
+                self._update_splittree_rt_assignment_status()
+                return
             messagebox.showinfo(
                 "Split-tree visualization",
                 "Run RT assignment on the RT assignment tab first, then generate the plot.",
                 parent=self,
             )
             return
-        isoform = self._splittree_isoform_label()
         self._render_splittree_from_cached_session(isoform, show_loading=True)
 
     def _on_splittree_session_ready(
@@ -5363,6 +5712,7 @@ class LibraryDataWindow(BaseWindow):
             isoform=isoform,
             selected_branch=selected_branch,
         )
+        self._update_splittree_rt_assignment_status()
         self._hide_loading_page()
         self._update_action_states()
 
@@ -5679,7 +6029,8 @@ class LibraryDataWindow(BaseWindow):
         if pedigree_result is not None:
             picker = pedigree_result.settings.peak_picking_algorithm
             lines = [
-                f"Mode: pedigree ({picker} peak picking)",
+                "Analysis mode: Pedigree",
+                f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}",
                 f"Nodes evaluated: {len(pedigree_result.records):,}",
                 f"Chromatograms: {pedigree_result.n_chromatograms:,}",
                 "Open Pedigree visualization to view the tier-ring figure.",
@@ -5693,11 +6044,26 @@ class LibraryDataWindow(BaseWindow):
         if data is None:
             self._rt_assignment_results_label.configure(text="No RT assignment run yet.")
             return
-        picker = data.peak_picking_algorithm or "—"
+        mode = self._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
+        picker = data.peak_picking_algorithm or ""
+        if mode == _RT_ANALYSIS_PEDIGREE and self._pedigree_result is not None:
+            if not picker:
+                picker = self._pedigree_result.settings.peak_picking_algorithm
+            self._rt_assignment_results_label.configure(
+                text=(
+                    "Analysis mode: Pedigree\n"
+                    f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}\n"
+                    f"Nodes evaluated: {len(self._pedigree_result.records):,}\n"
+                    f"Chromatograms: {self._pedigree_result.n_chromatograms:,}\n"
+                    f"DEL verification: {data.n_verified:,} RT-verified products.\n"
+                    "Open Pedigree visualization to view the tier-ring figure."
+                )
+            )
+            return
         self._rt_assignment_results_label.configure(
             text=(
-                f"Mode: direct pick ({picker} peak picking)\n"
-                f"RT source: {data.rt_source}\n"
+                "Analysis mode: Direct pick\n"
+                f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}\n"
                 f"Products with RT: {data.n_rows:,}\n"
                 f"RT verified: {data.n_verified:,}\n"
                 f"From pedigree lookup: {data.n_rt_from_pedigree:,} · "
@@ -5748,6 +6114,13 @@ class LibraryDataWindow(BaseWindow):
                 return
         if self._data_store.get_compound_count() == 0:
             messagebox.showinfo("RT assignment", "The database has no compounds.", parent=self)
+            return
+        n = self._data_store.get_compound_count()
+        if not messagebox.askyesno(
+            "RT assignment",
+            f"Run full-library direct-pick RT assignment on {n:,} compound(s)?",
+            parent=self,
+        ):
             return
         self._focus_tab(_TAB_RT_ASSIGNMENT)
         self._refresh_del_cycle_tree(render_figure=False)
@@ -5809,6 +6182,7 @@ class LibraryDataWindow(BaseWindow):
         def worker() -> None:
             try:
                 def progress(step: int, total: int, status: str) -> None:
+                    self._raise_if_cancelled()
                     if not self._del_build_show_loading:
                         return
                     if total == 1000:
@@ -5906,28 +6280,42 @@ class LibraryDataWindow(BaseWindow):
         if figure is not None and self._splittree_viz_data is data:
             self._mount_splittree_figure(figure)
         if self._pedigree_status_label is not None:
+            mode = self._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
+            picker = data.peak_picking_algorithm or ""
+            if not picker and self._pedigree_result is not None:
+                picker = self._pedigree_result.settings.peak_picking_algorithm
             self._pedigree_status_label.configure(
                 text=(
                     f"RT assignment ready — {data.n_verified:,} RT-verified of "
-                    f"{len(data.verified_sequences):,} products (source: {data.rt_source})."
+                    f"{len(data.verified_sequences):,} products. "
+                    f"Analysis mode: {self._format_analysis_mode_label(mode)}. "
+                    f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}."
                 ),
                 text_color=("gray10", "gray90"),
             )
         if self._del_build_show_loading:
             self._hide_loading_page()
+        pending_isoform = self._pending_splittree_isoform
+        if pending_isoform is not None:
+            self._pending_splittree_isoform = None
+            self._render_splittree_from_cached_session(pending_isoform, show_loading=True)
+        self._update_splittree_rt_assignment_status()
         self._update_action_states()
 
     def _on_del_cycle_tree_failed(self, message: str) -> None:
         self._worker_thread = None
+        self._pending_splittree_isoform = None
         if self._del_build_show_loading:
             self._hide_loading_page()
         if not message.strip():
+            self._update_splittree_rt_assignment_status()
             self._update_action_states()
             return
         self._show_splittree_placeholder(message)
         if self._pedigree_status_label is not None:
             self._pedigree_status_label.configure(text=message, text_color="#D29922")
         messagebox.showerror("RT assignment", message, parent=self)
+        self._update_splittree_rt_assignment_status()
         self._update_action_states()
 
     def _show_del_cycle_tree_preview(self, data: DelCycleTreeData) -> None:
@@ -5978,13 +6366,6 @@ class LibraryDataWindow(BaseWindow):
     def _on_run_pedigree(self) -> None:
         if self._is_busy():
             return
-        if self._cached_scan is None:
-            messagebox.showinfo(
-                "Pedigree",
-                "Run library scan first (top bar). Pedigree analysis reuses the cached scan.",
-                parent=self,
-            )
-            return
         if self._data_store is None or self._db_path is None or self._config is None:
             return
         if not self._config.pedigree_configured():
@@ -6004,15 +6385,25 @@ class LibraryDataWindow(BaseWindow):
         settings = self._parse_pedigree_settings()
         if settings is None:
             return
+        channel = self._pedigree_channel_var.get().strip()
+        if self._cached_scan is not None and channel:
+            if channel not in self._cached_scan.channel_names:
+                messagebox.showinfo(
+                    "Pedigree",
+                    f"Channel “{channel}” is not in the cached library scan.\n\n"
+                    f"Available: {', '.join(self._cached_scan.channel_names) or 'none'}.\n\n"
+                    "Re-run library scan with this channel selected, or clear the scan "
+                    "to read chromatograms from the database.",
+                    parent=self,
+                )
+                return
         if self._data_store.get_compound_count() == 0:
             messagebox.showinfo("Pedigree", "The database has no compounds.", parent=self)
             return
         n = self._data_store.get_compound_count()
         if not messagebox.askyesno(
             "Pedigree analysis",
-            f"Run full-library pedigree evaluation on {n:,} compound(s)?\n\n"
-            "Chromatograms are taken from the cached library scan; only metadata "
-            "is read from the database.",
+            f"Run full-library pedigree evaluation on {n:,} compound(s)?",
             parent=self,
         ):
             return
@@ -6028,9 +6419,15 @@ class LibraryDataWindow(BaseWindow):
         settings: AnalysisSettings,
     ) -> None:
         assert self._db_path is not None and self._config is not None
+        scan = self._cached_scan
+        loading_detail = (
+            "Building chromatogram map from scan and evaluating pedigree…"
+            if scan is not None
+            else "Loading chromatograms from database and evaluating pedigree…"
+        )
         self._show_loading_page(
             "Running pedigree RT assignment",
-            "Building chromatogram map from scan and evaluating pedigree…",
+            loading_detail,
         )
         if self._pedigree_status_label is not None:
             self._pedigree_status_label.configure(text="Pedigree analysis running…")
@@ -6038,8 +6435,6 @@ class LibraryDataWindow(BaseWindow):
 
         db_path = self._db_path
         config = self._config
-        scan = self._cached_scan
-        assert scan is not None
 
         def worker() -> None:
             try:
@@ -6111,9 +6506,12 @@ class LibraryDataWindow(BaseWindow):
         except Exception as exc:
             logger.warning("Could not capture pedigree report artifact: %s", exc)
         if self._pedigree_status_label is not None:
+            picker = result.settings.peak_picking_algorithm
             status = (
                 f"Pedigree RT assignment ready — {len(result.records):,} nodes, "
-                f"{result.n_chromatograms:,} chromatograms."
+                f"{result.n_chromatograms:,} chromatograms. "
+                "Analysis mode: Pedigree. "
+                f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}."
             )
             if result.tree_render_engine:
                 status += f" Tree: {result.tree_render_engine}."
@@ -6131,14 +6529,12 @@ class LibraryDataWindow(BaseWindow):
         self._hide_loading_page()
         self._update_action_states()
         self._focus_tab(_TAB_PEDIGREE_VIZ)
-        self._build_del_cycle_artifacts_after_pedigree()
+        self._update_splittree_rt_assignment_status()
+        self._schedule_on_main(self._ensure_session_del_cycle_after_pedigree)
 
     def _build_del_cycle_artifacts_after_pedigree(self) -> None:
         """Build DEL-cycle data for exports without blocking the UI."""
-        if self._pedigree_result is None or self._is_busy():
-            return
-        self._last_rt_analysis_mode = _RT_ANALYSIS_PEDIGREE
-        self._refresh_del_cycle_tree(render_figure=False, show_loading=False)
+        self._ensure_session_del_cycle_after_pedigree()
 
     def _on_pedigree_failed(self, message: str) -> None:
         self._worker_thread = None

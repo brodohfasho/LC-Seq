@@ -1,14 +1,14 @@
 # LC-Seq
 
-Desktop application for loading chromatographic data from spreadsheets, building a searchable SQLite database, and exploring compounds in an interactive chromatogram viewer (overlay plots, metadata search, export).
+Desktop application for loading chromatographic data from spreadsheets, building a searchable SQLite database, and analyzing DNA-encoded library (DEL) cyclic-peptide screens — from single-compound plots through pedigree null-truncation analysis and DEL-cycle export bundles.
 
-**Platform:** Windows (primary). Python 3.8+ for development.
+**Platform:** Windows (primary). Python 3.10+ recommended for development (Rust extension).
 
 ---
 
 ## Install (Windows executable)
 
-**Recommended for most users:** download **`LC-Seq-v1.0.0-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases), extract, and run `LC-Seq.exe`. No Python install required.
+**Recommended for most users:** download **`LC-Seq-v2.0.0-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases), extract the whole `LC-Seq` folder, and run `LC-Seq.exe`. No Python or Rust install required — pedigree and lineage analysis are included in the zip.
 
 Step-by-step instructions: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
@@ -27,25 +27,39 @@ python -m src.main
 
 (Or `python src/main.py` from the repo root.)
 
+**Pedigree and lineage analysis** require the Rust `lcseq` extension — see **[docs/DEVELOPER_SETUP.md](docs/DEVELOPER_SETUP.md)** (`maturin develop` in `LC-Seq-New-master/`). Peak picking works with a Python fallback when Rust is not built.
+
 On Linux/macOS, use `source venv/bin/activate` instead of `venv\Scripts\activate`.
 
 ---
 
 ## What it does
 
-LC-Seq is built for large compound-by-compound chromatogram tables (e.g. DNA-encoded library screens). You point the app at a spreadsheet, define how each row’s chromatogram string is parsed, materialize a local database, then search and plot selected compounds without re-reading the whole sheet each time.
+LC-Seq is built for large compound-by-compound chromatogram tables (e.g. DEL library screens). You point the app at a spreadsheet, define how each row’s chromatogram string is parsed (including building-block columns for DEL libraries), materialize a local database, then search, plot, and run library-wide analyses without re-reading the whole sheet each time.
+
+**v2.0** adds pedigree null-truncation analysis, per-class lineage diagnostics, DEL-cycle combinatorial trees, and a multi-file export bundle (CSVs, audit metadata, Excel saturation grids, optional PDF report).
 
 ---
 
 ## Basic workflow
 
+### Core (all libraries)
+
 1. **Load Spreadsheet** — CSV or Excel file.
-2. **Configure Spreadsheet** — compound ID column, chromatogram text column, delimiters, time/count fields, and metadata columns to index. Save the configuration for reuse.
+2. **Configure Spreadsheet** — compound ID, chromatogram column, delimiters, time/count fields, metadata columns. Save named presets for reuse.
 3. **Create / Load database** — under `output/databases/`:
-   - **Index database** — metadata + raw chromatogram text; smaller files; parses on plot.
-   - **Full database** — all time/count points stored; larger files; fastest repeat plotting.
-4. **Chromatogram Visualizer** — compound list or metadata **Search**, load rows, plot overlays, export plots (PNG/PDF/SVG).
-5. **Library Data** — dashboard of library-wide metrics (total count per compound; average sequencing count per fraction = total ÷ 96, with library mean ± SD for each).
+   - **Index database** — metadata + raw chromatogram text; smaller; parses on plot.
+   - **Full database** — all time/count points stored; larger; fastest repeat plotting.
+4. **Chromatogram Visualizer** — compound list or metadata **Search**, overlay plots, **Peak Analysis** (modern or old-school picker), export plots (PNG/PDF/SVG).
+
+### DEL library analysis (optional)
+
+5. **Configure DEL fields** — BB1…BBn columns, null token, cycle count; optional **BB index CSV** for display indices; validate and accept configuration.
+6. **Library Analysis** — library scan (signal quality, metrics, fraction plots); session cache under `output/library_data/`.
+7. **Pedigree** — run null-truncation analysis; tier slider; export CSV and split-tree figure (Graphviz or matplotlib fallback).
+8. **Lineage** — per-class diagnostic plots for selected nodes.
+9. **DEL cycle** — combinatorial tree with pass-rate coloring; branch views.
+10. **Export DEL cycle bundle** — folder with products CSV, audit metadata, summary/flagged building blocks, `grids/` Excel files, optional prominence CSV and PDF report.
 
 The status line on the main window reflects load/configure/database state.
 
@@ -60,15 +74,28 @@ The status line on the main window reflects load/configure/database state.
 | **Compound ID** | Single column with a unique identifier per row (or per primary+variant pair). |
 | **Chromatogram data** | One column containing encoded time/count series as text, split by delimiters you define in Configure (order matters). |
 | **Metadata** | Optional additional columns; choose which to index for search. |
+| **DEL pedigree** | BB1…BBn columns (coupling order), null token, and cycle count in Configure Spreadsheet. |
+| **BB index (optional)** | UTF-8 or Excel CSV mapping building-block names to display indices. |
 | **Variants** | Optional variant column (e.g. linear vs cyclized) for multiple rows sharing one library ID. |
 
 Delimiter and column mapping are data-specific—use **Configure Spreadsheet** preview to confirm parsing before building a database. Very large sheets are supported via chunked processing for full database builds.
 
 ---
 
+## System notes
+
+| Component | Release zip users | Source / dev installs |
+|-----------|-------------------|------------------------|
+| Windows 10/11 x64 | Yes | Yes |
+| Rust toolchain | **Not needed** (bundled) | Needed once to `maturin develop` |
+| Graphviz (`dot` on PATH) | Optional — better pedigree split-tree layout | Optional |
+| Python + scipy | Not needed | Dev only — Python fallback peak picker |
+
+---
+
 ## Future development
 
-Planned and in-progress work is tracked in [ROADMAP.md](ROADMAP.md). Post-release ideas (multi-panel views, additional export options, etc.) are listed under **Future Enhancements** there.
+Planned and in-progress work is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -93,7 +120,7 @@ See [docs/BUILD.md](docs/BUILD.md) and [docs/RELEASE.md](docs/RELEASE.md). Packa
 ## Development (optional)
 
 ```bash
-pytest
+pytest tests/
 ```
 
-See [ROADMAP.md](ROADMAP.md) for phase history. Config file formats: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Dependency notes: [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
+See [docs/DEVELOPER_SETUP.md](docs/DEVELOPER_SETUP.md) for the Rust engine. Config formats: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Changelog: [CHANGELOG.md](CHANGELOG.md).

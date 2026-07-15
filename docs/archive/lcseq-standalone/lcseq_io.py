@@ -1,3 +1,4 @@
+# docs/archive/lcseq-standalone/lcseq_io.py
 """I/O for the LDEL master xlsx.
 
 Parses the spreadsheet into the input shape expected by `evaluate_library`:

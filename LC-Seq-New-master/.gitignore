@@ -29,3 +29,6 @@ dist/
 # Coverage
 .coverage
 htmlcov/
+
+# Debug symbols from local maturin builds
+*.pdb

@@ -55,6 +55,7 @@ release/*.zip
 config/settings.json
 config/*.json
 !config/default_config.json.example
+config/configs/
 
 # User spreadsheet data (not part of the app repo)
 data/

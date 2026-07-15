@@ -76,7 +76,6 @@ class TestLibraryReportPdf:
             entries_skipped=0,
             metric_results=metric_results,
             plot_results=plots,
-            signal_quality_alpha=0.001,
         )
         pdf_path = tmp_path / "report.pdf"
         result = generate_library_report_pdf(snapshot, pdf_path, plot_results=plots)
