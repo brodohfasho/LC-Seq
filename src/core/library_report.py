@@ -178,7 +178,7 @@ def _append_bb_index_reference(
     )
     story.append(
         Paragraph(
-            "Numbers on the DEL-cycle full tree label BB1 branches only (matching "
+            "Numbers on the split-tree full tree label BB1 branches only (matching "
             "branch plot roots and CSV bb1_index). The outer BB2 ring is unlabeled."
             f"{null_note}",
             body_style,
@@ -344,10 +344,10 @@ def _append_del_cycle_section(
 
     story.append(PageBreak())
     if include_section_heading:
-        story.append(Paragraph("DEL-cycle analysis", heading_style))
+        story.append(Paragraph("Split-tree visualization", heading_style))
         story.append(
             Paragraph(
-                "DEL-cycle split trees using the null RT threshold, coloring, and pass-rate "
+                "Split-tree figures using the null RT threshold, coloring, and pass-rate "
                 "settings active in Library Data when the report was generated.",
                 body_style,
             )
@@ -357,7 +357,7 @@ def _append_del_cycle_section(
     bb_index_shown = False
 
     if has_full:
-        story.append(Paragraph("DEL-cycle tree (full)", subheading_style))
+        story.append(Paragraph("Split-tree (full)", subheading_style))
         if pedigree.del_full_tree_caption:
             story.append(Paragraph(pedigree.del_full_tree_caption, caption_style))
         try:
@@ -382,7 +382,7 @@ def _append_del_cycle_section(
     if has_full:
         story.append(PageBreak())
 
-    story.append(Paragraph("DEL-cycle BB1 branches", subheading_style))
+    story.append(Paragraph("Split-tree BB1 branches", subheading_style))
     if not bb_index_shown:
         _append_bb_index_reference(
             story,
@@ -451,7 +451,7 @@ def _append_pedigree_section(
     include_pedigree: bool,
     include_del_cycle: bool,
 ) -> None:
-    """Embed pedigree tier-ring and/or DEL-cycle figures based on report options."""
+    """Embed pedigree tier-ring and/or split-tree figures based on report options."""
     if include_pedigree:
         _append_pedigree_tier_section(
             story,

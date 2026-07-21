@@ -30,8 +30,10 @@ from src.models.compound import Compound
 from src.models.compound_identity import split_compound_storage_id
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
+from src.ui.busy_overlay import BusyOverlay
 from src.ui.chromatogram_dialogs import CompoundPickerDialog, MetadataSearchDialog
 from src.ui.peak_analysis_panel import PeakAnalysisPanel, _PEAK_PANEL_WIDTH
+from src.ui.ui_messages import show_error, show_info, show_warning
 from src.ui.widget_tooltip import attach_tooltip
 from src.models.peak_result import PeakAnalysisBatchResult
 from src.models.pedigree_result import LineageAnalysisResult, LineageBatchResult
@@ -108,6 +110,9 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._lineage_session_cache = LineageSessionCache()
         self._plot_frame: Optional[ctk.CTkFrame] = None
         self._lineage_worker: Optional[threading.Thread] = None
+        self._lineage_op_id = 0
+        self._lineage_cancel = threading.Event()
+        self._busy_overlay: Optional[BusyOverlay] = None
         self._left_host: Optional[ctk.CTkFrame] = None
         self._peak_panel_slot: Optional[ctk.CTkFrame] = None
         self._main_paned: Optional[tk.PanedWindow] = None
@@ -531,6 +536,11 @@ class ChromatogramVisualizerWindow(BaseWindow):
 
         self._peak_panel_slot = ctk.CTkFrame(self._main_paned, fg_color="transparent")
         self._main_paned.add(self._peak_panel_slot, minsize=_PEAK_PANEL_WIDTH, stretch="always")
+
+        self._busy_overlay = BusyOverlay(
+            self,
+            on_cancel=self._on_cancel_lineage,
+        )
 
     def _set_initial_paned_position(self) -> None:
         """Give the peak analysis pane its default width after the window is laid out."""
@@ -1247,6 +1257,18 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._peak_panel.pack(fill=tk.BOTH, expand=True)
         self._on_peak_analysis_view_changed()
 
+    def _on_cancel_lineage(self) -> None:
+        """Abandon the in-flight lineage job in the UI (worker may finish in background)."""
+        self._lineage_cancel.set()
+        self._lineage_op_id += 1
+        self._lineage_worker = None
+        if self._busy_overlay is not None:
+            self._busy_overlay.set_cancel_enabled(False)
+            self._busy_overlay.hide()
+        if self._peak_panel is not None:
+            self._peak_panel.set_lineage_failed("Lineage analysis cancelled.")
+        logger.info("Lineage analysis cancelled by user")
+
     def _on_analyze_lineage(self) -> None:
         """Run lineage analysis in the background for all plotted compounds."""
         from src.core.lcseq_backend import AnalysisEngineError
@@ -1256,34 +1278,34 @@ class ChromatogramVisualizerWindow(BaseWindow):
         if self._data_store is None or self._config is None:
             return
         if not self._config.pedigree_configured():
-            messagebox.showinfo(
+            show_info(
+                self,
                 "Lineage analysis",
                 "Map BB1..BBn columns in Configure Spreadsheet before running lineage.",
-                parent=self,
             )
             return
         if not pedigree_backend_available():
-            messagebox.showerror(
+            show_error(
+                self,
                 "Lineage analysis",
-                "The Rust lcseq extension is required for lineage analysis.\n\n"
-                "See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
-                parent=self,
+                "The Rust lcseq extension is required for lineage analysis.",
+                what_to_do="See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
             )
             return
         compounds = self._get_plotted_compounds()
         if not compounds:
-            messagebox.showinfo(
+            show_info(
+                self,
                 "Lineage analysis",
                 "Plot one or more compounds in the table, then run Analyze lineage.",
-                parent=self,
             )
             return
         if len(compounds) > _MAX_LINEAGE_BATCH:
             compounds = compounds[:_MAX_LINEAGE_BATCH]
-            messagebox.showinfo(
+            show_info(
+                self,
                 "Lineage analysis",
                 f"Only the first {_MAX_LINEAGE_BATCH} plotted compounds will be analyzed.",
-                parent=self,
             )
         if self._peak_panel is None:
             return
@@ -1292,23 +1314,55 @@ class ChromatogramVisualizerWindow(BaseWindow):
         try:
             settings = self._peak_panel._build_settings()
         except ValueError as exc:
-            messagebox.showerror("Lineage analysis", str(exc), parent=self)
+            show_error(self, "Lineage analysis", str(exc))
             return
 
         db_path = Path(self._data_store.db_path)
         config = self._config
         cache = self._lineage_session_cache
         n_comp = len(compounds)
+        self._lineage_cancel.clear()
+        self._lineage_op_id += 1
+        op_id = self._lineage_op_id
         self._peak_panel.set_lineage_busy(
             f"Starting lineage analysis for {n_comp} compound(s)…"
         )
+        if self._busy_overlay is not None:
+            self._busy_overlay.show(
+                "Running lineage analysis",
+                f"Analyzing {n_comp} compound(s)…",
+            )
 
         def worker() -> None:
             try:
                 def progress(done: int, total: int, status: str) -> None:
+                    if self._lineage_cancel.is_set() or op_id != self._lineage_op_id:
+                        raise RuntimeError("cancelled")
+                    # Batch API reports compound index in ``done``; phase text is in status.
+                    base = (done / total) if total > 0 else 0.0
+                    lower = (status or "").lower()
+                    if "evaluat" in lower:
+                        phase = 0.55
+                    elif "loading" in lower:
+                        phase = 0.15
+                    elif "building" in lower or "chromatogram" in lower:
+                        phase = 0.35
+                    else:
+                        phase = 0.75
+                    # Within the current compound band, leave headroom for Rust eval.
+                    fraction = min(0.92, base + phase / max(total, 1))
                     prefix = f"Lineage {done + 1}/{total}" if total > 1 else "Lineage"
                     msg = f"{prefix}: {status}" if status else prefix
-                    self.after(0, lambda m=msg: self._peak_panel.set_lineage_progress(m))
+
+                    def update(m: str = msg, f: float = fraction) -> None:
+                        if op_id != self._lineage_op_id:
+                            return
+                        if self._peak_panel is not None:
+                            self._peak_panel.set_lineage_progress(m)
+                        if self._busy_overlay is not None:
+                            self._busy_overlay.set_progress(f, m)
+
+                    self.after(0, update)
 
                 batch = analyze_lineage_batch_for_path(
                     db_path,
@@ -1318,20 +1372,36 @@ class ChromatogramVisualizerWindow(BaseWindow):
                     progress_callback=progress,
                     session_cache=cache,
                 )
-                self.after(0, lambda b=batch: self._on_lineage_analysis_finished(b))
+                if self._lineage_cancel.is_set() or op_id != self._lineage_op_id:
+                    return
+                self.after(0, lambda b=batch, oid=op_id: self._on_lineage_analysis_finished(b, oid))
+            except RuntimeError as exc:
+                if str(exc) == "cancelled" or self._lineage_cancel.is_set():
+                    return
+                logger.error("Lineage analysis failed: %s", exc, exc_info=True)
+                msg = str(exc)
+                self.after(0, lambda m=msg, oid=op_id: self._on_lineage_analysis_failed(m, oid))
             except AnalysisEngineError as exc:
                 msg = str(exc)
-                self.after(0, lambda m=msg: self._on_lineage_analysis_failed(m))
+                self.after(0, lambda m=msg, oid=op_id: self._on_lineage_analysis_failed(m, oid))
             except Exception as exc:
                 logger.error("Lineage analysis failed: %s", exc, exc_info=True)
                 msg = str(exc)
-                self.after(0, lambda m=msg: self._on_lineage_analysis_failed(m))
+                self.after(0, lambda m=msg, oid=op_id: self._on_lineage_analysis_failed(m, oid))
 
         self._lineage_worker = threading.Thread(target=worker, daemon=True)
         self._lineage_worker.start()
 
-    def _on_lineage_analysis_finished(self, batch: LineageBatchResult) -> None:
+    def _on_lineage_analysis_finished(
+        self,
+        batch: LineageBatchResult,
+        op_id: Optional[int] = None,
+    ) -> None:
+        if op_id is not None and op_id != self._lineage_op_id:
+            return
         self._lineage_worker = None
+        if self._busy_overlay is not None:
+            self._busy_overlay.hide()
         if self._peak_panel is None:
             return
         if not batch.results:
@@ -1342,12 +1412,12 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 detail = "\n".join(f"{cid}: {err}" for cid, err in batch.failed[:8])
                 if len(batch.failed) > 8:
                     detail += f"\n… and {len(batch.failed) - 8} more"
-                messagebox.showerror("Lineage analysis", detail, parent=self)
+                show_error(self, "Lineage analysis", detail)
             else:
-                messagebox.showerror(
+                show_error(
+                    self,
                     "Lineage analysis",
                     "No lineage results were produced.",
-                    parent=self,
                 )
             return
         self._peak_panel.set_lineage_batch_results(batch)
@@ -1356,17 +1426,25 @@ class ChromatogramVisualizerWindow(BaseWindow):
             detail = "\n".join(f"{cid}: {err}" for cid, err in batch.failed[:6])
             if len(batch.failed) > 6:
                 detail += f"\n… and {len(batch.failed) - 6} more"
-            messagebox.showwarning(
+            show_warning(
+                self,
                 "Lineage analysis",
                 f"{batch.success_count} succeeded, {batch.failure_count} failed:\n\n{detail}",
-                parent=self,
             )
 
-    def _on_lineage_analysis_failed(self, message: str) -> None:
+    def _on_lineage_analysis_failed(
+        self,
+        message: str,
+        op_id: Optional[int] = None,
+    ) -> None:
+        if op_id is not None and op_id != self._lineage_op_id:
+            return
         self._lineage_worker = None
+        if self._busy_overlay is not None:
+            self._busy_overlay.hide()
         if self._peak_panel is not None:
             self._peak_panel.set_lineage_failed(message)
-        messagebox.showerror("Lineage analysis", message, parent=self)
+        show_error(self, "Lineage analysis", message)
 
     def _on_view_lineage(self) -> None:
         """Open scrollable lineage figure viewer for completed analyses."""
@@ -1376,10 +1454,10 @@ class ChromatogramVisualizerWindow(BaseWindow):
             return
         results = self._peak_panel.lineage_results
         if not results:
-            messagebox.showinfo(
+            show_info(
+                self,
                 "Lineage viewer",
                 "Run Analyze lineage first to build lineage figure(s).",
-                parent=self,
             )
             return
         open_lineage_viewer_window(self, results, self._config)

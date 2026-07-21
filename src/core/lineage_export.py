@@ -6,6 +6,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.models.pedigree_result import LineageAnalysisResult
 
 
@@ -33,7 +34,7 @@ def export_lineage_csv(result: LineageAnalysisResult, path: str | Path) -> Path:
         "tolerance",
         "time_unit",
     ]
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for panel in result.panels:

@@ -1,5 +1,11 @@
 # src/core/del_cycle_tree/__init__.py
-"""DEL-cycle positional split-tree analysis and visualization."""
+"""
+Split-tree (combinatorial BB tree) analysis, visualization, and export.
+
+Product UI name: **Split-tree visualization** / **Export analysis bundle**.
+Internal package name ``del_cycle_tree`` is historical; prefer “split-tree” in
+user-facing strings and docs.
+"""
 
 from src.core.del_cycle_tree.export import (
     DelCycleExportResult,

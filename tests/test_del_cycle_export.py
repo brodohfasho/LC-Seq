@@ -70,7 +70,7 @@ def test_products_csv_schema(tmp_path: Path) -> None:
     data = _sample_data()
     result = export_del_cycle_package(data, tmp_path)
 
-    with result.products_csv.open(encoding="utf-8", newline="") as fh:
+    with result.products_csv.open(encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.DictReader(fh))
 
     assert len(rows) == 6
@@ -78,6 +78,46 @@ def test_products_csv_schema(tmp_path: Path) -> None:
     assert "rt (s)" in rows[0]
     assert "rt_threshold" not in rows[0]
     assert rows[0]["rt_verified"] in {"TRUE", "FALSE"}
+
+
+def test_products_csv_preserves_unicode_and_excel_bom(tmp_path: Path) -> None:
+    """UTF-8 BOM so Excel on Windows does not mojibake β as Î²."""
+    beta = "\u03b2Homoleu"
+    data = _sample_data()
+    data = DelCycleTreeData(
+        library_cycle_count=3,
+        null_token=data.null_token,
+        rt_threshold=data.rt_threshold,
+        tree={
+            data.null_token: {},
+            beta: {"DPhe": {"X": 1.0}},
+        },
+        pruned_tree={},
+        verified_sequences={
+            (beta, "DPhe", "X"): VerifiedSequence((beta, "DPhe", "X"), 1.0, True),
+        },
+        full_null_rt=data.full_null_rt,
+        bb_index_global={beta: 17, "DPhe": 4, "X": 20},
+        bb1_names=[data.null_token, beta],
+        n_verified=1,
+        rt_source=data.rt_source,
+        peak_picking_algorithm=data.peak_picking_algorithm,
+        n_rt_from_pedigree=1,
+        n_rt_from_peak_pick=0,
+        n_rt_from_metadata=0,
+        n_rt_verified_pedigree_agree=1,
+        pedigree_passed_by_product={(beta, "DPhe", "X"): True},
+        n_pedigree_passed=1,
+    )
+    result = export_del_cycle_package(data, tmp_path)
+
+    raw = result.products_csv.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf"), "Excel-compatible UTF-8 BOM missing"
+
+    with result.products_csv.open(encoding="utf-8-sig", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert rows[0]["bb_cycle_1"] == beta
+    assert beta.encode("utf-8") in raw
     assert rows[0]["pedigree_passed"] in {"TRUE", "FALSE", ""}
 
 
@@ -99,7 +139,7 @@ def test_audit_metadata_csv(tmp_path: Path) -> None:
         rt_analysis_mode="direct_pick",
     )
 
-    with result.audit_csv.open(encoding="utf-8", newline="") as fh:
+    with result.audit_csv.open(encoding="utf-8-sig", newline="") as fh:
         audit = {row["field"]: row["value"] for row in csv.DictReader(fh)}
 
     assert audit["analysis_time_unit"] == "seconds"
@@ -113,7 +153,7 @@ def test_audit_metadata_csv(tmp_path: Path) -> None:
     assert audit["n_products"] == "6"
     assert audit["full_null_rt"] == "10.0"
 
-    with result.products_csv.open(encoding="utf-8", newline="") as fh:
+    with result.products_csv.open(encoding="utf-8-sig", newline="") as fh:
         products = list(csv.DictReader(fh))
     assert "rt (s)" in products[0]
 
@@ -133,7 +173,7 @@ def test_products_csv_rt_column_minutes(tmp_path: Path) -> None:
         rt_analysis_mode="direct_pick",
     )
 
-    with result.products_csv.open(encoding="utf-8", newline="") as fh:
+    with result.products_csv.open(encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.DictReader(fh))
 
     assert rows
@@ -145,7 +185,7 @@ def test_summary_flags_majority_failed_bb1(tmp_path: Path) -> None:
     data = _sample_data()
     result = export_del_cycle_package(data, tmp_path)
 
-    with result.summary_csv.open(encoding="utf-8", newline="") as fh:
+    with result.summary_csv.open(encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.DictReader(fh))
 
     la03 = next(r for r in rows if r["scope"] == "cycle_1" and r["bb_cycle_1"] == "LA03")
@@ -207,11 +247,11 @@ def test_del_cycle_bundle_glossary_help_topic() -> None:
     from src.core.help_content import load_help_text
 
     text = load_help_text("del_cycle_bundle_glossary")
-    assert "del_cycle_products.csv" in text
+    assert "split_tree_products.csv" in text
     assert "rt_verified" in text
     assert "grids/" in text
     assert "green fill" in text
-    assert "del_cycle_flagged_building_blocks.csv" in text
+    assert "split_tree_flagged_building_blocks.csv" in text
     assert "product_prominence.csv" in text
     assert "compound_id" in text
 
@@ -220,7 +260,7 @@ def test_flagged_building_blocks_csv(tmp_path: Path) -> None:
     data = _sample_data()
     result = export_del_cycle_package(data, tmp_path)
 
-    with result.flagged_csv.open(encoding="utf-8", newline="") as fh:
+    with result.flagged_csv.open(encoding="utf-8-sig", newline="") as fh:
         rows = list(csv.DictReader(fh))
 
     assert rows

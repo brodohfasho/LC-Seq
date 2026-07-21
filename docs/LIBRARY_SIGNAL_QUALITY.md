@@ -1,16 +1,16 @@
-# Library Signal Quality Metrics — Definitions
+# Library signal quality metrics — definitions
 
-This document defines **how** Library Data computes bulk chromatographic signal-quality
-statistics. These are **Approach A** metrics (bulk top-peak vs baseline). Pedigree-validated
-product-peak prominence is planned for Phase 5.7.
+How **Library Analysis** computes bulk chromatographic signal-quality statistics (top-peak vs baseline). Pedigree-validated **product peak prominence** is available separately after **Pedigree** RT assignment (`product_prominence.csv` in the analysis bundle).
 
 All signal-quality metrics share:
 
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
-| **α (alpha)** | `0.001` | Significance threshold for *significant* peaks. A local maximum is kept only if `p-value < α`, where p-value is the minimum of height and area tail tests under the baseline noise model (same engine as Chromatogram Visualizer → Pick peaks). **Lower α → fewer significant peaks.** |
+| **α (alpha)** | `0.001` | Significance threshold for *significant* peaks. A local maximum is kept only if `p-value < α`, where p-value is the minimum of height and area tail tests under the baseline noise model (same engine as Chromatogram Visualizer → Peak Analysis). **Lower α → fewer significant peaks.** |
 | **Baseline** | σ-clipped median | Same algorithm as peak picking: iterative removal of points above `mean + 2σ`, then median → **μ**; sample σ of kept points → **σ**. |
 | **Minimum points** | 3 | Entries with fewer than 3 time points are skipped for signal metrics. |
+
+Peak picking algorithm (**Modern** or **Old-school**) is chosen on the Library QC / RT assignment sidebars. The accompanying paper used **Old-school** picking.
 
 ---
 
@@ -34,7 +34,7 @@ All signal-quality metrics share:
 
 ### Significant peaks (α-dependent)
 
-1. Run the full peak picker with the configured **α**.
+1. Run the full peak picker with the configured **α** (Modern) or Old-school parameters.
 2. **Significant peak count** = number of peaks returned.
 3. **Has significant peak** = count ≥ 1.
 4. **Max significant prominence** = max prominence among significant peaks (0 if none).
@@ -42,14 +42,13 @@ All signal-quality metrics share:
 6. **Tallest significant peak height** = max apex height among significant peaks (0 if none).
 7. **Tallest significant SNR excess** = tallest significant height − baseline_μ.
 
-Prominence = apex height minus the higher of the two adjacent valley intensities (same as peak table).
+Prominence = apex height minus the higher of the two adjacent valley intensities (same as the peak table).
 
 ---
 
 ## Library-wide aggregates
 
-For each metric below, LC-Seq computes **mean**, **sample standard deviation**, and **n**
-(entries with valid values) per selected count channel.
+For each metric below, LC-Seq computes **mean**, **sample standard deviation**, and **n** (entries with valid values) per selected count channel.
 
 | Metric ID | Card title | Per-entry source |
 |-----------|------------|------------------|
@@ -65,7 +64,7 @@ For each metric below, LC-Seq computes **mean**, **sample standard deviation**, 
 | `median_significant_prominence_mean` | Median prominence (significant peaks) | median significant prominence (skipped if none) |
 | `tallest_significant_snr_excess_mean` | Top significant peak SNR excess | tallest significant SNR excess |
 
-### Sequencing coverage (existing + index)
+### Sequencing coverage
 
 | Metric ID | Formula |
 |-----------|---------|
@@ -73,17 +72,14 @@ For each metric below, LC-Seq computes **mean**, **sample standard deviation**, 
 | `avg_count_per_fraction` | `total_count_per_entry / fraction_count` |
 | `library_coverage_index` | `Σ(entry totals) / (n_entries × fraction_count)` |
 
-**fraction_count** defaults to 96 (user-configurable in Library Data).
+**fraction_count** defaults to 96 (user-configurable in Library Analysis → Library QC metrics).
 
 ---
 
-## Exports
+## Related exports
 
-- **Per-entry CSV** (`Export per-entry signal CSV…`): one row per compound with all per-entry scalars and α recorded in the header comment.
-- **PDF library report** (planned Phase 2.6): formatted report with metrics, plots, and methodology summary.
+- **Per-entry signal CSV** from Library Analysis (one row per compound; α and picker settings in the header comment).
+- **Library report PDF** — metrics, plots, and optional pedigree / split-tree sections.
+- **`product_prominence.csv`** — prominence at pedigree-chosen product RTs after **Pedigree** RT assignment (inside **Export analysis bundle…**).
 
----
-
-## Future (Phase 5.7)
-
-**Product peak prominence (pedigree):** prominence at pedigree `chosen_rt` for PASS compounds only.
+See in-app help (**Library signal quality**, **Peak picking**, **Export analysis bundle glossary**).

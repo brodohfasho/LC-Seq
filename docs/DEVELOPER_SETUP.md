@@ -1,8 +1,8 @@
 # Developer setup: Rust analysis engine
 
-The production peak-picking and pedigree algorithms live in `LC-Seq-New-master/` (Rust).
+Peak picking and pedigree algorithms live in `LC-Seq-New-master/` (Rust crate with Python bindings via maturin).
 
-## One-time setup (developers)
+## One-time setup
 
 1. Install [Rust](https://rustup.rs/) (`rustup` adds `rustc` and `cargo` to PATH).
 2. From the repo root:
@@ -51,9 +51,11 @@ $env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH
 
 ## Without Rust
 
-The app runs with a **Python fallback** picker (same algorithm, requires `scipy`). The Peak Analysis panel shows `Engine: Python fallback` until the Rust extension is built.
+The app runs with a **Python fallback** peak picker (same Modern algorithm; requires `scipy`). The Peak Analysis panel shows `Engine: Python fallback` until the Rust extension is built.
 
 On startup, LC-Seq runs a **parity check** between the installed `lcseq` extension and the Python reference picker. If they disagree (for example after pulling new Rust code without rebuilding), peak picking automatically falls back to Python so results stay correct.
+
+**Pedigree** and **lineage** analysis require the Rust extension (`evaluate_library` / `diagnose_class` have no Python port).
 
 ## Rebuild after changing `LC-Seq-New-master`
 
@@ -77,21 +79,19 @@ If maturin reports `The process cannot access the file because it is being used 
 
 ## Folder layout
 
-The active crate contains Rust source, `python/lcseq/render.py`, and dev tests only. Colleague standalone tooling (xlsx loader, CLI, debug plots) is archived under `docs/archive/lcseq-standalone/`. See [LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md).
+The active crate contains Rust source, `python/lcseq/render.py`, and tests. Earlier standalone xlsx/CLI tooling is archived under `docs/archive/lcseq-standalone/`. See [LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md) for the API map.
 
 ## Feature split: what still requires Rust
 
 | Feature | Python fallback | Rust required |
 |---------|-----------------|---------------|
-| Peak picking (single compound) | Yes | Optional (faster) |
+| Peak picking (single compound) | Yes | Optional (faster / bundled in release zip) |
 | Library signal quality / SNR | Yes | Optional |
-| Pedigree / lineage consensus | No | **Yes** |
+| Pedigree / lineage | No | **Yes** |
 
-Pedigree and lineage analysis call `lcseq.evaluate_library` / `diagnose_class` directly. Those have no Python port yet. Building the extension remains required for those workflows.
+## Graphviz (pedigree figure export in Library Analysis)
 
-## Graphviz (pedigree split-tree export in Library Data)
-
-Full-library pedigree analysis can export a split-tree PNG/SVG/PDF. Install:
+Full-library pedigree analysis can export a radial pedigree PNG/SVG/PDF. Install:
 
 1. [Graphviz](https://graphviz.org/download/) — ensure the `dot` executable is on PATH.
 2. Python package (included in `requirements.txt`): `pip install graphviz`
@@ -103,4 +103,6 @@ dot -V
 ..\venv\Scripts\python.exe -c "import graphviz; print(graphviz.__version__)"
 ```
 
-Without Graphviz, pedigree **evaluation** still runs; the app draws a **matplotlib tier-ring preview** automatically. Install Graphviz for the higher-quality native split-tree layout (`twopi`).
+Without Graphviz, pedigree **evaluation** still runs; the app draws a **matplotlib tier-ring preview** automatically. Install Graphviz for the higher-quality native radial layout (`twopi`).
+
+**Note:** The **Split-tree visualization** tab (combinatorial BB tree) uses matplotlib and does not require Graphviz.

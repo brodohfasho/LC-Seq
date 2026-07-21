@@ -11,6 +11,7 @@ import pandas as pd
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.models.peak_result import PeakAnalysisBatchResult, PeakAnalysisResult
 
 
@@ -86,9 +87,9 @@ def export_peaks_csv(result: "PeakAnalysisResult", path: str | Path) -> Path:
     if result.baseline is not None:
         meta["baseline_mu"] = result.baseline.mu
         meta["baseline_sigma"] = result.baseline.sigma
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         fh.write("# " + ", ".join(f"{k}={v}" for k, v in meta.items()) + "\n")
-    df.to_csv(out, mode="a", index=False)
+    df.to_csv(out, mode="a", index=False, encoding=CSV_EXPORT_ENCODING)
     return out
 
 
@@ -114,9 +115,9 @@ def export_peaks_batch_csv(
         "time_unit": batch.settings.time_unit,
         "backend": batch.backend_name,
     }
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         fh.write("# " + ", ".join(f"{k}={v}" for k, v in meta.items()) + "\n")
-    df.to_csv(out, mode="a", index=False)
+    df.to_csv(out, mode="a", index=False, encoding=CSV_EXPORT_ENCODING)
     return out
 
 

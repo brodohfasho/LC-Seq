@@ -590,7 +590,7 @@ class MainScreen(ctk.CTk):
         """Open the in-app analysis help viewer."""
         from src.ui.help_window import open_help_window
 
-        open_help_window(self, "peak_picking")
+        open_help_window(self, "library_analysis")
 
     def _notify_chromatogram_visualizer_config_changed(self) -> None:
         """Keep an open visualizer in sync with a newly saved spreadsheet configuration."""

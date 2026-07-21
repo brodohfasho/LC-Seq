@@ -36,6 +36,7 @@ class BbIndexValidationResult:
     duplicate_csv_indices: Tuple[int, ...] = ()
     parse_errors: Tuple[str, ...] = ()
     notes: Tuple[str, ...] = field(default_factory=tuple)
+    likely_encoding_mismatch: bool = False
 
 
 def detect_building_blocks_from_dataframe(
@@ -229,9 +230,12 @@ def validate_bb_index_map(
     notes: List[str] = []
     if null_token not in csv_names:
         notes.append(f'Null token "{null_token}" not in CSV — will use index 0 on plots.')
-    if missing_in_csv and extra_in_csv and _looks_like_encoding_mismatch(
-        missing_in_csv, extra_in_csv
-    ):
+    encoding_mismatch = bool(
+        missing_in_csv
+        and extra_in_csv
+        and _looks_like_encoding_mismatch(missing_in_csv, extra_in_csv)
+    )
+    if encoding_mismatch:
         notes.append(_ENCODING_HINT)
 
     ok = not duplicate_names and not duplicate_indices and not missing_in_csv
@@ -241,6 +245,8 @@ def validate_bb_index_map(
         )
     else:
         parts: List[str] = []
+        if encoding_mismatch:
+            parts.append("likely encoding mismatch (special characters)")
         if missing_in_csv:
             parts.append(f"{len(missing_in_csv)} in spreadsheet but missing from CSV")
         if duplicate_names:
@@ -259,6 +265,7 @@ def validate_bb_index_map(
         duplicate_csv_indices=tuple(sorted(set(duplicate_indices))),
         parse_errors=tuple(parse_errors),
         notes=tuple(notes),
+        likely_encoding_mismatch=encoding_mismatch,
     )
 
 

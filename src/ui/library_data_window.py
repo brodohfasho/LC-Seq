@@ -108,6 +108,13 @@ from src.core.pedigree_render import (
     suggest_include_failed,
 )
 from src.core.pedigree_service import run_pedigree_analysis_for_path
+from src.ui.busy_overlay import BusyOverlay
+from src.ui.ui_messages import (
+    show_error,
+    show_graphviz_missing_warning,
+    show_info,
+    show_warning,
+)
 from src.core.rt_assignment_export import (
     build_spreadsheet_rows_from_compounds,
     export_rt_analysis_spreadsheet,
@@ -925,8 +932,8 @@ class LibraryDataWindow(BaseWindow):
         self._busy_sensitive_widgets.append(qc_picker_menu)
         attach_tooltip(
             qc_picker_menu,
-            "Modern: NB/Poisson significance for QC signal metrics. "
-            "Old-school: scipy height gate + Gaussian fits.",
+            "Modern: NB/Poisson significance for QC signal metrics (post-paper). "
+            "Old-school: Gaussian fits (paper Methods).",
         )
 
         qc_picker_cols = ctk.CTkFrame(params, fg_color="transparent")
@@ -1092,18 +1099,28 @@ class LibraryDataWindow(BaseWindow):
         ).pack(anchor="w", pady=(0, 4))
         mode_row = ctk.CTkFrame(actions, fg_color="transparent")
         mode_row.pack(fill="x", pady=(0, 8))
-        ctk.CTkRadioButton(
+        pedigree_mode_btn = ctk.CTkRadioButton(
             mode_row,
             text="Pedigree",
             variable=self._rt_analysis_mode_var,
             value=_RT_ANALYSIS_PEDIGREE,
-        ).pack(anchor="w")
-        ctk.CTkRadioButton(
+        )
+        pedigree_mode_btn.pack(anchor="w")
+        attach_tooltip(
+            pedigree_mode_btn,
+            "Full-library null-truncation RT assignment (post-paper improvement).",
+        )
+        direct_mode_btn = ctk.CTkRadioButton(
             mode_row,
             text="Direct pick",
             variable=self._rt_analysis_mode_var,
             value=_RT_ANALYSIS_DIRECT,
-        ).pack(anchor="w")
+        )
+        direct_mode_btn.pack(anchor="w")
+        attach_tooltip(
+            direct_mode_btn,
+            "Per-compound peak pick for product RTs (paper Methods; pair with Old-school picking).",
+        )
 
         self._rt_assignment_run_btn = ctk.CTkButton(
             actions,
@@ -1224,7 +1241,7 @@ class LibraryDataWindow(BaseWindow):
         self._busy_sensitive_widgets.append(picker_menu)
         attach_tooltip(
             picker_menu,
-            "Modern: NB/Poisson significance. Old-school: scipy height gate + Gaussian fits.",
+            "Modern: NB/Poisson (post-paper). Old-school: Gaussian fits (paper Methods).",
         )
 
         picker_cols = ctk.CTkFrame(pedigree_box, fg_color="transparent")
@@ -2312,7 +2329,7 @@ class LibraryDataWindow(BaseWindow):
         ) = self._build_tree_figure_host(
             st_right,
             tk_bg=tk_bg,
-            title="DEL split-tree",
+            title="Split-tree",
             subtitle="Build from session RT assignment or spreadsheet metadata (sidebar).",
             placeholder="Run RT assignment or choose metadata source, then refresh.",
         )
@@ -2320,7 +2337,7 @@ class LibraryDataWindow(BaseWindow):
         self._on_splittree_view_changed()
 
     def _ensure_session_del_cycle_after_pedigree(self) -> None:
-        """Build DEL-cycle session data after pedigree RT assignment completes."""
+        """Build split-tree session data after pedigree RT assignment completes."""
         if self._pedigree_result is None:
             return
         if self._is_busy():
@@ -2490,55 +2507,16 @@ class LibraryDataWindow(BaseWindow):
 
         self._build_rt_and_viz_tabs(tk_bg)
 
-        self._loading_frame = ctk.CTkFrame(shell, corner_radius=12)
-        self._loading_frame.grid(row=0, column=0, sticky="nsew")
-        self._loading_frame.grid_columnconfigure(0, weight=1)
-        self._loading_frame.grid_rowconfigure(0, weight=1)
-
-        loading_center = ctk.CTkFrame(self._loading_frame, fg_color="transparent")
-        loading_center.grid(row=0, column=0)
-        loading_center.grid_columnconfigure(0, weight=1)
-
-        self._loading_title = ctk.CTkLabel(
-            loading_center,
-            text="Working…",
-            font=ctk.CTkFont(size=20, weight="bold"),
+        self._busy_overlay = BusyOverlay(
+            shell,
+            on_cancel=self._on_cancel_operation,
         )
-        self._loading_title.grid(row=0, column=0, pady=(0, 8))
-
-        self._loading_detail = ctk.CTkLabel(
-            loading_center,
-            text="Please wait while processing continues.",
-            font=ctk.CTkFont(size=13),
-            text_color="gray",
-            wraplength=520,
-            justify="center",
-        )
-        self._loading_detail.grid(row=1, column=0, pady=(0, 16))
-
-        self._loading_bar = ctk.CTkProgressBar(loading_center, width=420)
-        self._loading_bar.grid(row=2, column=0, pady=(0, 8))
-        self._loading_bar.set(0)
-
-        self._loading_percent = ctk.CTkLabel(
-            loading_center,
-            text="0%",
-            font=ctk.CTkFont(size=12),
-            text_color="gray",
-        )
-        self._loading_percent.grid(row=3, column=0)
-
-        self._loading_cancel_btn = ctk.CTkButton(
-            loading_center,
-            text="Cancel",
-            width=120,
-            fg_color="#8B2E2E",
-            hover_color="#A33",
-            command=self._on_cancel_operation,
-        )
-        self._loading_cancel_btn.grid(row=4, column=0, pady=(16, 0))
-
-        self._loading_frame.grid_remove()
+        self._loading_frame = self._busy_overlay.frame
+        self._loading_title = self._busy_overlay.title_label
+        self._loading_detail = self._busy_overlay.detail_label
+        self._loading_bar = self._busy_overlay.progress_bar
+        self._loading_percent = self._busy_overlay.percent_label
+        self._loading_cancel_btn = self._busy_overlay.cancel_button
 
         self._progress_label = self._loading_detail
         self._progress_bar = self._loading_bar
@@ -2579,17 +2557,10 @@ class LibraryDataWindow(BaseWindow):
 
     def _show_loading_page(self, title: str, detail: str = "") -> None:
         self._busy_operation = title
-        self._loading_max_fraction = 0.0
         self._cancel_requested.clear()
         if self._content_tabview is not None:
             self._content_tabview.grid_remove()
-        self._loading_frame.grid()
-        self._loading_title.configure(text=title)
-        self._loading_detail.configure(text=detail or "Starting…", text_color="gray")
-        self._loading_bar.set(0)
-        self._loading_percent.configure(text="0%")
-        if self._loading_cancel_btn is not None:
-            self._loading_cancel_btn.configure(state="normal")
+        self._busy_overlay.show(title, detail)
         self._set_controls_enabled(False)
         try:
             self.update_idletasks()
@@ -2599,27 +2570,16 @@ class LibraryDataWindow(BaseWindow):
     def _update_loading_progress(self, fraction: float, detail: str) -> None:
         if not self._ui_is_active():
             return
-        try:
-            self._loading_max_fraction = max(self._loading_max_fraction, fraction)
-            clamped = min(1.0, max(0.0, self._loading_max_fraction))
-            self._loading_bar.set(clamped)
-            self._loading_percent.configure(text=f"{int(clamped * 100)}%")
-            if detail:
-                self._loading_detail.configure(text=detail)
-        except tk.TclError:
-            pass
+        self._busy_overlay.set_progress(fraction, detail)
 
     def _hide_loading_page(self, *, clear_cancel: bool = True) -> None:
         self._busy_operation = None
         if clear_cancel:
             self._cancel_requested.clear()
+        self._busy_overlay.hide()
         try:
-            self._loading_frame.grid_remove()
             if self._content_tabview is not None:
                 self._content_tabview.grid()
-            self._loading_detail.configure(text_color="gray")
-            if self._loading_cancel_btn is not None:
-                self._loading_cancel_btn.configure(state="normal")
         except tk.TclError:
             pass
         self._set_controls_enabled(True)
@@ -2632,11 +2592,7 @@ class LibraryDataWindow(BaseWindow):
         self._worker_thread = None
         self._worker_busy = False
         self._del_build_show_loading = False
-        try:
-            if self._loading_cancel_btn is not None:
-                self._loading_cancel_btn.configure(state="disabled")
-        except tk.TclError:
-            pass
+        self._busy_overlay.set_cancel_enabled(False)
         self._hide_loading_page(clear_cancel=False)
         self._update_action_states()
         if self._pedigree_status_label is not None:
@@ -2929,13 +2885,13 @@ class LibraryDataWindow(BaseWindow):
             if self._del_cycle_tree_data is not None:
                 data = self._del_cycle_tree_data
                 lines.append(
-                    f"DEL verification: {data.n_verified:,} RT-verified of "
+                    f"Split-tree verification: {data.n_verified:,} RT-verified of "
                     f"{len(data.verified_sequences):,} products."
                 )
             elif self._is_busy():
-                lines.append("Preparing DEL-cycle data for split-tree…")
+                lines.append("Preparing split-tree data…")
             else:
-                lines.append("DEL-cycle data not ready — click Generate plot to build.")
+                lines.append("Split-tree data not ready — click Generate plot to build.")
             text_color = ("gray10", "gray90")
         elif self._del_cycle_tree_data is not None:
             data = self._del_cycle_tree_data
@@ -3413,7 +3369,7 @@ class LibraryDataWindow(BaseWindow):
                 self._thread_loading_progress(0.35, "Rendering split-tree figures for report…")
                 pedigree_figures = None
                 if del_data is not None and report_options.include_splittree:
-                    assets_dir = session_report_assets_dir(db_path) / "del_cycle_report"
+                    assets_dir = session_report_assets_dir(db_path) / "split_tree_report"
                     pedigree_figures = build_del_cycle_report_figures(
                         del_data,
                         del_color_mode=splittree_color_mode,
@@ -5323,9 +5279,8 @@ class LibraryDataWindow(BaseWindow):
             self._pedigree_graphviz_banner.configure(text="")
             self._pedigree_graphviz_banner.grid_remove()
         else:
-            hint = graphviz_install_hint()
             self._pedigree_graphviz_banner.configure(
-                text=f"⚠ {hint}",
+                text=f"⚠ {graphviz_install_hint()}",
                 text_color="#B8860B",
             )
             self._pedigree_graphviz_banner.grid()
@@ -5899,7 +5854,20 @@ class LibraryDataWindow(BaseWindow):
                     text_color=("gray10", "gray90"),
                 )
         except Exception as exc:
-            messagebox.showerror("Pedigree tree", str(exc), parent=self)
+            show_error(
+                self,
+                "Pedigree tree",
+                str(exc),
+                what_to_do=(
+                    None
+                    if graphviz_available()
+                    else (
+                        "Install Graphviz for the preferred layout "
+                        "(see docs/DEVELOPER_SETUP.md). "
+                        "Without it, LC-Seq uses a matplotlib tier-ring preview."
+                    )
+                ),
+            )
 
     def _sorted_bb1_branch_names(self, data: DelCycleTreeData) -> List[str]:
         """BB1 branch names sorted by display index (#N), then alphabetically."""
@@ -6037,7 +6005,7 @@ class LibraryDataWindow(BaseWindow):
             ]
             if data is not None:
                 lines.append(
-                    f"DEL verification (optional): {data.n_verified:,} RT-verified products."
+                    f"Split-tree verification (optional): {data.n_verified:,} RT-verified products."
                 )
             self._rt_assignment_results_label.configure(text="\n".join(lines))
             return
@@ -6055,7 +6023,7 @@ class LibraryDataWindow(BaseWindow):
                     f"Peak picking mode: {self._format_peak_picking_mode_label(picker)}\n"
                     f"Nodes evaluated: {len(self._pedigree_result.records):,}\n"
                     f"Chromatograms: {self._pedigree_result.n_chromatograms:,}\n"
-                    f"DEL verification: {data.n_verified:,} RT-verified products.\n"
+                    f"Split-tree verification: {data.n_verified:,} RT-verified products.\n"
                     "Open Pedigree visualization to view the tier-ring figure."
                 )
             )
@@ -6069,7 +6037,7 @@ class LibraryDataWindow(BaseWindow):
                 f"From pedigree lookup: {data.n_rt_from_pedigree:,} · "
                 f"direct pick: {data.n_rt_from_peak_pick:,} · "
                 f"metadata: {data.n_rt_from_metadata:,}\n"
-                "Open Split-tree visualization to view the DEL split-tree."
+                "Open Split-tree visualization to view the combinatorial split-tree."
             )
         )
 
@@ -6137,7 +6105,7 @@ class LibraryDataWindow(BaseWindow):
             return
         if not self._config.pedigree_configured():
             messagebox.showinfo(
-                "DEL-cycle tree",
+                "Split-tree",
                 "Map BB1..BBn columns in Configure Spreadsheet before building the tree.",
                 parent=self,
             )
@@ -6147,7 +6115,7 @@ class LibraryDataWindow(BaseWindow):
             return
         channel = self._pedigree_channel_var.get().strip()
         if not channel:
-            messagebox.showinfo("DEL-cycle tree", "Select a channel first.", parent=self)
+            messagebox.showinfo("Split-tree", "Select a channel first.", parent=self)
             return
 
         scan = self._cached_scan
@@ -6240,7 +6208,7 @@ class LibraryDataWindow(BaseWindow):
             except LibraryOperationCancelled:
                 raise
             except Exception as exc:
-                logger.error("DEL-cycle tree build failed: %s", exc, exc_info=True)
+                logger.error("Split-tree build failed: %s", exc, exc_info=True)
                 self._bind_worker_callback(self._on_del_cycle_tree_failed, str(exc))
 
         self._start_worker(worker)
@@ -6439,9 +6407,10 @@ class LibraryDataWindow(BaseWindow):
         def worker() -> None:
             try:
                 def progress(step: int, total: int, status: str) -> None:
-                    fraction = (step + 1) / total if total > 0 else 0.0
+                    fraction = step / total if total > 0 else 0.0
+                    # Analysis phases occupy 0..93%; tree render fills the rest.
                     self._thread_loading_progress(
-                        min(0.95, fraction),
+                        min(0.93, fraction),
                         status or "Evaluating pedigree…",
                     )
 
@@ -6460,6 +6429,7 @@ class LibraryDataWindow(BaseWindow):
                 result.max_display_tier = tree_opts.max_display_tier
                 session_dir = session_pedigree_dir(db_path)
                 tree_path = session_dir / "pedigree_tree.png"
+                self._thread_loading_progress(0.96, "Rendering pedigree tree…")
                 try:
                     render_out = render_pedigree_tree(
                         result.records,
@@ -6533,7 +6503,7 @@ class LibraryDataWindow(BaseWindow):
         self._schedule_on_main(self._ensure_session_del_cycle_after_pedigree)
 
     def _build_del_cycle_artifacts_after_pedigree(self) -> None:
-        """Build DEL-cycle data for exports without blocking the UI."""
+        """Build split-tree data for exports without blocking the UI."""
         self._ensure_session_del_cycle_after_pedigree()
 
     def _on_pedigree_failed(self, message: str) -> None:
@@ -6648,8 +6618,10 @@ class LibraryDataWindow(BaseWindow):
         return card
 
     _PEDIGREE_HELP_MENU: Tuple[Tuple[str, str], ...] = (
+        ("library_analysis", "Library Analysis overview"),
+        ("del_library_setup", "DEL library setup"),
         ("pedigree_analysis", "Pedigree analysis"),
-        ("pedigree_split_tree", "Split-tree figure"),
+        ("pedigree_split_tree", "Pedigree visualization figure"),
         ("del_cycle_bundle_glossary", "Export analysis bundle glossary"),
     )
 
@@ -7019,7 +6991,7 @@ class LibraryDataWindow(BaseWindow):
             return
         dest = filedialog.askdirectory(
             parent=self,
-            title="Select folder for DEL-cycle export",
+            title="Select folder for analysis bundle export",
         )
         if not dest:
             return
@@ -7053,7 +7025,7 @@ class LibraryDataWindow(BaseWindow):
             except LibraryOperationCancelled:
                 raise
             except Exception as exc:
-                logger.error("DEL-cycle export failed: %s", exc, exc_info=True)
+                logger.error("Analysis bundle export failed: %s", exc, exc_info=True)
                 self._bind_worker_callback(self._on_del_cycle_export_failed, str(exc))
 
         self._start_worker(worker)
@@ -7113,19 +7085,13 @@ class LibraryDataWindow(BaseWindow):
             pass
         self._hide_loading_page()
         self._update_action_states()
-        messagebox.showerror("DEL-cycle tree", message, parent=self)
+        messagebox.showerror("Split-tree", message, parent=self)
 
     def _on_export_pedigree_tree(self) -> None:
         if self._pedigree_result is None:
             return
-        if not graphviz_available():
-            if not messagebox.askyesno(
-                "Pedigree export",
-                "Graphviz is not installed; export will use the matplotlib tier-ring "
-                "layout instead of the native split-tree engine.\n\nContinue?",
-                parent=self,
-            ):
-                return
+        if not show_graphviz_missing_warning(self, for_export=True):
+            return
         dest = filedialog.asksaveasfilename(
             parent=self,
             title="Export pedigree tree",
@@ -7149,13 +7115,26 @@ class LibraryDataWindow(BaseWindow):
                 include_failed=opts.include_failed,
                 show_rt=opts.show_rt,
             )
-            messagebox.showinfo(
+            show_info(
+                self,
                 "Pedigree",
                 f"Saved to:\n{render_out.path}\n\n({render_out.engine})",
-                parent=self,
             )
         except Exception as exc:
-            messagebox.showerror("Pedigree", str(exc), parent=self)
+            show_error(
+                self,
+                "Pedigree",
+                str(exc),
+                what_to_do=(
+                    None
+                    if graphviz_available()
+                    else (
+                        "Install Graphviz for the preferred layout "
+                        "(see docs/DEVELOPER_SETUP.md), or export again "
+                        "with the matplotlib fallback."
+                    )
+                ),
+            )
 
     def _on_save_pedigree(self) -> None:
         if self._pedigree_result is None:
@@ -7223,7 +7202,7 @@ class LibraryDataWindow(BaseWindow):
                 return
         self._show_loading_page(
             "Loading pedigree",
-            "Restoring pedigree snapshot and rebuilding DEL-cycle tree…",
+            "Restoring pedigree snapshot and rebuilding split-tree data…",
         )
         config = self._config
 
@@ -7248,7 +7227,7 @@ class LibraryDataWindow(BaseWindow):
                     )
             except Exception as exc:
                 logger.warning(
-                    "DEL-cycle tree rebuild on pedigree load failed: %s", exc, exc_info=True
+                    "Split-tree rebuild on pedigree load failed: %s", exc, exc_info=True
                 )
             self._bind_worker_callback(self._on_pedigree_loaded, result, path, del_data)
 

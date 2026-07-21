@@ -1,5 +1,5 @@
 # src/core/library_report_assets.py
-"""Render pedigree and DEL-cycle figures for library PDF reports."""
+"""Render pedigree and split-tree figures for library PDF reports."""
 
 from __future__ import annotations
 
@@ -123,14 +123,14 @@ def build_del_cycle_report_figures(
     output_dir: Path,
     include_full_tree: bool = True,
 ) -> LibraryReportPedigreeFigures:
-    """Render DEL-cycle full tree and BB1 branch plots for the report."""
+    """Render split-tree full tree and BB1 branch plots for the report."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     del_full_path: Optional[Path] = None
     del_full_caption = ""
     if include_full_tree:
-        del_full_path = output_dir / "del_cycle_full.png"
+        del_full_path = output_dir / "split_tree_full.png"
         del_fig = render_del_cycle_tree_figure(
             del_data,
             view=DelCycleTreeView.FULL,
@@ -141,7 +141,7 @@ def build_del_cycle_report_figures(
         )
         _save_figure(del_fig, del_full_path)
         del_full_caption = (
-            f"DEL-cycle full tree — {del_data.n_verified:,} RT-verified products, "
+            f"Split-tree (full) — {del_data.n_verified:,} RT-verified products, "
             f"RT source: {del_data.rt_source}, threshold {del_data.rt_threshold:g}."
         )
 

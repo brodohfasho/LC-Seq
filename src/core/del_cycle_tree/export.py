@@ -1,5 +1,5 @@
 # src/core/del_cycle_tree/export.py
-"""CSV and Excel export for DEL-cycle split-tree analysis."""
+"""CSV and Excel export for split-tree analysis bundles."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tupl
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.core.del_cycle_tree.bb_index_scheme import lookup_bb_display_index
 from src.core.del_cycle_tree.models import DelCycleTreeData, VerifiedSequence
 from src.core.pedigree_export import bb_cycle_field_names, export_product_prominence_csv
@@ -181,7 +182,7 @@ def _audit_metadata_rows(
     analysis_settings: Optional[AnalysisSettings] = None,
     rt_analysis_mode: Optional[str] = None,
 ) -> List[Tuple[str, object]]:
-    """Ordered audit metadata rows for ``del_cycle_audit_metadata.csv``."""
+    """Ordered audit metadata rows for ``split_tree_audit_metadata.csv``."""
     exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     rows: List[Tuple[str, object]] = [
         ("exported_at_utc", exported_at),
@@ -298,7 +299,7 @@ def _write_products_csv(
 ) -> None:
     rt_column = product_rt_column_name(time_unit)
     fieldnames = _products_fieldnames(data.library_cycle_count, rt_column=rt_column)
-    with path.open("w", encoding="utf-8", newline="") as fh:
+    with path.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for positions, info in _iter_full_products(data):
@@ -321,7 +322,7 @@ def _write_audit_csv(
         analysis_settings=analysis_settings,
         rt_analysis_mode=rt_analysis_mode,
     )
-    with path.open("w", encoding="utf-8", newline="") as fh:
+    with path.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["field", "value"])
         for key, value in rows:
@@ -637,7 +638,7 @@ def _write_flagged_bb_csv(data: DelCycleTreeData, path: Path) -> int:
         "commentary",
     ]
     rows = _build_flagged_bb_rows(data)
-    with path.open("w", encoding="utf-8", newline="") as fh:
+    with path.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -660,7 +661,7 @@ def _write_summary_csv(data: DelCycleTreeData, path: Path) -> None:
         "flag_reason",
     ]
     rows = _build_summary_rows(data)
-    with path.open("w", encoding="utf-8", newline="") as fh:
+    with path.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
@@ -766,13 +767,13 @@ def export_del_cycle_package(
     progress_callback: Optional[ProgressCallback] = None,
 ) -> DelCycleExportResult:
     """
-    Write DEL-cycle export bundle into ``output_dir``.
+    Write split-tree analysis bundle into ``output_dir``.
 
     Creates:
-    - ``del_cycle_products.csv`` — product table (no audit columns)
-    - ``del_cycle_audit_metadata.csv`` — run metadata and audit counters
-    - ``del_cycle_summary_report.csv`` — flagged BB1/BB2 majority-failure patterns
-    - ``del_cycle_flagged_building_blocks.csv`` — aggregated problematic residues with commentary
+    - ``split_tree_products.csv`` — product table (no audit columns)
+    - ``split_tree_audit_metadata.csv`` — run metadata and audit counters
+    - ``split_tree_summary_report.csv`` — flagged BB1/BB2 majority-failure patterns
+    - ``split_tree_flagged_building_blocks.csv`` — aggregated problematic residues with commentary
     - ``grids/del_grid_bb1_*.xlsx`` — one color-coded BB2×BB3 grid per BB1 (3-cycle only)
     - ``product_prominence.csv`` — optional, when ``pedigree_result`` includes prominence data
 
@@ -782,12 +783,12 @@ def export_del_cycle_package(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    _report_progress(progress_callback, 0.0, "Preparing DEL-cycle export…")
+    _report_progress(progress_callback, 0.0, "Preparing analysis bundle export…")
     products = list(_iter_full_products(data))
-    products_csv = out_dir / "del_cycle_products.csv"
-    audit_csv = out_dir / "del_cycle_audit_metadata.csv"
-    summary_csv = out_dir / "del_cycle_summary_report.csv"
-    flagged_csv = out_dir / "del_cycle_flagged_building_blocks.csv"
+    products_csv = out_dir / "split_tree_products.csv"
+    audit_csv = out_dir / "split_tree_audit_metadata.csv"
+    summary_csv = out_dir / "split_tree_summary_report.csv"
+    flagged_csv = out_dir / "split_tree_flagged_building_blocks.csv"
     grids_dir = out_dir / "grids"
 
     _report_progress(progress_callback, 0.05, "Writing product table…")

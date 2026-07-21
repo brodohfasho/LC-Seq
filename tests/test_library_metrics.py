@@ -267,7 +267,7 @@ class TestLibraryMetricsStore:
         )
         out = tmp_path / "metrics.csv"
         export_metrics_summary_csv(snapshot, out)
-        text = out.read_text(encoding="utf-8")
+        text = out.read_text(encoding="utf-8-sig")
         assert "metric_id" in text
         assert METRIC_TOTAL_COUNT_PER_ENTRY in text
         assert "Count" in text

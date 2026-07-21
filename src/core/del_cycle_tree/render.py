@@ -1,5 +1,5 @@
 # src/core/del_cycle_tree/render.py
-"""Matplotlib rendering for DEL-cycle split trees."""
+"""Matplotlib rendering for combinatorial split-tree figures."""
 
 from __future__ import annotations
 
@@ -135,7 +135,7 @@ def render_del_cycle_tree_figure(
     figsize: Tuple[float, float] = (12.0, 12.0),
     show_figure_title: bool = True,
 ) -> plt.Figure:
-    """Build a matplotlib figure for the requested DEL-cycle tree view."""
+    """Build a matplotlib figure for the requested split-tree view."""
     if view == DelCycleTreeView.FULL:
         return _render_full_tree(
             data,
@@ -172,7 +172,7 @@ def _render_full_tree(
     """Root → BB1 → BB2 overview (deepest cycle omitted, matching legacy notebook)."""
     n_cycles = data.library_cycle_count
     if n_cycles < 2:
-        raise ValueError("DEL-cycle tree requires at least two coupling cycles")
+        raise ValueError("Split-tree requires at least two coupling cycles")
 
     graph = nx.Graph()
     root: TreeNode = (0, data.null_token)
@@ -232,7 +232,7 @@ def _render_full_tree(
         pass_pct_cutoff=pass_pct_cutoff,
         figsize=figsize,
         view=DelCycleTreeView.FULL,
-        title="DEL-cycle tree (full)" if show_figure_title else "",
+        title="Split-tree (full)" if show_figure_title else "",
     )
 
 
@@ -291,7 +291,7 @@ def _render_branch_tree(
         pass_pct_cutoff=pass_pct_cutoff,
         figsize=figsize,
         view=DelCycleTreeView.BRANCH,
-        title=f"DEL-cycle branch — {branch_bb1}" if show_figure_title else "",
+        title=f"Split-tree branch — {branch_bb1}" if show_figure_title else "",
     )
 
 

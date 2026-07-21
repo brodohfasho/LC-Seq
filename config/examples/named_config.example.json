@@ -9,6 +9,12 @@
     "time_column_index": 0,
     "count_column_indices": [1, 2],
     "count_names": ["Count", "Deduplicated Count"],
-    "selected_metadata_columns": []
+    "selected_metadata_columns": ["Batch", "Library"],
+    "null_token": "AgxNull",
+    "library_cycle_count": 3,
+    "bb_position_columns": ["BB1", "BB2", "BB3", ""],
+    "bb_index_map": {},
+    "bb_index_csv_path": null,
+    "analysis_time_unit": "seconds"
   }
 }

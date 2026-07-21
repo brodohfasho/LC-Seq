@@ -20,6 +20,12 @@ from src.core.bb_index_csv import (
 )
 from src.core.config_manager import ConfigManager
 from src.models.spreadsheet_config import SpreadsheetConfig
+from src.ui.ui_messages import (
+    show_bb_index_parse_errors,
+    show_bb_index_validation_result,
+    show_error,
+    show_info,
+)
 from src.utils.data_parser import DataParser
 
 logger = logging.getLogger(__name__)
@@ -1247,16 +1253,17 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             self.bb_index_validated = False
             self._refresh_bb_index_path_label()
             self._set_bb_index_validation_text(
-                "Could not read CSV:\n" + "\n".join(errors),
+                "Could not read index file:\n" + "\n".join(errors),
                 ok=False,
             )
+            show_bb_index_parse_errors(self, errors)
             return
         self.bb_index_map = index_map
         self.bb_index_csv_path = path
         self.bb_index_validated = False
         self._refresh_bb_index_path_label()
         self._set_bb_index_validation_text(
-            f"Loaded {len(index_map)} index entries from CSV.\n"
+            f"Loaded {len(index_map)} index entries.\n"
             "Click Validate to compare against this library.",
         )
         self._update_wizard_action_highlights()
@@ -1273,14 +1280,12 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._update_wizard_action_highlights()
 
     def _on_validate_bb_index_csv(self) -> None:
-        from tkinter import messagebox
-
         self._read_pedigree_fields_from_ui()
         if not self.bb_index_map:
-            messagebox.showinfo(
+            show_info(
+                self,
                 "Building-block index",
-                "Choose an index CSV first, or use Clear to rely on automatic indexing.",
-                parent=self,
+                "Choose an index file first, or use Clear to rely on automatic indexing.",
             )
             return
         preview = SpreadsheetConfig(
@@ -1295,10 +1300,10 @@ class ConfigureSpreadsheetDialog(BaseWindow):
             bb_position_columns=self.bb_position_columns.copy(),
         )
         if not preview.pedigree_configured():
-            messagebox.showinfo(
+            show_info(
+                self,
                 "Building-block index",
                 "Map all BB1..BBn columns for the selected cycle count before validating.",
-                parent=self,
             )
             return
         df = self.loader.get_data()
@@ -1318,10 +1323,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         report = format_validation_report(result)
         self.bb_index_validated = result.ok
         self._set_bb_index_validation_text(report, ok=result.ok)
-        if result.ok:
-            messagebox.showinfo("Building-block index", result.summary, parent=self)
-        else:
-            messagebox.showwarning("Building-block index", result.summary, parent=self)
+        show_bb_index_validation_result(self, result)
         self._update_wizard_action_highlights()
 
     def _wizard_tab_index(self) -> int:
@@ -2357,9 +2359,15 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         self._read_pedigree_fields_from_ui()
 
         if self.bb_index_map and not self.bb_index_validated:
-            self._show_error(
-                "Validate the building-block index CSV against this spreadsheet "
-                'Click Validate on step 5 before accepting.'
+            show_error(
+                self,
+                "Building-block index",
+                "The building-block index file has not been validated against this spreadsheet.",
+                what_to_do=(
+                    'Open step 5 — DEL / Pedigree, click Validate, fix any encoding or '
+                    "name mismatches, then Accept again. "
+                    "Or Clear the index to use automatic numbering."
+                ),
             )
             return
 
@@ -2420,8 +2428,7 @@ class ConfigureSpreadsheetDialog(BaseWindow):
     
     def _show_error(self, message: str) -> None:
         """Show error message in a messagebox."""
-        from tkinter import messagebox
-        messagebox.showerror("Error", message, parent=self)
+        show_error(self, "Configuration", message)
     
     def _format_default_preset_summary(self) -> str:
         """Build a short summary of parameters from the default config file (for Load preset)."""

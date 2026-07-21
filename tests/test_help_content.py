@@ -24,7 +24,12 @@ def test_all_help_topics_have_files() -> None:
 def test_list_help_topics_matches_registry() -> None:
     topics = list_help_topics()
     assert len(topics) == len(HELP_TOPICS)
-    assert topics[0].topic_id == "peak_picking"
+    assert topics[0].topic_id == "library_analysis"
+    assert {t.topic_id for t in topics} >= {
+        "library_analysis",
+        "del_library_setup",
+        "glossary",
+    }
 
 
 def test_load_help_text_peak_picking() -> None:

@@ -31,9 +31,52 @@ The app creates data folders **next to the executable**:
 |--------|---------|
 | `config\` | Settings and saved spreadsheet configurations |
 | `output\databases\` | SQLite databases you create or load |
+| `output\library_data\` | Library Analysis session caches (scan, plots, reports) |
+| `output\pedigree_analysis\` | Pedigree snapshots and tree images |
 | `logs\` | Log file (if enabled) |
 
 These are separate from a developer install cloned from GitHub. Copy your own `config\` or `output\databases\` into this folder if you are migrating from a source install.
+
+## Moving Library Analysis work between machines
+
+Library Analysis caches work under **session folders** keyed to your database filename:
+
+| Path | Typical contents |
+|------|------------------|
+| `output\library_data\.session\<db_stem>\` | `scan.pkl` (parsed library scan), `plots\`, `report_assets\` |
+| `output\pedigree_analysis\.session\<db_stem>\` | In-progress pedigree tree images / working files |
+
+`<db_stem>` is derived from the SQLite database name (e.g. `MyLibrary.db` → `MyLibrary`).
+
+### What must travel together
+
+Copy **all** of the following into the same relative places next to the other machine’s `LC-Seq.exe` (or repo root for a source install):
+
+1. The database: `output\databases\<name>.db` — **keep the same filename**
+2. `output\library_data\.session\<db_stem>\` (same stem as the `.db`)
+3. `output\pedigree_analysis\.session\<db_stem>\` if you ran pedigree there
+4. Optional but recommended: your named spreadsheet preset under `config\configs\` (BB columns, null token, BB index map)
+
+### What does not travel cleanly
+
+- **`config\settings.json`** stores absolute paths (last spreadsheet, last database). Expect to re-select files in the UI on the new machine.
+- **`scan.pkl`** is a Python pickle cache. It can fail to load across very different Python or package versions. Treat it as a convenience cache, not an archive format.
+- Renaming the `.db` breaks the stem match — the app will not find the old session until you rename it back or re-scan.
+- Session folders are **gitignored**; cloning the repo never brings them.
+
+### Prefer these for durable transfer of *results*
+
+| Goal | Use |
+|------|-----|
+| Pedigree snapshot | **Save results** → JSON + tree PNG under `output\pedigree_analysis\` |
+| Tables / grids | **Export analysis bundle…** or **Export RTs…** (CSV / Excel) |
+| PDF summary | **Generate library report…** |
+
+Those formats are safer across machines and versions than copying `.session` alone.
+
+## Optional: Graphviz
+
+For higher-quality **Pedigree visualization** exports, install [Graphviz](https://graphviz.org/download/) and ensure `dot` is on PATH. Without it, LC-Seq still runs and uses a matplotlib fallback for pedigree figures.
 
 ## Basic use
 

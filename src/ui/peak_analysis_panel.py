@@ -186,8 +186,8 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         picker_menu.grid(row=2, column=1, sticky="ew", padx=(6, 0), pady=2)
         attach_tooltip(
             picker_menu,
-            "Modern: NB/Poisson significance on local maxima. "
-            "Old-school: scipy height gate + Gaussian centroid (legacy notebooks).",
+            "Modern: NB/Poisson significance on local maxima (post-paper). "
+            "Old-school: Gaussian centroid fits (paper Methods).",
         )
 
         self._modern_picker_widgets: List[ctk.CTkBaseClass] = []

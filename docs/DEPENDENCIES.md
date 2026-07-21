@@ -104,21 +104,27 @@ This document explains the dependency choices made for the LC-Seq application.
 - Improves code documentation
 - Optional typing (won't break untyped code)
 
-## Python Version Requirement
+## Python version
 
-**Minimum**: Python 3.8
+**Minimum for the desktop app:** Python 3.10+ (recommended; required for a smooth Rust/`maturin` developer setup).  
+Older notes mentioning 3.8 are obsolete for the v2 analysis stack.
 
-**Rationale**:
-- Python 3.8 introduced several useful features (positional-only parameters, etc.)
-- Good balance between modern features and compatibility
-- Widely available on Windows systems
-- All chosen dependencies support Python 3.8+
+## Analysis / build extras (developers)
+
+| Dependency | Role |
+|------------|------|
+| **Rust + maturin** | Build the `lcseq` extension (`LC-Seq-New-master/`) — see [DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) |
+| **scipy** | Python fallback for Modern peak picking when Rust is not built |
+| **graphviz** (Python + system `dot`) | Optional higher-quality pedigree figure export |
+
+End users of the Windows release zip do **not** need these; the zip bundles `lcseq`.
 
 ## Summary
 
-All dependencies are:
+All application dependencies are:
+
 - Open source with permissive licenses
 - Actively maintained
 - Well-documented
 - Compatible with packaging tools (PyInstaller, etc.)
-- Suitable for cross-platform deployment
+- Suitable for Windows-first desktop deployment

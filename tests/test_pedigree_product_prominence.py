@@ -121,7 +121,7 @@ def test_export_product_prominence_csv(tmp_path) -> None:
         ],
     )
     out = export_product_prominence_csv(summary, tmp_path / "prominence.csv")
-    text = out.read_text(encoding="utf-8")
+    text = out.read_text(encoding="utf-8-sig")
     assert "prominence" in text.splitlines()[0]
     assert "AB" in text
 

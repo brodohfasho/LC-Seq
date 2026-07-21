@@ -1,8 +1,8 @@
-# LC-Seq-New-master: Rust Engine Integration Guide
+# LC-Seq-New-master: Rust engine integration guide
 
-**Purpose:** Document how the colleague's `LC-Seq-New-master` crate integrates with the main LC-Seq application after pedigree, lineage, DEL-cycle, and export-bundle work.
+**Purpose:** Document how the `LC-Seq-New-master` crate integrates with the main LC-Seq application (peak picking, pedigree, lineage, and related rendering).
 
-**Last updated:** 2026-07-05
+**Last updated:** 2026-07-16
 
 ---
 
@@ -14,9 +14,9 @@ The Rust engine answers:
 
 > Given replicated chromatograms for every positional truncate in a combinatorial DEL library, which building-block additions produce real, chromatographically consistent peaks as we walk from the all-null root toward full compounds?
 
-**Integrated in LC-Seq today:** peak picking (optional Rust), pedigree evaluation, lineage class diagnostics, pedigree split-tree rendering (Graphviz).
+**Integrated in LC-Seq today:** peak picking (optional Rust), pedigree evaluation, lineage class diagnostics, pedigree figure rendering (Graphviz).
 
-**Not from this folder:** DEL-cycle tree build/plot/export (`src/core/del_cycle_tree/`), spreadsheet/DB ingestion, GUI, library scan metrics.
+**Not from this folder:** Combinatorial **Split-tree** build/plot/export (`src/core/del_cycle_tree/`), spreadsheet/DB ingestion, GUI, library scan metrics.
 
 ---
 
@@ -91,9 +91,9 @@ Moved to [docs/archive/lcseq-standalone/](archive/lcseq-standalone/):
 |-------------|--------------|
 | `python/lcseq/io.py` | Fixed-schema LDEL xlsx loader; app uses DB + `pedigree_adapter` |
 | `python/lcseq/cli.py` | Standalone CLI pipeline |
-| `python/lcseq/debug.py` | Colleague matplotlib debug plots |
+| `python/lcseq/debug.py` | Archived matplotlib debug plots |
 | `python/lcseq/lcseq.pdb` | Debug symbol artifact |
-| Colleague `README.md`, `uv.lock` | Historical standalone workflow |
+| Standalone `README.md`, `uv.lock` | Historical standalone workflow (see `docs/archive/`) |
 
 ---
 
@@ -196,11 +196,11 @@ src/
 |---------|----------|
 | Configure Spreadsheet, BB columns, null token | `src/models/spreadsheet_config.py` |
 | SQLite library + scan cache | `src/core/library_metrics.py` |
-| DEL-cycle tree, verification, export bundle | `src/core/del_cycle_tree/` |
+| Split-tree visualization, verification, export bundle | `src/core/del_cycle_tree/` |
 | Library Analysis UI | `src/ui/library_data_window.py` |
 | In-app help | `src/help/*.md` |
 
-DEL-cycle analysis reimplements notebook logic in Python. It only **borrows** peak picking from `lcseq_backend` when assigning product RTs via direct pick.
+Split-tree analysis reimplements notebook logic in Python. It only **borrows** peak picking from `lcseq_backend` when assigning product RTs via direct pick.
 
 ---
 
@@ -224,7 +224,7 @@ cargo test
 | Library scan / signal quality | Optional |
 | **Pedigree analysis** | **Yes** |
 | **Lineage diagnostics** | **Yes** |
-| DEL-cycle tree + export | No (peak pick inside optional) |
+| Split-tree + export | No (peak pick inside optional) |
 | Pedigree split-tree (Graphviz) | No Rust for render; needs `dot` on PATH |
 
 ### Release packaging

@@ -4,7 +4,7 @@ All notable releases of LC-Seq are documented here.
 
 ## [2.0.0] - 2026-07-05
 
-Major release: Library Analysis, pedigree and lineage workflows, DEL-cycle tree, and export bundle — built on the Rust `lcseq` analysis engine with Python fallbacks where noted.
+Major release: Library Analysis, pedigree and lineage workflows, split-tree visualization, and export bundle — built on the Rust `lcseq` analysis engine with Python fallbacks where noted.
 
 ### Features
 
@@ -19,26 +19,27 @@ Major release: Library Analysis, pedigree and lineage workflows, DEL-cycle tree,
 
 #### Peak analysis
 - **Modern** negative-binomial peak picker (Rust when built; Python fallback with parity check)
-- **Old-school** Gaussian peak picker (scipy; Rust path for pedigree when extension is rebuilt)
+- **Old-school** Gaussian peak picker (scipy; used in the accompanying *J. Med. Chem.* paper; Rust path for pedigree when extension is rebuilt)
 - Peak Analysis panel: integration bounds, prominence, engine label (`lcseq (Rust)` vs `Python fallback`)
 
 #### Library Analysis (formerly Library Data)
 - Library-wide scan: signal quality, metrics, fraction plots, session cache (`scan.pkl`)
-- **Pedigree analysis** — null-truncation split tree via Rust `evaluate_library`; pass/fail per tier; CSV and tree PNG/SVG/PDF export
+- **RT assignment** — **Direct pick** (paper Methods) or **Pedigree** (post-paper improvement)
+- **Pedigree analysis** — null-truncation pedigree via Rust `evaluate_library`; pass/fail per tier; CSV and tree PNG/SVG/PDF export
 - **Lineage analysis** — per-class diagnostics (`diagnose_class`) with matplotlib overlays
-- **DEL-cycle analysis** — combinatorial tree build, pass-rate coloring, branch views
-- **DEL-cycle export bundle** — products CSV, audit metadata, summary/flagged building blocks, optional product prominence, Excel saturation grids (background export + progress UI)
-- Library report PDF (pedigree and/or DEL-cycle sections)
+- **Split-tree visualization** — combinatorial tree build after RT assignment (Pedigree or Direct pick), pass-rate coloring, branch views
+- **Export analysis bundle** — products CSV, audit metadata, summary/flagged building blocks, optional product prominence, Excel saturation grids (background export + progress UI)
+- Library report PDF (pedigree and/or split-tree sections)
 
 #### Help
-- In-app Help topics for peak picking, pedigree, lineage, DEL-cycle, export bundle, signal quality, and glossary
+- In-app Help topics for peak picking, pedigree, lineage, split-tree / export bundle, signal quality, and glossary
 - Markdown rendering in the Help window (headings, tables, bold, code)
 
 ### Analysis engine
 
 - **Rust `lcseq` extension** bundled in the Windows release zip (pedigree and lineage work without a user Rust install)
 - **Python fallback** peak picker in source installs when the extension is missing or fails startup parity check
-- **Graphviz** (optional): high-quality pedigree split-tree layout; matplotlib tier-ring fallback when `dot` is not on PATH
+- **Graphviz** (optional): high-quality pedigree radial layout; matplotlib tier-ring fallback when `dot` is not on PATH
 
 ### Windows executable
 
@@ -68,7 +69,7 @@ No Rust or Python install is required for the release zip.
 - Windows-first; packaged build tested on Windows 10/11 x64
 - Release zip bundles `lcseq` (Rust) — maintainers need Rust only when **building** the zip, not end users
 - No automated GUI smoke tests; manual QA recommended for BB index CSV, pedigree ↔ DEL numbering, and export bundle on large libraries
-- DEL-cycle tree and export logic are Python (`src/core/del_cycle_tree/`); only peak picking inside that path uses the Rust engine when available
+- Split-tree visualization and export logic are Python (`src/core/del_cycle_tree/`); only peak picking inside that path uses the Rust engine when available
 - Very large libraries: full scan and grid export can take significant time and disk; session caches grow under `output/library_data/`
 
 ## [1.0.0] - 2026-05-19

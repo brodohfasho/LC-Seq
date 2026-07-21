@@ -11,6 +11,7 @@ from typing import Iterable, Literal, Sequence
 import matplotlib.pyplot as plt
 
 from src.core.analysis_export import export_figure
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.core.lineage_export import export_lineage_csv
 from src.core.lineage_render import render_lineage_figure
 from src.models.pedigree_result import LineageAnalysisResult
@@ -55,7 +56,7 @@ def export_lineage_csv_combined(
         "tolerance",
         "time_unit",
     ]
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for result in results:

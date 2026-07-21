@@ -1,38 +1,27 @@
-# Library signal quality (bulk metrics)
+# Library signal quality
 
-## Purpose
-
-**Library Analysis** summarizes **chromatographic quality across the whole library** to help judge sequencing depth and noise. Metrics and plots live on the **Library QC metrics** and **Library QC visualizations** tabs.
+Bulk chromatographic QC across the whole library (**Library QC metrics** / **visualizations** tabs).
 
 ## Prerequisites
 
-1. Open **Library Analysis** from the main screen (requires configured spreadsheet and database).
-2. Set **Peak significance α**, **Min prominence**, **Min % area**, and **Fraction count** on the **Library QC metrics** sidebar (signal-quality parameters are shared with RT assignment when you use the RT assignment sidebar values for pedigree runs).
-3. Click **Run library scan** in the top bar.
+1. Open **Library Analysis** (config + DB ready).
+2. Set picker / α / prominence / % area / fraction count on the **Library QC metrics** sidebar.
+3. **Run library scan**.
 
-## Bulk top-peak metrics (Approach A)
+Modern or Old-school picking can be selected on the QC sidebar (same engines as Peak Analysis).
 
-For each compound trace the program:
+## What “top peak” means
 
-1. Estimates baseline μ and σ.
-2. Finds **statistically significant peaks** with the **modern** picker (p < α).
-3. Applies **min prominence** and **min % area** filters when configured.
-4. Uses the **tallest remaining significant peak** for height, SNR, and dynamic range.
+For each compound the scan estimates baseline, finds significant peaks, applies filters, then uses the **tallest remaining significant peak** for height / SNR / dynamic range.
 
-**Important:** The tallest peak is not always the DEL product. Treat these as library-wide screening values.
+That peak is **not always the DEL product** — treat values as library-wide screening, not product ID.
 
-## Pedigree-validated prominence
+## Coverage
 
-After **Run RT assignment** in **Pedigree** mode, **`product_prominence.csv`** in the **Export analysis bundle** lists prominence at the pedigree-chosen product RT for passed full compounds only.
+**Total count**, **avg per fraction**, and **library coverage index** reflect sequencing depth. Fraction count (default 96) feeds the coverage index.
 
-That metric is **not** shown on the QC metrics tab; compare bulk scan metrics with bundle prominence when judging product signal.
+## Pedigree prominence (separate)
 
-## Coverage metrics
+After **Pedigree** RT assignment, **`product_prominence.csv`** in the analysis bundle reports prominence at the **validated product RT** for passed compounds. It is not a QC metrics card.
 
-**Total count per entry** and **average count per fraction** relate to sequencing depth. **Library coverage index** combines them into one number per channel.
-
-## α and fraction count
-
-Set **Peak significance α** on the **Library QC metrics** sidebar before **Run library scan**. Fraction count is used for coverage index (default 96).
-
-See `docs/LIBRARY_SIGNAL_QUALITY.md` in the repository for formal definitions.
+Formal definitions: `docs/LIBRARY_SIGNAL_QUALITY.md` in the repository.

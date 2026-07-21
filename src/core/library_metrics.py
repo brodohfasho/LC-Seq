@@ -20,6 +20,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import pandas as pd
 
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.core.library_signal_quality import (
     DEFAULT_SIGNAL_QUALITY_ALPHA,
     EntrySignalStats,
@@ -1016,7 +1017,7 @@ def export_metrics_summary_csv(
         "std_dev",
         "n",
     ]
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         fh.write(
             f"# database={snapshot.database_name}; "
             f"database_kind={snapshot.database_kind}; "

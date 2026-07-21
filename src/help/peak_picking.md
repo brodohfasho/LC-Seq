@@ -1,71 +1,44 @@
 # Peak picking
 
-## Where peak picking lives
+## Where
 
-- **Chromatogram Visualizer** — expand the **Peak analysis** panel below the plot. Use **Pick peaks** on one or more selected compounds.
-- **Library Analysis → RT assignment** — the same algorithms and quality filters run library-wide when you **Run RT assignment** (pedigree or direct pick).
+- **Chromatogram Visualizer → Peak analysis** — **Pick peaks** on selected compounds.
+- **Library Analysis → RT assignment** — same algorithms for library-wide RT assignment.
 
-Both places share the **Modern** and **Old-school** algorithms described below.
+## Algorithms
 
-## What peak picking does
+Choose **Modern** or **Old-school**. Only the active column’s parameters apply.
 
-**Pick peaks** finds bumps in your chromatogram that are large enough to be real signal, not random noise. Detected peaks get retention time, height, integrated area, prominence, and (in modern mode) significance p-values.
+### Modern (default)
 
-## Peak picking algorithm
-
-Choose **Modern** or **Old-school** from the algorithm menu. Only the active mode’s parameters apply; the inactive column is greyed out.
-
-### Modern (recommended)
-
-Uses the same statistical engine as the Rust analysis core:
-
-1. Estimate **baseline** μ and σ (median after removing high points).
+1. Estimate baseline μ and σ.
 2. Find local maxima above baseline.
-3. For each candidate, compute p-values for **apex height** and **integrated area** (rolling baseline, NB/Poisson).
-4. Keep peaks where **both** p-values are below **α/2** (Bonferroni). The results table shows the smaller of the two.
+3. Keep peaks where height and area p-values are both < **α/2**.
 
-**Peak significance α** — your cutoff. Common choices:
+Typical α: **0.001** (strict) or **0.05** (looser).
 
-- **0.001** — strict (fewer peaks)
-- **0.05** — looser (more peaks)
+### Old-school (paper Methods)
 
-### Old-school (legacy notebooks)
+1. Gate by **Min height factor** (fraction of trace max).
+2. Fit a Gaussian in **Gaussian fit width**.
+3. Reject fits with **Max Gaussian σ** too large.
+4. Ignore signal below **Minimum RT** (picker cutoff — **not** Null RT threshold).
 
-Matches historical scipy + Gaussian workflows:
+Modern was added after the accompanying paper.
 
-1. Gate candidates by **Min height factor** (fraction of trace maximum).
-2. Fit a Gaussian in a **Gaussian fit width** window around each candidate.
-3. Reject fits with **Max Gaussian σ** too wide.
-4. Ignore signal before **Minimum RT** (peaks below this RT are never considered).
+## Quality filters (both)
 
-Use old-school when you need parity with legacy notebook parameters. **Minimum RT** is a picker cutoff only — it is **not** the **Null RT Threshold** on Library Analysis (see glossary / export bundle help).
+- **Min prominence** — height above the higher adjacent valley.
+- **Min % area** — share of total detected area.
 
-## Quality filters (both modes)
+Set either to **0** to disable. Peaks below cutoffs are hidden from the plot/table but still detected. Same filters apply to Library Analysis when set on the RT / QC sidebars.
 
-After detection, peaks must also meet:
+## Plot & export
 
-- **Min prominence** — height above the higher adjacent valley (counts)
-- **Min % area** — share of total detected peak area
-
-Peaks below these cutoffs are hidden from the plot and table but remain in the full detected set. Set either threshold to **0** to disable it.
-
-These same filters apply to **Library Analysis** scan metrics, RT assignment, and pedigree evaluation when configured on the RT assignment sidebar.
-
-After **Analyze lineage**, peaks assigned to a **null truncation** tier can be shown even when they fail prominence / % area filters.
-
-## What you see on the plot
-
-- Colored markers on displayed peak tops
-- Optional orange shading between valleys when **Show integration** is on (see **Peak integration** help)
-
-## Export
-
-In the Chromatogram Visualizer peak panel, use **Export CSV** to save RT, height, area, prominence, and p-value for each displayed peak.
-
-Library-wide RT and DEL-cycle tables are exported from **Library Analysis → RT assignment** (**Export RTs…**, **Export analysis bundle…**).
+Markers on peak tops; optional integration shading (**Show integration** in the peak panel shades each peak's area between its flanking valleys). **Export CSV** in the peak panel saves displayed peaks. Library-wide tables: **Export RTs…** / **Export analysis bundle…**.
 
 ## Tips
 
-- Pick peaks on **one compound** and **one count channel** at a time for clearest results.
-- If no peaks appear in modern mode, try a larger α or check that the count channel has signal.
-- If old-school finds nothing, check **Minimum RT** and **Min height factor** against your trace scale and time unit.
+- Prefer one compound and one count channel when inspecting.
+- No modern peaks → raise α or check the channel has signal.
+- No old-school peaks → check **Minimum RT** and **Min height factor** vs your time unit and scale.

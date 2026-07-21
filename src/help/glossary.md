@@ -1,37 +1,45 @@
 # Glossary
 
-**Retention time (RT)** — Time when a compound elutes from the column. Use the same unit as **Null RT threshold** and other RT settings (seconds or minutes).
+**α (alpha)** — Significance cutoff for **Modern** peak picking. Lower = stricter. Height and area tests both use α/2.
 
-**Null RT threshold** — Maximum allowed RT difference between a full product and its expected truncation references for null verification to pass. Configured on **Library Analysis → RT assignment**. Also used as the parent exclusion width in lineage and pedigree evaluation (± threshold around the parent RT).
+**Direct pick mode** — RT assignment that peak-picks each product RT without a full pedigree walk (**paper Methods**; typically with Old-school picking).
 
-**α (alpha)** — Significance cutoff for **modern** peak picking. Lower = stricter. Both height and area tests must pass at α/2.
+**Equivalence class** — Truncates that share the same non-null BB sequence (padding-invariant).
 
-**Modern peak picking** — NB/Poisson significance on local maxima (default). Parameters: α, min prominence, min % area.
+**Index database** — SQLite file storing raw chromatogram text; parsed on demand.
 
-**Old-school peak picking** — Legacy scipy height gate + Gaussian centroid fit. Parameters: min height factor, Gaussian fit width, max σ, minimum RT.
+**Isoform** — Variant of the same primary ID (e.g. linear vs cyclized) when a variant column is configured.
 
-**Minimum RT** — Old-school picker cutoff: ignore chromatogram signal below this RT. **Not** the same as null RT threshold.
+**Library Analysis** — Dashboard for library scan, QC, RT assignment, pedigree and split-tree views (formerly “Library Data”).
 
-**Replicate** — One encoded library member with the same BB class (may appear as multiple rows if you have isoforms).
+**Minimum RT** — Old-school picker cutoff: ignore signal below this RT. **Not** the null RT threshold.
 
-**Null token** — Placeholder BB value for an unfilled position (e.g. `AgxNull`).
+**Modern peak picking** — NB/Poisson significance on local maxima (default). Parameters: α, min prominence, min % area. Added after the accompanying paper.
 
-**Tier** — Coupling cycle in the pedigree. Tier 0 = all-null root; highest tier = full products.
+**Null RT threshold** — Max allowed RT difference vs truncation references for verification / parent exclusion. Set on **Library Analysis → RT assignment**.
 
-**Equivalence class** — Set of truncates sharing the same non-null BB sequence (padding-invariant).
+**Null token** — Placeholder BB for an unfilled position (e.g. `AgxNull`).
 
-**Prominence** — Peak height minus the higher adjacent valley. Used as a quality filter and, after pedigree RT assignment, measured at the validated product RT in `product_prominence.csv`.
+**Old-school peak picking** — Height gate + Gaussian centroid fit (**paper Methods**). Parameters: min height factor, fit width, max σ, minimum RT.
 
-**Product peak prominence** — Prominence at the pedigree-chosen product RT for passed full compounds. Exported in the analysis bundle when pedigree RT assignment was run.
+**Pedigree mode** — RT assignment via full-library null-truncation walk (Rust `evaluate_library`). Post-paper improvement.
 
-**SNR excess** — Peak height minus baseline μ.
+**Pedigree visualization** — Radial / tier-ring figure of the null-truncation pedigree.
 
-**SNR ratio** — SNR excess divided by baseline σ.
+**Product peak prominence** — Prominence at the pedigree-chosen product RT for passed full compounds (`product_prominence.csv` in the analysis bundle).
 
-**Library Analysis** — Dashboard for library scan, QC metrics/plots, RT assignment, pedigree visualization, and split-tree visualization (formerly “Library Data”).
+**Prominence** — Peak height minus the higher adjacent valley. Also a post-detection quality filter.
 
-**RT assignment** — Library-wide step that resolves product RTs (pedigree or direct pick) and builds DEL-cycle verification data.
+**Replicate** — One library member of a BB class (multiple rows if isoforms are configured).
 
-**Index database** — SQLite file storing raw chromatogram text; parsed on demand (slower first access).
+**Retention time (RT)** — Elution time. Keep the same unit (seconds or minutes) across RT settings.
 
-**Isoform** — Variant of the same compound (e.g. linear vs cyclized) when a variant column is configured.
+**RT assignment** — Library-wide step that resolves product RTs (**Pedigree** or **Direct pick**) and feeds split-tree / exports.
+
+**SNR excess** — Peak height − baseline μ.
+
+**SNR ratio** — SNR excess ÷ baseline σ.
+
+**Split-tree visualization** — Combinatorial BB tree (full library or BB1 branch) built after RT assignment.
+
+**Tier** — Coupling depth in the pedigree. Tier 0 = all-null root; highest tier = full products.

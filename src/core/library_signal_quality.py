@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.core.lcseq_backend import (
     _attach_integration_bounds,
     find_peaks_for_settings,
@@ -305,7 +306,7 @@ def export_per_entry_signal_csv(
         f"time_unit={options.time_unit}; "
         "definitions=docs/LIBRARY_SIGNAL_QUALITY.md"
     )
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         fh.write(f"# {meta}\n")
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()

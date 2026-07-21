@@ -2,6 +2,8 @@
 
 End-to-end map of major features, data dependencies, and core code paths. Use this when onboarding, planning performance work, or writing release QA scripts.
 
+**Vocabulary:** Library Analysis · RT modes **Pedigree** / **Direct pick** · **Pedigree visualization** / **Split-tree visualization** · **Export analysis bundle**. Paper Methods used **Old-school** picking + **Direct pick**; Modern and Pedigree are later improvements.
+
 **Legend:** solid arrows = typical user order; dashed arrows = optional branch or reuse of cached data.
 
 ### Viewing the flowcharts
@@ -57,22 +59,22 @@ flowchart TB
     RTmode -->|Pedigree| PEDRUN["Pedigree RT assignment<br>Rust evaluate_library"]
     RTmode -->|Direct pick| DIRRUN["Direct pick RT assignment<br>per-compound find_peaks"]
     PEDRUN --> PEDcache["Pedigree snapshot<br>.session/…/pedigree/"]
-    PEDRUN --> DELbuild["Build DEL-cycle tree<br>uses pedigree or direct RTs"]
+    PEDRUN --> DELbuild["Build split-tree<br>uses pedigree or direct RTs"]
     DIRRUN --> DELbuild
-    DELbuild --> DELcache["In-memory DEL tree<br>+ session reuse"]
+    DELbuild --> DELcache["In-memory split-tree<br>+ session reuse"]
   end
 
   subgraph libviz ["Library Analysis — visualization tabs"]
     PEDRUN --> PEDviz["Pedigree visualization tab<br>tier-ring matplotlib preview"]
     PEDRUN --> PEDtree["Export pedigree tree<br>Graphviz or matplotlib PNG/SVG/PDF"]
-    DELbuild --> STviz["Split-tree visualization tab<br>DEL combinatorial tree matplotlib"]
+    DELbuild --> STviz["Split-tree visualization tab<br>combinatorial BB tree matplotlib"]
     DELbuild --> STmeta["Optional: RTs from metadata columns<br>instead of session assignment"]
   end
 
   subgraph export ["Library Analysis — exports"]
     PEDRUN --> PEDcsv["Export pedigree CSV"]
     DELbuild --> BUNDLE["Export analysis bundle<br>CSVs + audit + grids/ + prominence"]
-    DELbuild --> DELcsv["Export DEL-cycle CSV"]
+    DELbuild --> DELcsv["Export products CSV"]
     SCAN --> RTcsv["Export RTs CSV<br>after assignment"]
   end
 
@@ -94,9 +96,9 @@ flowchart TB
                 → RT mode ─┬→ Pedigree (Rust evaluate_library) → pedigree snapshot
                            │       → pedigree viz tab · export tree · pedigree CSV
                            └→ Direct pick (find_peaks per compound)
-                                   → [Build DEL-cycle tree]
+                                   → [Build split-tree]
                                    → RT assignment tab · Split-tree tab
-                                   → export bundle · DEL CSV · RTs CSV
+                                   → export analysis bundle · products CSV · RTs CSV
 ```
 
 </details>
@@ -111,7 +113,7 @@ flowchart TB
 | Configure Spreadsheet | Main → **Configure Spreadsheet** | Map compound ID, chromatogram column, delimiters, time/count indices, metadata; DEL: BB columns, null token, cycle count; optional BB index CSV validate + accept | `SpreadsheetConfig` saved to `config/` |
 | Create / Load database | Main → **Create / Load database** | **Index DB:** metadata + raw chromatogram text. **Full DB:** all parsed points stored | `output/databases/*.db` |
 | Open visualizer | **Chromatogram Visualizer** (enabled after config + DB) | Compound search, overlay plots | Uses DB only |
-| Open library analysis | **Library Analysis** (enabled after config + DB) | Dashboard for scan, RT assignment, DEL export | Uses DB + config |
+| Open library analysis | **Library Analysis** (enabled after config + DB) | Dashboard for scan, RT assignment, split-tree / pedigree exports | Uses DB + config |
 
 **Core modules:** `src/ui/main_screen.py`, `src/ui/configure_spreadsheet_dialog.py`, `src/ui/process_data_dialog.py`, `src/core/spreadsheet_loader.py`, `src/core/data_store.py`
 
@@ -174,7 +176,9 @@ flowchart LR
 
 ## 5. Library Analysis — RT assignment (pedigree vs direct pick)
 
-Both modes require **library scan** (or chromatograms loaded during DEL build from DB). BB columns must be configured.
+Both modes require **library scan** (or chromatograms loaded while building the split-tree from the DB). BB columns must be configured.
+
+**Paper Methods:** **Old-school** peak picking + **Direct pick** RT assignment. **Modern** picking and **Pedigree** mode were added after submission.
 
 ```mermaid
 flowchart TB
@@ -186,7 +190,7 @@ flowchart TB
   P1 --> P2["Rust evaluate_library<br>null-truncation pedigree walk"]
   P2 --> P3["Save pedigree snapshot"]
   P2 --> P4["Render pedigree tree file<br>Graphviz twopi or matplotlib fallback"]
-  P2 --> DEL["Build DEL-cycle tree<br>using pedigree RTs"]
+  P2 --> DEL["Build split-tree<br>using pedigree RTs"]
 
   DIR --> D1["Per compound: find_peaks + select latest RT<br>CalculateRTs rule"]
   D1 --> DEL
@@ -205,10 +209,10 @@ flowchart TB
    RT assignment mode? ── Pedigree ──→ pedigree_adapter → Rust evaluate_library
         │                                    ├→ save pedigree snapshot
         │                                    ├→ render pedigree tree file (Graphviz / matplotlib)
-        │                                    └→ build DEL-cycle tree (pedigree RTs)
+        │                                    └→ build split-tree (pedigree RTs)
         │
         └── Direct pick ──→ find_peaks per compound → latest RT (CalculateRTs rule)
-                                    └→ build DEL-cycle tree (direct RTs)
+                                    └→ build split-tree (direct RTs)
                                                 │
                         ┌───────────────────────┴───────────────────────┐
                         ▼                                               ▼
@@ -221,9 +225,9 @@ flowchart TB
 |------|-----|--------------|--------|
 | **Pedigree RT assignment** | RT assignment sidebar → mode **Pedigree** → **Run RT assignment** | Full-library null-truncation analysis; pass/fail per pedigree node; chosen RT per class/compound | **Rust** `evaluate_library` (`pedigree_service`) |
 | **Direct pick RT assignment** | Mode **Direct pick** → **Run RT assignment** | Each full compound: peak pick on its chromatogram; product RT = latest accepted peak | `find_peaks_for_settings` (Rust or Python) + `select_direct_pick_product_rt` |
-| **DEL-cycle tree build** | Runs as part of RT assignment (both modes) | Combinatorial DEL tree from assignments; null-RT verification; pass-rate coloring inputs | Python `del_cycle_tree/service.py` |
+| **Split-tree build** | Runs as part of RT assignment (both modes) | Combinatorial split-tree from assignments; null-RT verification; pass-rate coloring inputs | Python `del_cycle_tree/service.py` |
 
-**After pedigree run:** Pedigree CSV export, tier slider on **Pedigree visualization** tab, tree PNG/SVG/PDF export, and DEL tree can consume pedigree RTs.
+**After pedigree run:** Pedigree CSV export, tier slider on **Pedigree visualization** tab, tree PNG/SVG/PDF export, and the split-tree can consume pedigree RTs.
 
 **Core modules:** `src/core/pedigree_service.py`, `src/core/pedigree_adapter.py`, `src/core/pedigree_backend.py`, `src/core/del_cycle_tree/service.py`
 
@@ -235,13 +239,13 @@ flowchart TB
 |-----|--------|-------------|-------------|
 | **Library QC metrics** | Aggregated metric cards | Snapshot from metrics step | UI labels |
 | **Library QC visualizations** | Histogram / signal QC PNGs | Plot generation step | Session plot PNGs |
-| **RT assignment** | DEL-cycle assignment table / summary after RT run | `DelCycleTreeData` | Tables in UI |
+| **RT assignment** | Split-tree assignment table / summary after RT run | `DelCycleTreeData` | Tables in UI |
 | **Pedigree visualization** | Null-truncation **pedigree** tier-ring preview, tier slider, pass/fail colors | `PedigreeAnalysisResult` (pedigree mode only) | `pedigree_render.build_pedigree_tree_preview_figure` (matplotlib) |
-| **Split-tree visualization** | **DEL combinatorial** tree (full library or BB1 branch); optional RT coloring | `DelCycleTreeData`; RT source = session assignment, pedigree, or metadata columns | `del_cycle_tree/render.render_del_cycle_tree_figure` |
+| **Split-tree visualization** | Combinatorial BB tree (full library or BB1 branch); optional RT coloring | `DelCycleTreeData`; RT source = session assignment, pedigree, or metadata columns | `del_cycle_tree/render.render_del_cycle_tree_figure` |
 
 **Pedigree tree export (file):** Sidebar export → Graphviz `lcseq.render.render_pruned_tree` when `dot` is on PATH; else matplotlib tier rings. Distinct from in-tab pedigree preview (same data, file-oriented layout).
 
-**Split-tree vs pedigree visualization:** Pedigree tab = null-truncation **class/compound pedigree** from Rust. Split-tree tab = **DEL cycle combinatorial grid tree** built in Python (uses RTs from whichever assignment mode ran).
+**Split-tree vs pedigree visualization:** Pedigree tab = null-truncation **class/compound pedigree** from Rust. Split-tree tab = **combinatorial building-block tree** built in Python (uses RTs from whichever assignment mode ran).
 
 **Core modules:** `src/core/pedigree_render.py`, `src/core/del_cycle_tree/render.py`, `LC-Seq-New-master/python/lcseq/render.py` (Graphviz)
 
@@ -256,9 +260,9 @@ flowchart TB
 | **Export RTs CSV** | RT assignment complete | Per-compound RT table |
 | **Export pedigree CSV** | Pedigree RT assignment | Node records / pass-fail |
 | **Export pedigree tree** | Pedigree RT assignment | PNG / SVG / PDF split-tree |
-| **Export DEL-cycle CSV** | DEL tree built | Single products CSV |
-| **Export analysis bundle** | DEL tree built | Folder: `del_cycle_products.csv`, audit metadata, summary, flagged BBs, `grids/*.xlsx`, optional prominence CSV |
-| **Generate report PDF** | Metrics/plots; optional pedigree & DEL artifacts | Combined library report |
+| **Export products CSV** | Split-tree built | Single products CSV |
+| **Export analysis bundle** | Split-tree built | Folder: `split_tree_products.csv`, audit metadata, summary, flagged BBs, `grids/*.xlsx`, optional prominence CSV |
+| **Generate report PDF** | Metrics/plots; optional pedigree & split-tree figures | Combined library report |
 
 **Core modules:** `src/core/pedigree_export.py`, `src/core/del_cycle_tree/export.py`, `src/core/library_report.py`
 
@@ -275,7 +279,7 @@ flowchart TB
 | Pedigree RT assignment | **Required** | — | **Required** | **Required** |
 | Direct pick RT assignment | Optional | — | Recommended | **Required** |
 | Pedigree tree file export | — | Optional (quality layout) | — | — |
-| DEL-cycle tree + bundle | Optional (direct pick only) | — | Recommended | **Required** |
+| Split-tree + analysis bundle | Optional (direct pick only) | — | Recommended | **Required** |
 
 **Release zip users:** Rust is pre-bundled — no local Rust install. Graphviz remains optional on the user machine.
 
@@ -287,7 +291,7 @@ flowchart TB
 2. **Library Analysis:** Run library scan → calculate metrics (signal if needed) → generate plots  
 3. RT assignment: **Pedigree** mode → Run RT assignment  
 4. Review **Pedigree visualization** tab; export pedigree tree if needed  
-5. Review **Split-tree visualization** tab (DEL tree colored by pass rate)  
+5. Review **Split-tree visualization** tab (tree colored by pass rate)  
 6. **Export analysis bundle** to a folder  
 7. Optional: **Generate report PDF**  
 8. Optional: **Chromatogram Visualizer** for spot-checking compounds + lineage on subsets  

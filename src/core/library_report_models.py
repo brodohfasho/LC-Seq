@@ -67,7 +67,7 @@ class LibraryReportSectionStatus:
 
 @dataclass(frozen=True)
 class LibraryReportPedigreeBranchFigure:
-    """One DEL-cycle BB1 branch figure for the report."""
+    """One split-tree BB1 branch figure for the report."""
 
     bb1_name: str
     image_path: Path
@@ -77,7 +77,7 @@ class LibraryReportPedigreeBranchFigure:
 
 @dataclass
 class LibraryReportPedigreeFigures:
-    """Pedigree and DEL-cycle figure paths embedded in the report."""
+    """Pedigree and split-tree figure paths embedded in the report."""
 
     tier_ring_path: Optional[Path] = None
     tier_ring_caption: str = ""

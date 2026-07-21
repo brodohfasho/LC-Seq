@@ -58,7 +58,7 @@ def test_safe_export_stem() -> None:
 def test_export_lineage_csv_combined(tmp_path) -> None:
     results = [_minimal_result("c1"), _minimal_result("c2")]
     out = export_lineage_csv_combined(results, tmp_path / "all.csv")
-    text = out.read_text(encoding="utf-8")
+    text = out.read_text(encoding="utf-8-sig")
     lines = text.strip().splitlines()
     assert lines[0].startswith("compound_id")
     assert "c1" in text

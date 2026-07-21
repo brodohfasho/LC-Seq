@@ -24,14 +24,40 @@ class HelpTopic:
 
 
 HELP_TOPICS: Tuple[HelpTopic, ...] = (
-    HelpTopic("peak_picking", "Peak picking", "peak_picking.md", ("integration", "glossary")),
-    HelpTopic("integration", "Peak integration (plot shading)", "integration.md", ("peak_picking", "pedigree_analysis")),
-    HelpTopic("null_truncates", "Null truncates & BB columns", "null_truncates.md", ("lineage_analysis", "pedigree_analysis")),
-    HelpTopic("lineage_analysis", "Lineage analysis", "lineage_analysis.md", ("null_truncates", "pedigree_analysis")),
-    HelpTopic("pedigree_analysis", "Library pedigree (split-tree)", "pedigree_analysis.md", ("null_truncates", "lineage_analysis", "pedigree_split_tree", "del_cycle_bundle_glossary")),
+    HelpTopic(
+        "library_analysis",
+        "Library Analysis overview",
+        "library_analysis.md",
+        ("del_library_setup", "signal_quality", "pedigree_analysis", "del_cycle_bundle_glossary"),
+    ),
+    HelpTopic(
+        "del_library_setup",
+        "DEL library setup",
+        "del_library_setup.md",
+        ("null_truncates", "library_analysis", "pedigree_analysis"),
+    ),
+    HelpTopic(
+        "null_truncates",
+        "Null truncates & BB columns",
+        "null_truncates.md",
+        ("del_library_setup", "lineage_analysis", "pedigree_analysis"),
+    ),
+    HelpTopic("peak_picking", "Peak picking", "peak_picking.md", ("glossary", "library_analysis")),
+    HelpTopic(
+        "lineage_analysis",
+        "Lineage analysis",
+        "lineage_analysis.md",
+        ("null_truncates", "pedigree_analysis", "peak_picking"),
+    ),
+    HelpTopic(
+        "pedigree_analysis",
+        "Library pedigree analysis",
+        "pedigree_analysis.md",
+        ("null_truncates", "lineage_analysis", "pedigree_split_tree", "del_cycle_bundle_glossary", "library_analysis"),
+    ),
     HelpTopic(
         "pedigree_split_tree",
-        "Pedigree split-tree figure",
+        "Pedigree visualization figure",
         "pedigree_split_tree_readme.md",
         ("pedigree_analysis", "del_cycle_bundle_glossary"),
     ),
@@ -39,9 +65,14 @@ HELP_TOPICS: Tuple[HelpTopic, ...] = (
         "del_cycle_bundle_glossary",
         "Export analysis bundle glossary",
         "del_cycle_bundle_glossary.md",
-        ("pedigree_analysis", "pedigree_split_tree"),
+        ("pedigree_analysis", "library_analysis", "pedigree_split_tree"),
     ),
-    HelpTopic("signal_quality", "Library signal quality", "signal_quality.md", ("peak_picking", "glossary")),
+    HelpTopic(
+        "signal_quality",
+        "Library signal quality",
+        "signal_quality.md",
+        ("peak_picking", "library_analysis", "glossary"),
+    ),
     HelpTopic("glossary", "Glossary", "glossary.md", ()),
 )
 

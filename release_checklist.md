@@ -1,223 +1,88 @@
-# LC-Seq Release Checklist
+# LC-Seq v2.0 Release Checklist
 
-Prepared for the next release after Library Data, pedigree/split-tree, lineage, DEL-cycle analysis, and DEL export bundle work. **No code changes were made** — this is a triage guide only.
-
-**Current snapshot (2026-07-03):**
-
-| Item | Status |
-|------|--------|
-| `__version__` | `2.0.0` |
-| Test suite | **196 passed**, 1 skipped (`pytest tests/`) |
-| Line coverage | ~**31%** overall (`pytest` + `--cov=src`) |
-| CI / GitHub Actions | **None** configured |
-| Largest module | `src/ui/library_data_window.py` (~5,500 lines) |
+Companion soft release for the *Journal of Medicinal Chemistry* paper. Use this before tagging **v2.0.0** and publishing the Windows zip.
 
 ---
 
-## Part 1 — Potential files to remove or stop tracking
+## Critical — before an official v2.0 release
 
-> **Important:** The **test suite should not be removed.** Tests are non-essential for *end-user runtime* but essential for release confidence. Below, “remove” means from the **git repo** and/or **release zip**, not “delete testing as a practice.”
+### Version, changelog, and GitHub release
+- [x] Confirm `src/__init__.py` `__version__` is `2.0.0` (and matches the zip / tag name)
+- [x] Confirm `CHANGELOG.md` `[2.0.0]` lists every user-facing feature that appears in the paper or README
+- [x] Confirm known limitations in `CHANGELOG.md` are honest (Windows-first, unsigned exe, optional Graphviz, large-library runtime/disk)
+- [x] Confirm `main` on GitHub matches the release commit you intend to tag
+- [ ] Create annotated tag `v2.0.0` and GitHub Release; upload `LC-Seq-v2.0.0-windows.zip` *(you — browser, after zip is built)*
+- [ ] Paste SmartScreen / antivirus guidance into the GitHub Release body (see `docs/RELEASE.md`) *(you — with the release)*
 
-### P0 — Remove from git (dev artifacts; bloat / wrong place)
+### Automated quality gates
+- [x] `pytest tests/` is fully green on the release commit *(228 passed after Graphviz API fix)*
+- [x] Rebuild Rust extension (`maturin develop --release` in `LC-Seq-New-master/`) and pass `tests/test_lcseq_backend_parity.py`
+- [ ] Confirm packaged build reports Rust engine in Peak Analysis (`lcseq (Rust)`, not Python fallback) after a clean `build_windows.ps1` *(you — after Windows package build)*
 
-**Status: complete (2026-07-05).** Runtime artifacts are gitignored; only `output/databases/.gitkeep` remains tracked under `output/`.
+### Windows package (clean-machine proof)
+- [ ] Run `scripts/build_windows.ps1` then `scripts/package_release.ps1` on a clean Windows build environment
+- [ ] Zip contains only `dist/LC-Seq/` (exe + `_internal/`) — no tests, venv, notebooks, or personal configs
+- [ ] On a machine **without** the repo or Python: download zip → extract whole folder → launch `LC-Seq.exe`
+- [ ] Record exact SmartScreen / AV prompts and adjust release notes if wording differs
 
-These were tracked previously but are not source code. They inflate clones and confuse history.
+### End-to-end smoke test (source *and* packaged exe)
+Use a real DEL library spreadsheet representative of the paper workflow:
 
-| Path | Why | Git status |
-|------|-----|------------|
-| `output/library_data/**` (PNGs, JSON snapshots, `scan.pkl`, report assets) | Local session outputs; ~80+ files. Should live only on disk beside the app. | Ignored + untracked |
-| `output/pedigree_analysis/.session/**/*.png` | Same — generated pedigree previews. | Ignored + untracked |
-| `_pedigree_analysis_out.json` (repo root) | One-off debug/export output. | Ignored + untracked |
-| `docs/Untitled` | Stray editor buffer (removed from repo). | Removed |
+- [ ] Load spreadsheet → Configure (compound ID, chromatogram parsing, metadata)
+- [ ] Configure DEL fields: BB columns, null token, cycle count; optional BB index (UTF-8 **and** Excel); Validate → Accept
+- [ ] Save named preset → reload preset → confirm BB index path and mappings persist
+- [ ] Build index DB → open Chromatogram Visualizer → search → plot → export PNG/PDF/SVG
+- [ ] Run Library Analysis scan (signal quality on); confirm metrics/plots; cancel mid-scan once and confirm clean recovery
+- [ ] Run Pedigree analysis → tier slider → export CSV + tree (with Graphviz installed **and** without it)
+- [ ] Run Lineage on a selected class → confirm overlays export
+- [ ] Run Split-tree visualization → full tree + branch views → pass-rate coloring responds to cutoff
+- [ ] Export analysis bundle → confirm core CSVs/XLSX, audit metadata, `grids/`, flagged BBs; spot-check grid colors
+- [ ] Generate library report PDF: pedigree-only, DEL-only, and both sections
+- [ ] Switch to a second database / library and confirm pedigree, DEL tree, and exports do not retain stale labels/data
 
-**Applied in `.gitignore`:** `output/library_data/`, `output/pedigree_analysis/`, `output/**/*.pkl`, `output/**/*.png`, `output/**/*.json`, `output/**/*.pdf`, `_pedigree_analysis_out.json`. Kept `output/databases/.gitkeep` only.
+### Paper-facing correctness (airtight)
+- [x] Pedigree and split-tree BB numbering agree after full-library scan (and after restoring a pedigree/session snapshot without a full re-scan)
+- [x] Non-ASCII BB names (e.g. β characters) survive configure → tree labels → CSV/Excel export end-to-end
+- [x] Engine label and analysis outputs match what the paper Methods claim (Rust when bundled; Graphviz optional; Python fallback documented) *(help/docs note: paper = Old-school + Direct pick; Modern/Pedigree are post-paper)*
+- [x] Example or documented data paths in README / INSTALL / CONFIGURATION match the shipped UI labels (Library Analysis, etc.)
+- [x] No personal configs, session outputs, or databases under `output/` are committed (`config/configs/`, `scan.pkl`, plot PNGs, etc. remain gitignored)
 
-**Note:** `.gitignore` does not affect runtime caching — the app still reads/writes `scan.pkl`, session PNGs, and snapshots under `output/` locally.
-
-**History purge (2026-07-05):** `git filter-repo` removed `output/library_data/`, `output/pedigree_analysis/`, `_pedigree_analysis_out.json`, and `docs/Untitled` from all commits. Pack size dropped ~45 MiB → ~7 MiB. No `scan.pkl` was ever in history. **Force-push `development` required** to update the remote (`git push --force-with-lease origin development`).
-
-### P1 — Archive or move out of main tree (historical / personal)
-
-**Status: complete (2026-07-05).**
-
-| Path | Why | Action taken |
-|------|-----|--------------|
-| `old-school/*.ipynb` (5 notebooks) | Pre-app Jupyter prototypes. Logic largely ported into `src/`. | Moved to `docs/archive/notebooks/`; `old-school/` removed. |
-| `config/configs/Atta.json`, `Brodoh.json`, `Brodohfasho.json` | Personal spreadsheet presets (were tracked despite `config/*.json` ignore). | Untracked; `config/configs/` gitignored; example at `config/examples/named_config.example.json`. |
-| `docs/INTEGRATION_PLAN_LCSEQ_ANALYSIS.md` | ~1,100-line implementation plan; most items are **done**. | Moved to `docs/archive/`; see `docs/archive/README.md`. |
-| `docs/LC-Seq-New-master-ANALYSIS.md` | Rust engine integration guide (API, wrappers, folder layout). | **Done** — rewritten 2026-07-05. |
-| `docs/AGENT_INSTRUCTIONS.md` | AI/agent workflow only. | Unchanged in repo; documented in `docs/RELEASE.md` that release zip excludes dev docs. |
-
-### P2 — Dev-only scripts (keep in repo; exclude from release zip)
-
-**Status: complete (2026-07-05).** Confirmed in [docs/RELEASE.md](docs/RELEASE.md) — release zip is `dist/LC-Seq/` only; dev scripts and tests are not packaged.
-
-| Path | Purpose |
-|------|---------|
-| `scripts/assess_peak_picker_compound.py` | One-off compound peak-picker debugging (hardcoded compound ID). |
-| `scripts/full_fraction_nonzero_coverage.py` | Ad-hoc library coverage CLI. |
-| `LC-Seq-New-master/scripts/extract_real_fixture.py` | Rust fixture extraction for tests. |
-
-### Keep — required for build, runtime, or quality
-
-| Path | Role |
-|------|------|
-| `tests/` (40 modules) | Regression safety; **196 tests** covering parsing, pedigree, DEL tree, export, metrics, etc. |
-| `scripts/build_windows.ps1`, `scripts/package_release.ps1`, `scripts/pyi_rth_mpl_tkagg.py` | Windows release build. |
-| `LC-Seq-New-master/` | Rust `lcseq` engine (peak picking, pedigree kernel). |
-| `htmlcov/` | Already gitignored; local coverage reports only. |
-| `docs/INSTALL.md`, `docs/BUILD.md`, `docs/RELEASE.md`, `docs/DEVELOPER_SETUP.md` | Release and onboarding. |
-| `src/help/*.md` | In-app Help topics. |
-
-### Tests — gaps (add, don’t remove)
-
-Coverage is thin on UI and some integration paths. Notable **missing or light** areas:
-
-- No automated tests for `src/ui/library_data_window.py` (largest surface area).
-- No end-to-end GUI smoke test.
-- DEL export bundle: covered (`tests/test_del_cycle_export.py`); good recent addition.
-- BB index CSV / Configure Spreadsheet UI: partial (`tests/test_bb_index_csv.py` only).
+### Docs must match the shipped product
+- [x] `README.md` install link points at the v2.0.0 zip and describes the full DEL workflow
+- [x] `docs/INSTALL.md` covers first-run, SmartScreen, Graphviz optional note, and Library Analysis path
+- [x] `docs/CONFIGURATION.md` covers BB columns, null token, cycle count, and BB index CSV
+- [x] `docs/RELEASE.md` smoke list includes pedigree, split-tree, and export bundle (not only basic visualizer)
+- [x] In-app Help topics open and render for peak picking, pedigree, lineage, split-tree / export bundle, signal quality, and glossary
 
 ---
 
-## Part 2 — Pre-release upgrades (triaged)
+## Optional — QoL, polish, and “dot the i’s”
 
-Priorities: **P0** = before tagging release · **P1** = strongly recommended · **P2** = foundational / next milestone.
+### User experience & UI consistency
+- [x] Add Help topics dedicated to Library Analysis dashboard overview and DEL-library setup checklist (BB → validate → accept)
+- [x] Audit every long-running action for cancel / progress parity (scan, pedigree, split-tree build, all exports)
+- [x] Standardize busy overlays and error dialogs (encoding failures, index mismatches, missing Graphviz)
+- [ ] Soften first-run friction: short “DEL library setup” path from main or Library Analysis
+- [ ] Clarify report PDF prerequisites in UI when only pedigree or only split-tree sections are available
+- [ ] Optional analysis-bundle toggles (e.g. skip saturation grids; pass-rate threshold for flagged BB CSVs)
 
----
+### Documentation polish
+- [x] Align INSTALL / CONFIGURATION / APPLICATION_WORKFLOW wording with paper figure captions and term choices
+- [x] Add a short “reproducing paper analyses” note (settings that matter: null token, cycle count, picker mode, pass cutoffs) *(in-app help + README / CHANGELOG / workflow)*
+- [x] Document session folder layout and approximate disk use for large libraries (`output/library_data/`) *(INSTALL.md first-run table)*
+- [x] Document moving `.session` folders between machines (what travels, what doesn’t) *(INSTALL.md)*
+- [x] Trim or archive completed roadmap phases so `docs/ROADMAP.md` reflects post-2.0 priorities only
+- [x] Maintain a concise architecture / data-flow page (spreadsheet → DB → scan → pedigree → split-tree → exports) *(APPLICATION_WORKFLOW.md)*
+### Interface & maintainability (non-blocking)
+- [ ] Split `library_data_window.py` into tab/panel modules for easier review and future fixes
+- [ ] Reduce duplicate DEL analysis paths; document the single source of truth
+- [ ] Add GitHub Actions CI: `pytest` on push/PR; optional Windows job with maturin + parity
+- [ ] Add lint/type-check gate on `src/core` (`ruff` and/or `mypy`)
+- [ ] Improve library-scan performance messaging (ETA / chunk progress) on large DELs
+- [ ] Profile and document typical runtimes for paper-sized libraries (scan, pedigree, full grid export)
 
-### P0 — Release blockers
-
-#### Versioning & changelog
-- [x] Bump `src/__init__.py` `__version__` (suggest **2.0.0** — pedigree, lineage, Library Data, DEL-cycle, and export bundle are major additions since 1.0.0).
-- [x] Add `[2.0.0]` section to `CHANGELOG.md` (feature list, Rust vs Python fallback note, known limits).
-- [x] Update README “Install” link and feature list (still describes **v1.0.0** zip and omits most new workflows).
-
-#### Repository hygiene
-- [x] Stop tracking generated files under `output/` (see Part 1).
-- [x] Confirm `.gitignore` covers session pickles, plot PNGs, report assets, local CSV/XLSX exports.
-- [x] Remove or untrack personal config JSONs under `config/configs/`.
-
-#### Release build verification (`docs/RELEASE.md`)
-- [ ] Run `scripts/build_windows.ps1` + `scripts/package_release.ps1` on a clean Windows VM.
-- [ ] Fresh-machine test: load spreadsheet → configure (incl. BB columns + optional index CSV) → index/full DB → visualizer → **Library Data** scan → pedigree → DEL cycle → **Export DEL cycle bundle**.
-- [x] Document SmartScreen / antivirus expectations in release notes (draft in `CHANGELOG.md` `[2.0.0]` + `docs/RELEASE.md` paste template; confirm wording after first packaged test download).
-- [x] Decide release strategy for **Rust extension**: **Option A** — ship with `lcseq` built-in (`build_windows.ps1` runs maturin + parity test; `lc_seq.spec` bundles `lcseq`). End users do not install Rust.
-
-#### Quality gate
-- [ ] Full `pytest tests/` green on release branch.
-- [ ] Run `tests/test_lcseq_backend_parity.py` after `maturin develop --release`.
-- [ ] Manual pass on BB index CSV with **UTF-8 / Excel** and special characters (e.g. βHomoleu).
-- [ ] Manual pass: configure spreadsheet → validate index → **Accept configuration** (recent bug fix area).
-
----
-
-### P1 — Performance
-
-| Area | Issue | Upgrade |
-|------|--------|---------|
-| **Library scan** | Full-library signal quality + metrics can take minutes on large DEL libraries. | Profile scan pipeline; ensure progress/cancel on all heavy steps; consider batching/compound chunk tuning in `library_metrics` / `library_signal_quality`. |
-| **Pedigree analysis** | Rust kernel is fast; UI still blocks during tree render / Graphviz / matplotlib fallbacks. | Already uses workers for main run; audit remaining synchronous paths in `pedigree_render.py` / export. |
-| **DEL cycle tree build** | Rebuilds on DEL button / view switch. | Cache invalidation is intentional; document when rebuild is required; avoid redundant rebuilds on tab switch if any remain. |
-| **DEL export bundle** | 32+ `.xlsx` grid files — CPU/disk heavy. | **Done:** background thread + progress UI. **Next:** optional “skip grids” or parallel grid writes for very large libraries. |
-| **SQLite / session** | `scan.pkl` session files can grow large. | Document disk use; consider compression or storing only metrics hashes for restore validation. |
-| **Monolithic UI** | `library_data_window.py` ~5,500 lines. | Hard to optimize or test; split into pedigree / DEL / metrics submodules (P2 refactor enables perf work). |
-
----
-
-### P1 — User experience
-
-| Area | Gap | Upgrade |
-|------|-----|---------|
-| **Help system** | No Help topics for **Library Data** dashboard, **DEL-cycle analysis**, **DEL export bundle**, or **BB index CSV**. | Add `src/help/del_cycle_analysis.md`, `library_data.md`; register in `help_content.py`. |
-| **README / INSTALL** | Workflow stops at basic visualizer + one Library Data bullet. | Document full DEL workflow: BB columns → pedigree → DEL cycle → export bundle folder layout. |
-| **Configure Spreadsheet** | Multi-step wizard is powerful but dense. | Short “DEL library setup” checklist in UI or help (null token, BB columns, index CSV, validate, accept). |
-| **Busy / cancel consistency** | Scan, pedigree, DEL build, export use loading overlay; some exports (pedigree CSV, tree PNG) may still block briefly. | Audit all export buttons; standardize on worker + progress. |
-| **Error messages** | Encoding / index mismatch can confuse users. | Surface UTF-8 / Excel guidance in validation box (partially done for BB index). |
-| **Report export** | Split pedigree vs DEL-cycle sections — new. | User doc: what each PDF section contains; prerequisites when only one analysis was run. |
-| **First-run** | No guided path for DEL-specific libraries. | Optional welcome link to help topics from Library Data tab. |
-
----
-
-### P1 — Documentation
-
-| Doc | Action |
-|-----|--------|
-| `CHANGELOG.md` | Major update for 2.0. |
-| `README.md` | Features, workflow, system requirements (Graphviz optional, Rust optional). |
-| `docs/INSTALL.md` | Library Data, pedigree, DEL-cycle, export bundle. |
-| `docs/CONFIGURATION.md` | BB columns, null token, cycle count, BB index CSV. |
-| `docs/ROADMAP.md` | Mark phases 15+ complete; trim or move historical phase checklist to archive. |
-| `docs/DEVELOPER_SETUP.md` | Already good for Rust/maturin; add “run full test suite before release.” |
-| `docs/RELEASE.md` | Extend smoke test for DEL + export bundle. |
-| In-app help | See UX table above. |
-
----
-
-### P1 — Bugs & risk areas (manual + automated focus)
-
-| Risk | Notes |
-|------|--------|
-| **Rust vs Python picker drift** | Parity test exists; must run before release build. UI shows engine label — verify in packaged exe. |
-| **Pedigree ↔ DEL numbering** | Fixed via shared index build from full library; regression-test when loading pedigree snapshot without re-scan. |
-| **Graphviz optional** | Tier-ring matplotlib fallback vs native split-tree; test both paths in release QA. |
-| **State when switching databases** | Clear pedigree/DEL/session when DB changes; verify no stale tree labels or export from wrong library. |
-| **Spreadsheet config persistence** | BB index map round-trip (`SpreadsheetConfig`); test save/load preset with index CSV path. |
-| **Unicode BB names** | Tree labels, CSV export, index validation; test non-ASCII BB names end-to-end. |
-| **31% coverage** | High bug risk in untested UI paths; prioritize manual QA checklist over deleting tests. |
-
----
-
-### P2 — Foundational (post-release or parallel if time)
-
-#### Engineering
-- [ ] **GitHub Actions CI**: `pytest` on push/PR; optional job with `maturin develop` + parity tests on Windows runner.
-- [ ] **Split `library_data_window.py`** into tab modules (`pedigree_panel`, `del_cycle_panel`, `metrics_panel`, export handlers).
-- [ ] **Reduce duplicate analysis paths** (`del_cycle_tree/analyzer.py` vs `notebook_analyzer.py` — document single source of truth).
-- [ ] **Type checking / lint** in CI (`ruff` or `mypy` on `src/core`).
-
-#### Product
-- [ ] **Session portability**: document moving `.session` folders between machines.
-- [ ] **Export conventions**: standard output folder naming under `output/library_data/`.
-- [ ] **Optional DEL export settings**: skip grids, pass-rate threshold for summary/flagged CSVs.
-
-#### Documentation / planning
-- [ ] Replace long `INTEGRATION_PLAN` with maintained **Architecture** (data flow: spreadsheet → DB → scan → pedigree → DEL tree → exports).
-- [ ] **`release_checklist.md`** → fold recurring items into `docs/RELEASE.md` after first use.
-
----
-
-## Part 3 — Suggested manual QA script (pre-tag)
-
-Use as a minimum bar before `v2.0.0`:
-
-1. **Spreadsheet** — Load real DEL library XLSX; configure BB1–BB3, null token, time/count, metadata.
-2. **BB index** — Load UTF-8 or `.xlsx` index; validate; accept configuration; save preset; reload preset.
-3. **Database** — Build index DB; open visualizer; search/plot sample compounds.
-4. **Library scan** — Run with signal quality options; confirm metrics + plots; cancel mid-scan once.
-5. **Pedigree** — Run analysis; tier slider; export CSV + tree PNG/SVG.
-6. **DEL cycle** — Run DEL cycle analysis (not during pedigree); full tree + BB1 branch views; pass % cutoff coloring.
-7. **DEL export** — Export bundle to folder; confirm 4 CSV/XLSX core files + `grids/`; open flagged building blocks CSV; spot-check saturated grid colors.
-8. **Report PDF** — Generate with pedigree-only, DEL-only, and both sections.
-9. **Packaged exe** — Repeat steps 1–4 (and ideally 6–7) on release zip without Python installed.
-
----
-
-## Part 4 — What not to do before release
-
-- **Do not delete `tests/`** to “clean up” — coverage is already modest.
-- **Do not remove `LC-Seq-New-master/`** — required to build the Rust engine.
-- **Do not remove build scripts** — required for Windows release.
-- **Do not commit** new `output/` session data or local database files.
-- **Avoid large refactors** (e.g. full UI split) in the same release branch as bug fixes unless schedule allows hard QA.
-
----
-
-## Summary recommendation
-
-**Minimum path to release:** P0 hygiene (untrack `output/`, version bump, changelog, README/INSTALL/help for new features) + full manual QA script + Windows package smoke test.
-
-**Highest ROI after that:** CI with pytest, Help topics for DEL/Library Data, and splitting `library_data_window.py` for maintainability.
-
-**Safe cleanup wins:** Remove tracked artifacts in `output/`, root `_pedigree_analysis_out.json`, `docs/Untitled`, and archive `old-school/` notebooks — no impact on application behavior.
+### Nice-to-have scientific extras
+- [ ] Ship or link a small anonymized example spreadsheet + BB index for install verification
+- [ ] Freeze a “methods defaults” preset name/docs alignment with the paper’s analysis parameters
+- [ ] Capture checksum / file list of the release zip in RELEASE notes for integrity checking
+- [ ] Code-sign the Windows executable if institutional signing becomes available (removes SmartScreen friction)

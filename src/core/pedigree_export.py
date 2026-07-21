@@ -7,6 +7,7 @@ import csv
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.models.pedigree_result import (
     PedigreeAnalysisResult,
     PedigreeNodeRecord,
@@ -136,7 +137,7 @@ def export_pedigree_csv(result: PedigreeAnalysisResult, path: str | Path) -> Pat
     null_token = result.null_token
     fieldnames = _pedigree_csv_fieldnames(n_cycles)
     settings = result.settings
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for record in result.records:
@@ -213,7 +214,7 @@ def export_product_prominence_csv(
         "passed",
     ] + bb_cycle_field_names(n_cycles) + ["channel"]
 
-    with out.open("w", encoding="utf-8", newline="") as fh:
+    with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for entry in summary.entries:

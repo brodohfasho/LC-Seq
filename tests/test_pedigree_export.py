@@ -120,7 +120,7 @@ def test_export_pedigree_csv(tmp_path) -> None:
         n_chromatograms=1,
     )
     out = export_pedigree_csv(result, tmp_path / "nodes.csv")
-    text = out.read_text(encoding="utf-8")
+    text = out.read_text(encoding="utf-8-sig")
     header = text.splitlines()[0]
     assert "bb_cycle_1" in header
     assert "bb_cycle_2" in header
@@ -169,7 +169,7 @@ def test_export_product_prominence_includes_bb_cycles(tmp_path) -> None:
         ],
     )
     out = export_product_prominence_csv(summary, tmp_path / "prom.csv", result=result)
-    lines = out.read_text(encoding="utf-8").splitlines()
+    lines = out.read_text(encoding="utf-8-sig").splitlines()
     assert "bb_cycle_1" in lines[0]
     assert "cmp1" in lines[1]
     assert "B" in lines[1]

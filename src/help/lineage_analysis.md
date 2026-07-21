@@ -1,44 +1,32 @@
 # Lineage analysis
 
-## What it is
+Per-compound view of the null-truncation path: stacked chromatograms from **root → leaf**.
 
-**Lineage analysis** shows how one full product fits the null-truncation pedigree. You see a stack of chromatograms from **root → leaf** (all-null → your compound).
+## How to run
 
-## How to run it
+1. Plot compound(s) in the **Chromatogram Visualizer**.
+2. Open **Peak analysis**; optionally **Pick peaks**.
+3. **Analyze lineage** (background; all plotted compounds).
+4. **View lineage** — pick a compound from the list if several were analyzed.
 
-1. Plot **one or more compounds** in the **Chromatogram Visualizer**.
-2. Open the **Peak analysis** panel; optionally **Pick peaks** first (fills **Suspected peak ID** after analysis).
-3. Click **Analyze lineage** (runs in the background for all plotted compounds).
-4. Click **View lineage** to open the viewer. With multiple compounds, pick from the **Compounds** list on the left.
-
-Peak picking uses the algorithm and quality filters set in the peak panel (**Modern** or **Old-school**). See **Peak picking** help for the difference.
-
-## Batch export
-
-When several compounds were analyzed, use **Export all figures…**, **Export combined CSV…**, **Export CSVs per compound…**, or **Export all to folder…** in the lineage viewer.
+Picker settings come from the peak panel (**Modern** / **Old-school**).
 
 ## PASS / FAIL
 
-Each tier is evaluated for retention-time consistency with its parent:
-
-- **PASS** — a valid product peak was found past the parent threshold.
-- **FAIL** — signal existed but no acceptable peak past the parent.
-- **INSUFFICIENT DATA** — not enough sequencing signal to call peaks.
+| Status | Meaning |
+|--------|---------|
+| **PASS** | Valid product peak past the parent threshold |
+| **FAIL** | Signal present but no acceptable peak past parent |
+| **INSUFFICIENT DATA** | Not enough signal to call peaks |
 
 ## Threshold lines
 
-- **Red dotted** — parent exclusion zone (± null RT threshold; fixed defaults in the peak panel unless you run library-wide RT assignment with custom settings).
-- **Green** — chosen / score-test retention time.
-- **Purple dashed** — refined pick when multiple replicates support it.
-
-## Settings (peak panel)
-
-- **Count channel** — which count trace to analyze.
-- **Peak picking algorithm** — modern (α) or old-school (Gaussian parameters).
-- **Min prominence** / **Min % area** — quality filters after detection.
-
-For library-wide analysis with an explicit **Null RT threshold**, use **Library Analysis → RT assignment**.
+- **Red dotted** — parent exclusion (± null RT threshold)
+- **Green** — chosen / score-test RT
+- **Purple dashed** — refined multi-replicate pick
 
 ## Export
 
-From the lineage viewer: export PNG/PDF/SVG (vector) or CSV summary per tier.
+PNG / PDF / SVG figures; CSV per tier. Multi-compound: **Export all…** / combined CSV options in the lineage viewer.
+
+For library-wide Null RT threshold and RT assignment, use **Library Analysis → RT assignment**.

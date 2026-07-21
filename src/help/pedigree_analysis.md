@@ -1,58 +1,38 @@
-# Library pedigree (split-tree)
+# Library pedigree analysis
 
-## What it is
+Evaluates the **entire library** on the null-truncation tree: each class must show a consistent peak **after** its parent (within **Null RT threshold**).
 
-**Pedigree analysis** evaluates the **entire library** at once. It walks every equivalence class from the all-null root through each coupling tier and decides which branches are chemically consistent (retention time increases along the synthesis path).
+## How to run
 
-In **Library Analysis**, choose **Pedigree** under **Analysis mode** on the **RT assignment** tab, then **Run RT assignment**. Results feed the **Pedigree visualization** and **Split-tree visualization** tabs and DEL-cycle exports.
+**Library Analysis → RT assignment → Analysis mode: Pedigree → Run RT assignment.**
 
-## Split-tree figure
+Requires BB columns configured (**DEL library setup**) and a prior library scan. Needs the Rust `lcseq` engine.
 
-The tree places the **root at the centre** with tiers in rings outward. Colors:
+**Paper note:** accompanying paper used **Direct pick** + **Old-school** picking. Pedigree mode is a later improvement.
 
-- **Grey** — root (all null)
-- **Light / dark green** — passed class or compound
-- **Red** — synthesis failure (signal but no valid peak past parent)
-- **Yellow** — insufficient data (no usable peaks in replicates)
+## Outputs
 
-Without Graphviz installed, LC-Seq shows a **matplotlib tier-ring preview** with the same colors.
+| Tab / action | Result |
+|--------------|--------|
+| **Pedigree visualization** | Radial / tier-ring figure + tier summary |
+| **Split-tree visualization** | Combinatorial BB tree (also works after Direct pick) |
+| **Export pedigree CSV…** | One row per node (`bb_cycle_*` columns) |
+| **Export tree PNG…** | Pedigree figure |
+| **Export analysis bundle…** | Split-tree CSVs + optional `product_prominence.csv` |
+| **Save results** | JSON snapshot + tree image |
 
-See **Pedigree split-tree figure** for display controls and layout details.
+## Colors (pedigree figure)
 
-## Tier summary
+Grey = root · Light/dark green = passed class/compound · Red = synthesis failure · Yellow = insufficient data.
 
-The **Pedigree visualization** tab lists pass / fail / pruned counts per tier. **Pruned** nodes were never evaluated because a parent failed.
+Without Graphviz, LC-Seq uses a matplotlib tier-ring preview. Display controls: **Pedigree visualization figure**.
 
-## Product peak prominence
+## Product prominence
 
-After **Pedigree** RT assignment, LC-Seq measures **prominence** at the chosen product RT for each **passed full compound**. This is more meaningful than “tallest peak on the trace” because the RT comes from pedigree validation.
+After Pedigree RT assignment, prominence at the chosen product RT for **passed** full compounds goes into **`product_prominence.csv`** (analysis bundle only — no separate button). Bulk QC “tallest peak” metrics may not be the product.
 
-Compare with **Library Analysis → Library QC metrics / visualizations**, which use the tallest significant peak from the library scan and may not be the product.
+## Sidebar settings
 
-**Export:** prominence is written to **`product_prominence.csv`** inside **Export analysis bundle…** on the RT assignment tab (when pedigree assignment produced prominence data). There is no separate prominence export button in the current UI.
+Count channel · time unit · Modern/Old-school picker · Null RT threshold · min prominence / min % area · optional isoform filter.
 
-## Settings (RT assignment sidebar)
-
-- **Count channel** and **Time unit**
-- **Peak picking** — **Modern** or **Old-school** (see **Peak picking** help)
-- **Null RT threshold** — verification and parent/child RT matching width
-- **Min prominence** / **Min % area** — quality filters (shared with modern picker and scan QC when set on this tab)
-- Optional **isoform** filter when a variant column is configured
-
-## Export
-
-From **Library Analysis**:
-
-| Action | Output |
-|--------|--------|
-| **Export pedigree CSV…** (Pedigree visualization tab) | One row per node, with **bb_cycle_1** … **bb_cycle_N** columns |
-| **Export tree PNG…** | Split-tree figure (Graphviz or matplotlib) |
-| **Export RTs…** (RT assignment tab) | Spreadsheet with assigned RTs and verification columns |
-| **Export analysis bundle…** | DEL-cycle CSVs, grids (3-cycle), audit metadata, and optional **product_prominence.csv** |
-| **Save results** / **Load last** / **Browse…** | JSON snapshot + tree image for session restore |
-
-## Large libraries
-
-Index databases with 100k+ rows may take several minutes on first run while compounds are parsed.
-
-Use **Help ▾** on the RT assignment tab for split-tree figure details and the **Export analysis bundle glossary**.
+Large index DBs may take minutes on first parse.

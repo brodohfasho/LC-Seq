@@ -147,7 +147,8 @@ def configure_graphviz() -> bool:
     """
     Point the Python graphviz package at ``dot`` and prepend its bin dir to PATH.
 
-    Returns True when configuration succeeded.
+    Supports graphviz ``<0.21`` (``set_graphviz_dot``) and ``0.21+``
+    (``backend.DOT_BINARY``). Returns True when configuration succeeded.
     """
     dot = find_graphviz_dot()
     if dot is None:
@@ -155,7 +156,12 @@ def configure_graphviz() -> bool:
     try:
         import graphviz
 
-        graphviz.set_graphviz_dot(str(dot))
+        if hasattr(graphviz, "set_graphviz_dot"):
+            graphviz.set_graphviz_dot(str(dot))
+        else:
+            import graphviz.backend as graphviz_backend
+
+            graphviz_backend.DOT_BINARY = Path(dot)
     except Exception as exc:
         logger.warning("Could not configure graphviz Python bindings: %s", exc)
         return False
@@ -175,14 +181,31 @@ def graphviz_available() -> bool:
     return find_graphviz_dot() is not None
 
 
+def graphviz_missing_banner() -> str:
+    """Inline banner text when only the matplotlib fallback is available."""
+    return (
+        "Graphviz not found — showing matplotlib tier-ring preview. "
+        "Install Graphviz for higher-quality pedigree tree layout "
+        "(see docs/DEVELOPER_SETUP.md)."
+    )
+
+
+def graphviz_missing_export_prompt() -> str:
+    """Yes/No dialog body when exporting a tree without Graphviz."""
+    return (
+        "Graphviz is not installed. Export will use the matplotlib tier-ring "
+        "layout instead of the native Graphviz pedigree tree.\n\n"
+        "Install Graphviz and ensure ``dot`` is on PATH for the preferred layout "
+        "(see docs/DEVELOPER_SETUP.md).\n\n"
+        "Continue with the matplotlib export?"
+    )
+
+
 def graphviz_install_hint() -> str:
     """Short user-facing hint when only the matplotlib fallback is available."""
     if graphviz_available():
         return ""
-    return (
-        "Install Graphviz for higher-quality split-tree layout "
-        "(see docs/DEVELOPER_SETUP.md). Showing matplotlib tier-ring preview."
-    )
+    return graphviz_missing_banner()
 
 
 def filter_records_for_display(

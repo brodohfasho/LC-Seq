@@ -1,6 +1,6 @@
 # Publishing a GitHub release (maintainers)
 
-Use this checklist for Phase 14.2–14.3 when shipping a new version.
+Checklist for shipping a new versioned Windows zip and GitHub Release.
 
 ## 1. Version bump
 
@@ -23,9 +23,9 @@ Output: `release\LC-Seq-vX.Y.Z-windows.zip`
 ## 3. Source tree readiness
 
 - [ ] No secrets in git (`config/settings.json` and `config/configs/` are gitignored)
-- [ ] Dev-only docs (`docs/AGENT_INSTRUCTIONS.md`, `docs/archive/`, `docs/LC-Seq-New-master-ANALYSIS.md`) stay in the git repo only — the release zip contains only `dist/LC-Seq/` (exe + bundled config example)
+- [ ] Dev-only docs (`docs/AGENT_INSTRUCTIONS.md`, `docs/archive/`, `docs/LC-Seq-New-master-ANALYSIS.md`) stay in the git repo — the release zip contains only `dist/LC-Seq/`
 - [ ] `CHANGELOG.md` updated for this version
-- [ ] README and [INSTALL.md](INSTALL.md) accurate
+- [ ] README and [INSTALL.md](INSTALL.md) accurate (UI labels: Library Analysis, Pedigree / Direct pick, Split-tree)
 - [ ] Commit and push to `main`
 
 ## 4. Tag and GitHub Release
@@ -46,33 +46,37 @@ On GitHub: **Releases** → **Draft a new release**
 
 ### GitHub Release description (paste template)
 
-Copy the full `[2.0.0]` block from CHANGELOG, or use this shorter body plus the changelog link:
-
 ```markdown
 ## LC-Seq v2.0.0
 
-Library Analysis, pedigree/lineage, DEL-cycle tree, and export bundle. Rust analysis engine (`lcseq`) is **bundled** — no Rust or Python install required.
+Library Analysis, pedigree/lineage, split-tree visualization, and export bundle. Rust analysis engine (`lcseq`) is **bundled** — no Rust or Python install required.
+
+Paper Methods used **Old-school** peak picking with **Direct pick** RT assignment; **Modern** picking and **Pedigree** mode are later improvements (see in-app help).
 
 ### Windows install notes
 
 - Extract the full zip; keep `LC-Seq.exe` and `_internal/` together.
 - **SmartScreen:** Unsigned app — if you see “Windows protected your PC”, choose **More info** → **Run anyway**.
 - **Antivirus:** Some tools flag PyInstaller apps; restore/quarantine exceptions for the extracted folder if needed.
-- Optional: [Graphviz](https://graphviz.org/download/) for higher-quality pedigree split-tree figures.
+- Optional: [Graphviz](https://graphviz.org/download/) for higher-quality pedigree figures.
 
 See [INSTALL.md](docs/INSTALL.md) and the full [CHANGELOG](CHANGELOG.md).
 ```
 
 After the first test download (step 5), adjust wording if your machine shows different prompt text.
 
-## 5. Test download (14.2 / 14.3)
+## 5. Test download
 
 On a machine **without** the dev repo:
 
 - [ ] Download only the release zip from GitHub
 - [ ] Extract and run `LC-Seq.exe`
-- [ ] Load spreadsheet → configure → create/load DB → visualizer → plot → export
-- [ ] Note any SmartScreen or antivirus prompts during test download; tweak RELEASE.md template if wording differs
+- [ ] Load spreadsheet → Configure → create/load DB → Chromatogram Visualizer → plot → export
+- [ ] Library Analysis → scan → RT assignment (**Direct pick** and/or **Pedigree**) → Pedigree / Split-tree visualization → **Export analysis bundle…**
+- [ ] Confirm Peak Analysis engine label shows `lcseq (Rust)`
+- [ ] Note any SmartScreen or antivirus prompts; tweak this template if wording differs
+
+Also see [release_checklist.md](../release_checklist.md) for the full pre-tag QA list.
 
 ## Release asset layout
 

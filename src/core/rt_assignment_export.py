@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
+from src.core.csv_io import CSV_EXPORT_ENCODING
 from src.core.del_cycle_tree.bb_index_scheme import (
     build_bb_name_canonical_map,
     canonicalize_positions,
@@ -46,7 +47,7 @@ def assigned_rt_column_name(time_unit: str) -> str:
 
 
 def product_rt_column_name(time_unit: str) -> str:
-    """Standard product RT column header for ``del_cycle_products.csv``."""
+    """Standard product RT column header for ``split_tree_products.csv``."""
     unit_suffix = "min" if str(time_unit).lower().startswith("min") else "s"
     return f"rt ({unit_suffix})"
 
@@ -221,14 +222,14 @@ def _write_spreadsheet(
 ) -> None:
     suffix = output_path.suffix.lower()
     if suffix == ".csv":
-        df.to_csv(output_path, index=False)
+        df.to_csv(output_path, index=False, encoding=CSV_EXPORT_ENCODING)
         return
     if suffix in (".xlsx", ".xls"):
         with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
             target_sheet = sheet_name or "Sheet1"
             df.to_excel(writer, sheet_name=target_sheet, index=False)
         return
-    df.to_csv(output_path, index=False)
+    df.to_csv(output_path, index=False, encoding=CSV_EXPORT_ENCODING)
 
 
 def _assignment_lookup(

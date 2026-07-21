@@ -1,6 +1,6 @@
 # LC-Seq
 
-Desktop application for loading chromatographic data from spreadsheets, building a searchable SQLite database, and analyzing DNA-encoded library (DEL) cyclic-peptide screens — from single-compound plots through pedigree null-truncation analysis and DEL-cycle export bundles.
+Desktop application for loading chromatographic data from spreadsheets, building a searchable SQLite database, and analyzing DNA-encoded library (DEL) cyclic-peptide screens — from single-compound plots through pedigree null-truncation analysis and split-tree export bundles.
 
 **Platform:** Windows (primary). Python 3.10+ recommended for development (Rust extension).
 
@@ -37,7 +37,9 @@ On Linux/macOS, use `source venv/bin/activate` instead of `venv\Scripts\activate
 
 LC-Seq is built for large compound-by-compound chromatogram tables (e.g. DEL library screens). You point the app at a spreadsheet, define how each row’s chromatogram string is parsed (including building-block columns for DEL libraries), materialize a local database, then search, plot, and run library-wide analyses without re-reading the whole sheet each time.
 
-**v2.0** adds pedigree null-truncation analysis, per-class lineage diagnostics, DEL-cycle combinatorial trees, and a multi-file export bundle (CSVs, audit metadata, Excel saturation grids, optional PDF report).
+**v2.0** adds pedigree null-truncation analysis, per-class lineage diagnostics, combinatorial split-tree visualization, and a multi-file analysis export bundle (CSVs, audit metadata, Excel saturation grids, optional PDF report).
+
+The accompanying paper used **Old-school** peak picking with **Direct pick** RT assignment; **Modern** picking and **Pedigree** mode are later improvements (see in-app help).
 
 ---
 
@@ -56,10 +58,10 @@ LC-Seq is built for large compound-by-compound chromatogram tables (e.g. DEL lib
 
 5. **Configure DEL fields** — BB1…BBn columns, null token, cycle count; optional **BB index CSV** for display indices; validate and accept configuration.
 6. **Library Analysis** — library scan (signal quality, metrics, fraction plots); session cache under `output/library_data/`.
-7. **Pedigree** — run null-truncation analysis; tier slider; export CSV and split-tree figure (Graphviz or matplotlib fallback).
+7. **Pedigree** — run null-truncation analysis (Pedigree RT assignment mode); tier slider; export CSV and pedigree figure (Graphviz or matplotlib fallback).
 8. **Lineage** — per-class diagnostic plots for selected nodes.
-9. **DEL cycle** — combinatorial tree with pass-rate coloring; branch views.
-10. **Export DEL cycle bundle** — folder with products CSV, audit metadata, summary/flagged building blocks, `grids/` Excel files, optional prominence CSV and PDF report.
+9. **Split-tree** — combinatorial tree with pass-rate coloring; full-tree and BB1 branch views (after Pedigree or Direct pick RT assignment).
+10. **Export analysis bundle** — folder with products CSV, audit metadata, summary/flagged building blocks, `grids/` Excel files, optional prominence CSV and PDF report.
 
 The status line on the main window reflects load/configure/database state.
 

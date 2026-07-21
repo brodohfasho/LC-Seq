@@ -101,9 +101,9 @@ class TestExportCsv:
         export_per_entry_signal_csv(
             stats, out, options=SignalQualityComputeOptions(alpha=0.05)
         )
-        text = out.read_text(encoding="utf-8")
+        text = out.read_text(encoding="utf-8-sig")
         assert "signal_quality_alpha=0.05" in text
-        with out.open(encoding="utf-8") as fh:
+        with out.open(encoding="utf-8-sig") as fh:
             lines = [line for line in fh if not line.startswith("#")]
         import io
 

@@ -1,23 +1,19 @@
-# Null truncates and building-block columns
+# Null truncates & BB columns
 
-## DEL libraries and truncates
+## Truncates
 
-In a DNA-encoded library (DEL), each compound is built step by step. A **truncate** is a partially built molecule: some positions are filled with real building blocks (BBs) and unused positions are filled with a **null token** (often `AgxNull`).
+In a DEL, compounds are built cycle by cycle. A **truncate** has some positions filled with real building blocks (BBs) and unused positions marked with a **null token** (e.g. `AgxNull`).
 
-## BB1, BB2, BB3…
+## BB order
 
-In your spreadsheet, **BB1** is the first coupled position (C-terminus in peptide/DEL convention). **BB3** in a 3-cycle library is the last coupled position (N-terminus).
+**BB1** = first coupled position (C-terminus). Later BBs follow coupling order (N-terminus last).
 
-The analysis engine reads BB values from **mapped columns** on **Configure Spreadsheet → DEL / Pedigree**, not by splitting the compound name. This avoids errors when a BB name contains dashes (e.g. `DLeu-DLeu-Pro`).
+Values come from **Configure Spreadsheet → 5 — DEL / Pedigree** column maps — **not** from splitting the compound ID (dash-containing BB names would break).
 
-Optional **BB index CSV** (Configure Spreadsheet) supplies display indices used in split-tree labels and export columns (`bb1_index`, …).
+Optional **BB index CSV** supplies display indices for split-tree labels and export columns.
 
-## Null token
+## Why configure this
 
-The **null token** marks an empty position. Only non-null BBs define the equivalence class at each tier.
+Pedigree, lineage, RT assignment, and the analysis bundle all walk BB columns from all-null root → classes → full product.
 
-## Why this matters
-
-Lineage and pedigree analysis use BB columns to walk from the all-null root → intermediate classes → full product. **RT assignment** and **Export analysis bundle** write **bb_cycle_1** … **bb_cycle_N** columns using the same mapping.
-
-Configure BB columns before running **Library Analysis** or lineage/pedigree workflows.
+Setup checklist: **DEL library setup**.
