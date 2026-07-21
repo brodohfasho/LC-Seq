@@ -8,18 +8,21 @@ Evaluates the **entire library** on the null-truncation tree: each class must sh
 
 Requires BB columns configured (**DEL library setup**) and a prior library scan. Needs the Rust `lcseq` engine.
 
+RT assignment does not generate or open the figure automatically. After it finishes, open
+**Pedigree visualization**, choose the display options, and click **Generate plot**.
+
 **Paper note:** accompanying paper used **Direct pick** + **Old-school** picking. Pedigree mode is a later improvement.
 
 ## Outputs
 
 | Tab / action | Result |
 |--------------|--------|
-| **Pedigree visualization** | Radial / tier-ring figure + tier summary |
+| **Pedigree visualization → Generate plot** | Radial / tier-ring figure + tier summary |
 | **Split-tree visualization** | Combinatorial BB tree (also works after Direct pick) |
 | **Export pedigree CSV…** | One row per node (`bb_cycle_*` columns) |
 | **Export tree PNG…** | Pedigree figure |
 | **Export analysis bundle…** | Split-tree CSVs + optional `product_prominence.csv` |
-| **Save results** | JSON snapshot + tree image |
+| **Save results** | JSON snapshot, including the generated tree path when available |
 
 ## Colors (pedigree figure)
 

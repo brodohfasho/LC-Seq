@@ -18,7 +18,7 @@
 2. **Run library scan** (top bar).
 3. Review QC metrics / plots.
 4. **Run RT assignment** (sidebar: mode + peak picker).
-5. Open Pedigree and/or Split-tree tabs; export as needed.
+5. Open Pedigree and/or Split-tree tabs and click **Generate plot**; export as needed.
 
 ## Analysis modes (RT assignment)
 
@@ -31,6 +31,6 @@
 
 - **Export RTs…** — spreadsheet of assigned RTs / verification columns  
 - **Export analysis bundle…** — split-tree CSVs, optional grids, audit file (see **Export analysis bundle glossary**)  
-- **Save results** — pedigree JSON + tree image for later reload  
+- **Save results** — pedigree JSON, including the generated tree path when available
 
 Session caches live under `output/library_data/.session/` (see INSTALL.md for moving between machines).

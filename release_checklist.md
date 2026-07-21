@@ -62,10 +62,6 @@ Use a real DEL library spreadsheet representative of the paper workflow:
 - [x] Add Help topics dedicated to Library Analysis dashboard overview and DEL-library setup checklist (BB → validate → accept)
 - [x] Audit every long-running action for cancel / progress parity (scan, pedigree, split-tree build, all exports)
 - [x] Standardize busy overlays and error dialogs (encoding failures, index mismatches, missing Graphviz)
-- [ ] Soften first-run friction: short “DEL library setup” path from main or Library Analysis
-- [ ] Clarify report PDF prerequisites in UI when only pedigree or only split-tree sections are available
-- [ ] Optional analysis-bundle toggles (e.g. skip saturation grids; pass-rate threshold for flagged BB CSVs)
-
 ### Documentation polish
 - [x] Align INSTALL / CONFIGURATION / APPLICATION_WORKFLOW wording with paper figure captions and term choices
 - [x] Add a short “reproducing paper analyses” note (settings that matter: null token, cycle count, picker mode, pass cutoffs) *(in-app help + README / CHANGELOG / workflow)*
@@ -74,7 +70,7 @@ Use a real DEL library spreadsheet representative of the paper workflow:
 - [x] Trim or archive completed roadmap phases so `docs/ROADMAP.md` reflects post-2.0 priorities only
 - [x] Maintain a concise architecture / data-flow page (spreadsheet → DB → scan → pedigree → split-tree → exports) *(APPLICATION_WORKFLOW.md)*
 ### Interface & maintainability (non-blocking)
-- [ ] Split `library_data_window.py` into tab/panel modules for easier review and future fixes
+- [x] Split `library_data_window.py` into tab/panel modules for easier review and future fixes
 - [ ] Reduce duplicate DEL analysis paths; document the single source of truth
 - [ ] Add GitHub Actions CI: `pytest` on push/PR; optional Windows job with maturin + parity
 - [ ] Add lint/type-check gate on `src/core` (`ruff` and/or `mypy`)

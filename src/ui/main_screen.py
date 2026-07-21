@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class MainScreen(ctk.CTk):
     """
     Main application screen with primary navigation buttons.
-    
+
     Provides:
     - Load Spreadsheet button
     - Configure Spreadsheet button
@@ -39,17 +39,17 @@ class MainScreen(ctk.CTk):
     - Create / Load database (optional bulk SQLite)
     - Status message display
     """
-    
+
     def __init__(self, app_state: AppState, config_manager: ConfigManager):
         """
         Initialize main screen.
-        
+
         Args:
             app_state: Application state manager
             config_manager: Configuration manager
         """
         super().__init__()
-        
+
         self.app_state = app_state
         self.config_manager = config_manager
         self.spreadsheet_loader = SpreadsheetLoader()
@@ -58,76 +58,77 @@ class MainScreen(ctk.CTk):
         self.database_manage_dialog: Optional[Any] = None
         self._restore_spreadsheet_thread: Optional[threading.Thread] = None
         self._closing = False
-        
+
         # Register for state changes
         self.app_state.register_state_change_callback(self._on_state_change)
-        
+
         # Set window properties
         self.title("LC-Seq: Chromatographic Data Analysis")
-        
+
         # Set minimum window size
         self.minsize(600, 500)
-        
+
         # Load saved window size from settings, or use defaults
         settings = self.config_manager.load_settings()
-        if settings.window_width and settings.window_height and settings.window_width >= 600 and settings.window_height >= 500:
+        if (
+            settings.window_width
+            and settings.window_height
+            and settings.window_width >= 600
+            and settings.window_height >= 500
+        ):
             width = settings.window_width
             height = settings.window_height
         else:
             # Default size
             width = 800
             height = 600
-        
+
         # Set initial geometry
         self.geometry(f"{width}x{height}")
         # Native title-bar maximize (square) requires user resizing to be allowed
         self.resizable(True, True)
-        
+
         # Configure grid weights for responsive layout
         self.grid_columnconfigure(0, weight=1)
         for r in (3, 4, 5, 6, 7, 8):
             self.grid_rowconfigure(r, weight=1)
-        
+
         # Create UI components
         self._create_widgets()
-        
+
         # Center window after widgets are created
         self.center_window()
-        
+
         # Initial state update
         self._update_ui_state()
-        
+
         # Restore saved configuration and active database only (no automatic spreadsheet load).
         self.after(150, self._restore_session_on_startup)
-        
+
         logger.info("Main screen initialized")
-    
+
     def center_window(self) -> None:
         """Center the window on the screen."""
         self.update_idletasks()
         width = self.winfo_width()
         height = self.winfo_height()
-        
+
         # Ensure minimum size
         if width < 600:
             width = 600
         if height < 500:
             height = 500
-        
+
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         x = (screen_width - width) // 2
         y = (screen_height - height) // 2
         self.geometry(f"{width}x{height}+{x}+{y}")
-    
+
     def _create_widgets(self) -> None:
         """Create and layout all UI widgets."""
         # Title label
-        title_label = ctk.CTkLabel(
-            self,
-            text="LC-Seq",
-            font=ctk.CTkFont(size=36, weight="bold")
-        )
+        title_label = ctk.CTkLabel(self, text="LC-Seq", font=ctk.CTkFont(size=36, weight="bold"))
         title_label.grid(row=0, column=0, pady=(36, 8), sticky="n")
 
         self._database_status_button = ctk.CTkButton(
@@ -145,15 +146,13 @@ class MainScreen(ctk.CTk):
             command=self._on_database_status_clicked,
         )
         self._database_status_button.grid(row=1, column=0, padx=40, pady=(0, 12), sticky="ew")
-        
+
         # Subtitle
         subtitle_label = ctk.CTkLabel(
-            self,
-            text="Chromatographic Data Analysis",
-            font=ctk.CTkFont(size=18)
+            self, text="Chromatographic Data Analysis", font=ctk.CTkFont(size=18)
         )
         subtitle_label.grid(row=2, column=0, pady=(0, 24), sticky="n")
-        
+
         primary_row = ctk.CTkFrame(self, fg_color="transparent")
         primary_row.grid(row=3, column=0, padx=40, pady=20, sticky="ew")
         primary_row.grid_columnconfigure((0, 1), weight=1)
@@ -177,17 +176,17 @@ class MainScreen(ctk.CTk):
             state="disabled",
         )
         self.library_data_button.grid(row=0, column=1, padx=(8, 0), sticky="ew")
-        
+
         # Load Spreadsheet button
         self.load_button = ctk.CTkButton(
             self,
             text="Load Spreadsheet",
             font=ctk.CTkFont(size=14),
             height=50,
-            command=self._on_load_spreadsheet
+            command=self._on_load_spreadsheet,
         )
         self.load_button.grid(row=4, column=0, padx=40, pady=10, sticky="ew")
-        
+
         # Configure Spreadsheet button
         self.configure_button = ctk.CTkButton(
             self,
@@ -195,10 +194,10 @@ class MainScreen(ctk.CTk):
             font=ctk.CTkFont(size=14),
             height=50,
             command=self._on_configure_spreadsheet,
-            state="disabled"
+            state="disabled",
         )
         self.configure_button.grid(row=5, column=0, padx=40, pady=10, sticky="ew")
-        
+
         self.database_manage_button = ctk.CTkButton(
             self,
             text="Create / Load database",
@@ -218,21 +217,17 @@ class MainScreen(ctk.CTk):
             command=self._on_analysis_help,
         )
         self.help_button.grid(row=7, column=0, padx=40, pady=(10, 0), sticky="ew")
-        
+
         # Status message label
         self.status_label = ctk.CTkLabel(
-            self,
-            text="",
-            font=ctk.CTkFont(size=12),
-            wraplength=600,
-            justify="center"
+            self, text="", font=ctk.CTkFont(size=12), wraplength=600, justify="center"
         )
         self.status_label.grid(row=8, column=0, padx=40, pady=(30, 20), sticky="n")
-    
+
     def _on_state_change(self) -> None:
         """Handle application state change."""
         self._update_ui_state()
-    
+
     def _update_ui_state(self) -> None:
         """Update UI elements based on current application state."""
         # Update visualizer button state
@@ -240,20 +235,15 @@ class MainScreen(ctk.CTk):
         state = "normal" if can_enter else "disabled"
         self.visualizer_button.configure(state=state)
         self.library_data_button.configure(state=state)
-        
+
         # Update configure button state
         self.configure_button.configure(
             state="normal" if self.app_state.spreadsheet_loaded else "disabled"
         )
-        
-        can_manage_db = (
-            self.app_state.spreadsheet_configured
-            and self.app_state.config_valid
-        )
-        self.database_manage_button.configure(
-            state="normal" if can_manage_db else "disabled"
-        )
-        
+
+        can_manage_db = self.app_state.spreadsheet_configured and self.app_state.config_valid
+        self.database_manage_button.configure(state="normal" if can_manage_db else "disabled")
+
         # Update status message
         status_message = self.app_state.get_status_message()
         self.status_label.configure(text=status_message)
@@ -277,7 +267,7 @@ class MainScreen(ctk.CTk):
                 text_color="gray",
                 border_color=("gray75", "gray40"),
             )
-        
+
         logger.debug(
             "UI state updated. Can enter visualizer: %s, Can manage DB: %s",
             can_enter,
@@ -324,10 +314,7 @@ class MainScreen(ctk.CTk):
             self._on_quick_load_database()
             return
 
-        can_manage_db = (
-            self.app_state.spreadsheet_configured
-            and self.app_state.config_valid
-        )
+        can_manage_db = self.app_state.spreadsheet_configured and self.app_state.config_valid
         if not can_manage_db:
             messagebox.showinfo(
                 "Database",
@@ -368,7 +355,7 @@ class MainScreen(ctk.CTk):
             f"Loaded {type_word} database.\n\n{path}",
             parent=self,
         )
-    
+
     def _apply_spreadsheet_loaded(
         self, file_path: str, *, preserve_database: bool = False
     ) -> Optional[tuple[bool, str]]:
@@ -415,7 +402,7 @@ class MainScreen(ctk.CTk):
         detail = (error_msg or "Unknown validation error").strip()
         logger.info("Default configuration not valid for this spreadsheet: %s", detail)
         return False, detail
-    
+
     def _ui_is_active(self) -> bool:
         if self._closing:
             return False
@@ -465,7 +452,10 @@ class MainScreen(ctk.CTk):
         """If settings contain a last file path that still exists, load it in the background."""
         if not self._ui_is_active() or self.app_state.spreadsheet_loaded:
             return
-        if self._restore_spreadsheet_thread is not None and self._restore_spreadsheet_thread.is_alive():
+        if (
+            self._restore_spreadsheet_thread is not None
+            and self._restore_spreadsheet_thread.is_alive()
+        ):
             return
 
         settings = self.config_manager.load_settings()
@@ -538,13 +528,13 @@ class MainScreen(ctk.CTk):
         type_word = "index" if kind == DB_KIND_INDEX else "full"
         self.app_state.set_data_processed(True, path, type_word)
         logger.info("Restored last active database from settings: %s", path)
-    
+
     def _on_enter_visualizer(self) -> None:
         """Handle Enter Visualizer button click."""
         if not self.app_state.can_enter_visualizer():
             logger.warning("Attempted to enter visualizer when not ready")
             return
-        
+
         logger.info("Entering chromatogram visualizer")
         if self._chromatogram_window is not None:
             try:
@@ -584,7 +574,12 @@ class MainScreen(ctk.CTk):
             self,
             self.app_state,
             self.config_manager,
+            on_closed=self._on_library_data_window_closed,
         )
+
+    def _on_library_data_window_closed(self) -> None:
+        """Release the closed Library Analysis window reference."""
+        self._library_data_window = None
 
     def _on_analysis_help(self) -> None:
         """Open the in-app analysis help viewer."""
@@ -611,7 +606,7 @@ class MainScreen(ctk.CTk):
             win.refresh_after_database_changed()
         except tk.TclError:
             self._chromatogram_window = None
-    
+
     def _on_load_spreadsheet(self) -> None:
         """Handle Load Spreadsheet button click."""
         logger.info("Load spreadsheet button clicked")
@@ -619,11 +614,9 @@ class MainScreen(ctk.CTk):
 
         def on_load_success(file_path: str, dataframe) -> None:
             """Handle successful spreadsheet load."""
-            self._default_validation_after_load = self._apply_spreadsheet_loaded(
-                file_path
-            )
+            self._default_validation_after_load = self._apply_spreadsheet_loaded(file_path)
             logger.info("Spreadsheet loaded successfully: %s", file_path)
-        
+
         dlg_settings = self.config_manager.load_settings()
         initial_path: Optional[str] = None
         initial_sheet: Optional[str] = None
@@ -632,7 +625,7 @@ class MainScreen(ctk.CTk):
             if lp.is_file():
                 initial_path = str(lp)
                 initial_sheet = dlg_settings.last_loaded_sheet
-        
+
         from src.ui.load_spreadsheet_dialog import LoadSpreadsheetDialog
 
         # Open load dialog - store reference to prevent garbage collection
@@ -643,7 +636,7 @@ class MainScreen(ctk.CTk):
             initial_file_path=initial_path,
             initial_sheet_name=initial_sheet,
         )
-        
+
         # Wait for dialog to close (modal behavior)
         self.wait_window(self.load_dialog)
 
@@ -666,24 +659,24 @@ class MainScreen(ctk.CTk):
                     "Use Configure Spreadsheet to set up parsing for this file.",
                     parent=self,
                 )
-    
+
     def _on_configure_spreadsheet(self) -> None:
         """Handle Configure Spreadsheet button click."""
         if not self.app_state.spreadsheet_loaded:
             logger.warning("Attempted to configure spreadsheet when none loaded")
             return
-        
+
         logger.info("Configure spreadsheet button clicked")
-        
+
         def on_config_success(config) -> None:
             """Handle successful configuration."""
             # Save configuration as default
             self.config_manager.save_default_config(config)
-            
+
             # Update application state - configuration is now complete
             self.app_state.set_spreadsheet_configured(True)
             self.app_state.set_config_valid(config.is_complete())
-            
+
             logger.info(f"Configuration saved and validated. Complete: {config.is_complete()}")
             self._notify_chromatogram_visualizer_config_changed()
 
@@ -696,7 +689,7 @@ class MainScreen(ctk.CTk):
                 config.is_complete(),
             )
             self._notify_chromatogram_visualizer_config_changed()
-        
+
         from src.ui.configure_spreadsheet_dialog import ConfigureSpreadsheetDialog
 
         # Open configuration dialog - store reference to prevent garbage collection
@@ -707,10 +700,10 @@ class MainScreen(ctk.CTk):
             on_success=on_config_success,
             on_default_preset_applied=on_default_preset_applied,
         )
-        
+
         # Wait for dialog to close (modal behavior)
         self.wait_window(self.config_dialog)
-    
+
     def _on_database_manage(self) -> None:
         """Open create / load / delete managed bulk database dialog."""
         if not self.app_state.spreadsheet_configured or not self.app_state.config_valid:
@@ -872,7 +865,7 @@ class MainScreen(ctk.CTk):
         if getattr(self, "_quit_after_process_dialog", False):
             self._quit_after_process_dialog = False
             self.on_close()
-    
+
     def on_close(self) -> None:
         """Handle window close event."""
         self._closing = True
@@ -883,13 +876,13 @@ class MainScreen(ctk.CTk):
         settings.window_width = width
         settings.window_height = height
         self.config_manager.save_settings(settings)
-        
+
         # Unregister state change callback
         self.app_state.unregister_state_change_callback(self._on_state_change)
-        
+
         logger.info("Main screen closing")
         self.destroy()
-    
+
     def run(self) -> None:
         """Start the main event loop."""
         self.protocol("WM_DELETE_WINDOW", self.on_close)

@@ -556,6 +556,7 @@ def test_validate_registered_metadata_columns_counts_verification_values() -> No
     assert rt_info.n_numeric_values == 2
     assert verify_info.n_verified_values == 2
     assert verify_info.n_verified_with_bb_positions == 2
+    assert verify_info.n_verified_full_products == 2
 
 
 def test_metadata_tree_uses_user_verified_column_override() -> None:

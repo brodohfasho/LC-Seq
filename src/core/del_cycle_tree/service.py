@@ -228,9 +228,10 @@ def validate_registered_metadata_columns(
     config: SpreadsheetConfig,
 ) -> List[MetadataRtColumnInfo]:
     """
-    Count numeric values for each registered metadata column in config order.
+    Count usable RT and pass/fail values for each registered metadata column.
 
-    Does not infer or rank columns by RT-like names.
+    Counts also track BB-position coverage and pass/fail values on full products.
+    The function does not infer or rank columns by name.
     """
     columns = registered_metadata_column_names(config)
     if not columns:
@@ -240,10 +241,16 @@ def validate_registered_metadata_columns(
     bb_counts = {column: 0 for column in columns}
     verified_counts = {column: 0 for column in columns}
     verified_bb_counts = {column: 0 for column in columns}
+    verified_full_product_counts = {column: 0 for column in columns}
     n_scanned = len(compounds)
+    null_token = normalize_bb_name(config.null_token)
 
     for compound in compounds:
-        has_bb = positions_c_to_n(compound, config) is not None
+        positions = positions_c_to_n(compound, config)
+        has_bb = positions is not None
+        is_full_product = has_bb and all(
+            normalize_bb_name(bb) != null_token for bb in positions
+        )
         for column in columns:
             if rt_from_metadata_column(compound, column) is not None:
                 numeric_counts[column] += 1
@@ -253,6 +260,8 @@ def validate_registered_metadata_columns(
                 verified_counts[column] += 1
                 if has_bb:
                     verified_bb_counts[column] += 1
+                if is_full_product:
+                    verified_full_product_counts[column] += 1
 
     return [
         MetadataRtColumnInfo(
@@ -262,6 +271,7 @@ def validate_registered_metadata_columns(
             n_with_bb_positions=bb_counts[column],
             n_verified_values=verified_counts[column],
             n_verified_with_bb_positions=verified_bb_counts[column],
+            n_verified_full_products=verified_full_product_counts[column],
         )
         for column in columns
     ]

@@ -52,6 +52,7 @@ class MetadataRtColumnInfo:
     n_with_bb_positions: int = 0
     n_verified_values: int = 0
     n_verified_with_bb_positions: int = 0
+    n_verified_full_products: int = 0
 
 
 @dataclass(frozen=True)
