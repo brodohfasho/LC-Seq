@@ -322,7 +322,7 @@ class WindowShell:
 
         self._host._pedigree_summary_label = ctk.CTkLabel(
             rt_toolbar,
-            text="Configure peak picking and analysis mode in the sidebar, then run RT assignment.",
+            text="",
             font=ctk.CTkFont(size=12),
             text_color="gray",
             anchor="w",
@@ -356,15 +356,6 @@ class WindowShell:
         self._host._pedigree_export_del_csv_btn.pack(side="left", padx=(0, 6))
         self._host._busy_sensitive_widgets.append(self._host._pedigree_export_del_csv_btn)
 
-        self._host._pedigree_help_btn = ctk.CTkButton(
-            rt_actions,
-            text="Help ▾",
-            width=100,
-            fg_color="gray40",
-            command=self._host._pedigree_panel._show_pedigree_help_menu,
-        )
-        self._host._pedigree_help_btn.pack(side="left", padx=(0, 6))
-
         rt_body = ctk.CTkScrollableFrame(rt_tab, label_text="Assignment results")
         rt_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         rt_body.grid_columnconfigure(0, weight=1)
@@ -382,10 +373,37 @@ class WindowShell:
         # --- Pedigree visualization tab ---
         ped_viz_tab = self._host._content_tabview.add(_TAB_PEDIGREE_VIZ)
         ped_viz_tab.grid_columnconfigure(0, weight=1)
-        ped_viz_tab.grid_rowconfigure(0, weight=1)
+        ped_viz_tab.grid_rowconfigure(1, weight=1)
+
+        ped_viz_toolbar = ctk.CTkFrame(ped_viz_tab, fg_color="transparent")
+        ped_viz_toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+        ped_viz_actions = ctk.CTkFrame(ped_viz_toolbar, fg_color="transparent")
+        ped_viz_actions.pack(anchor="w")
+
+        self._host._pedigree_export_tree_btn = ctk.CTkButton(
+            ped_viz_actions,
+            text="Export tree PNG…",
+            width=150,
+            fg_color="gray40",
+            state="disabled",
+            command=self._host._pedigree_panel._on_export_pedigree_tree,
+        )
+        self._host._pedigree_export_tree_btn.pack(side="left", padx=(0, 6))
+        self._host._busy_sensitive_widgets.append(self._host._pedigree_export_tree_btn)
+
+        self._host._pedigree_export_csv_btn = ctk.CTkButton(
+            ped_viz_actions,
+            text="Export pedigree CSV…",
+            width=170,
+            fg_color="gray40",
+            state="disabled",
+            command=self._host._pedigree_panel._on_export_pedigree_csv,
+        )
+        self._host._pedigree_export_csv_btn.pack(side="left", padx=(0, 6))
+        self._host._busy_sensitive_widgets.append(self._host._pedigree_export_csv_btn)
 
         ped_viz_body = ctk.CTkFrame(ped_viz_tab, fg_color="transparent")
-        ped_viz_body.grid(row=0, column=0, sticky="nsew", padx=8, pady=(6, 8))
+        ped_viz_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         ped_viz_body.grid_columnconfigure(0, weight=1)
         ped_viz_body.grid_rowconfigure(0, weight=1)
 
@@ -398,7 +416,6 @@ class WindowShell:
             ped_viz_body,
             tk_bg=tk_bg,
             title="Pedigree tier-ring",
-            subtitle="Configure display options, then generate the plot from the sidebar.",
             placeholder="Run pedigree RT assignment, then click Generate plot in the sidebar.",
         )
         self._host._pedigree_figure_host = FigureHost(

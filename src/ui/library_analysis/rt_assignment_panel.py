@@ -165,14 +165,6 @@ class RtAssignmentPanel:
         ctk.CTkLabel(
             pedigree_header, text="Count channel", font=ctk.CTkFont(size=11, weight="bold")
         ).pack(side="left", anchor="w")
-        ctk.CTkButton(
-            pedigree_header,
-            text="? Help",
-            width=64,
-            height=22,
-            fg_color="gray40",
-            command=self._callbacks.show_pedigree_help,
-        ).pack(side="right")
         channel_menu = ctk.CTkOptionMenu(
             pedigree_box,
             variable=self._context._pedigree_channel_var,
@@ -314,14 +306,6 @@ class RtAssignmentPanel:
                 self._context._rt_assignment_run_btn,
                 "Assign retention times using pedigree or direct chromatogram pick. Use visualization tabs after a successful run.",
             )
-        ctk.CTkLabel(
-            panel,
-            text="Full databases can assign RTs without a scan. Run library scan first to speed up chromatogram loading. After RT assignment, open Pedigree visualization or Split-tree visualization to view figures.",
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
-            wraplength=_SIDEBAR_WRAP,
-            justify="left",
-        ).grid(row=row, column=0, sticky="w", padx=8, pady=(8, 6))
 
     def _build_pedigree_sidebar_content(self, panel: ctk.CTkScrollableFrame) -> None:
         """Legacy hook — use ``_build_rt_assignment_sidebar_content``."""

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 
 import customtkinter as ctk
 from tkinter import messagebox
@@ -165,6 +165,12 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_graphviz_banner: Optional[ctk.CTkLabel] = None
         self._pedigree_tree_node_count_label: Optional[ctk.CTkLabel] = None
         self._pedigree_generate_btn: Optional[ctk.CTkButton] = None
+        self._pedigree_export_tree_btn: Optional[ctk.CTkButton] = None
+        self._pedigree_export_csv_btn: Optional[ctk.CTkButton] = None
+        self._pedigree_export_del_csv_btn: Optional[ctk.CTkButton] = None
+        self._export_rts_btn: Optional[ctk.CTkButton] = None
+        self._splittree_export_png_btn: Optional[ctk.CTkButton] = None
+        self._splittree_export_branches_btn: Optional[ctk.CTkButton] = None
         self._rt_analysis_mode_var = tk.StringVar(value=_RT_ANALYSIS_DIRECT)
         self._last_rt_analysis_mode: Optional[str] = None
         self._del_cycle_tree_isoform: Optional[str] = None
@@ -224,7 +230,6 @@ class LibraryDataWindow(BaseWindow):
                 save_pedigree=lambda: self._pedigree_panel._on_save_pedigree(),
                 load_last_pedigree=lambda: (self._pedigree_panel._on_load_last_pedigree()),
                 browse_pedigree=lambda: self._pedigree_panel._on_browse_pedigree(),
-                show_pedigree_help=lambda: self._pedigree_panel._on_pedigree_help(),
                 run_pedigree=lambda: self._pedigree_panel._on_run_pedigree(),
                 split_tree_color_mode=lambda: (self._splittree_panel._del_tree_color_mode()),
                 split_tree_pass_cutoff=lambda: (
@@ -719,6 +724,9 @@ class LibraryDataWindow(BaseWindow):
                 has_latest_pedigree=latest_pedigree is not None,
                 has_pedigree_tree=tree_path is not None and Path(tree_path).is_file(),
                 has_del_tree=self._del_cycle_tree_data is not None,
+                has_splittree_plot=(
+                    self._splittree_viz_data is not None or self._del_cycle_tree_data is not None
+                ),
             )
         )
 
@@ -758,6 +766,14 @@ class LibraryDataWindow(BaseWindow):
             self._export_rts_btn.configure(state=state(actions.export_assigned_rts))
             self._pedigree_save_btn.configure(state=state(actions.export_pedigree))
             self._pedigree_export_tree_btn.configure(state=state(actions.export_pedigree_tree))
+            if self._splittree_export_png_btn is not None:
+                self._splittree_export_png_btn.configure(
+                    state=state(actions.export_splittree_png)
+                )
+            if self._splittree_export_branches_btn is not None:
+                self._splittree_export_branches_btn.configure(
+                    state=state(actions.export_splittree_branches)
+                )
             if (
                 self._pedigree_status_label is not None
                 and self._pedigree_result is None
@@ -780,7 +796,7 @@ class LibraryDataWindow(BaseWindow):
                     )
                 elif has_scan and stale_hint:
                     self._pedigree_status_label.configure(
-                        text="Scan ready. Configure options, then run RT assignment.",
+                        text="",
                         text_color="gray",
                     )
         except tk.TclError:
@@ -806,14 +822,6 @@ class LibraryDataWindow(BaseWindow):
             return self._content_tabview.get()
         except (ValueError, tk.TclError):
             return ""
-
-    _PEDIGREE_HELP_MENU: Tuple[Tuple[str, str], ...] = (
-        ("library_analysis", "Library Analysis overview"),
-        ("del_library_setup", "DEL library setup"),
-        ("pedigree_analysis", "Pedigree analysis"),
-        ("pedigree_split_tree", "Pedigree visualization figure"),
-        ("del_cycle_bundle_glossary", "Export analysis bundle glossary"),
-    )
 
     def on_close(self) -> None:
         self._closing = True

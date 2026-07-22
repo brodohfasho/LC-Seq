@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import tkinter as tk
 from pathlib import Path
 from typing import List, Optional, Protocol
 
@@ -68,25 +67,14 @@ class PedigreePanel:
         self._callbacks = callbacks
 
     def _build_pedigree_viz_sidebar_content(self, panel: ctk.CTkScrollableFrame) -> None:
-        """Build pedigree guidance, display controls, action, and tier summary."""
-        ctk.CTkLabel(
-            panel,
-            text="Requires a pedigree RT assignment run in this session (or Load last). "
-            "Pedigree evaluation includes all isoforms; use Split-tree visualization "
-            "to filter by isoform.",
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
-            wraplength=_SIDEBAR_WRAP,
-            justify="left",
-        ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
-
+        """Build pedigree display controls, action, and tier summary."""
         ctk.CTkLabel(
             panel,
             text="Pedigree tree display",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=("#0969da", "#58a6ff"),
             anchor="w",
-        ).grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 4))
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 4))
         self._context._pedigree_generate_btn = ctk.CTkButton(
             panel,
             text="Generate plot",
@@ -96,9 +84,9 @@ class PedigreePanel:
             command=self._on_generate_pedigree_plot,
             state="disabled",
         )
-        self._context._pedigree_generate_btn.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self._context._pedigree_generate_btn.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
         controls = ctk.CTkFrame(panel, corner_radius=8)
-        controls.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 12))
+        controls.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 12))
         controls.grid_columnconfigure(0, weight=1)
         self._build_pedigree_display_controls(controls)
 
@@ -108,40 +96,10 @@ class PedigreePanel:
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=("#0969da", "#58a6ff"),
             anchor="w",
-        ).grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 4))
+        ).grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
         self._context._pedigree_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        self._context._pedigree_frame.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self._context._pedigree_frame.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 8))
         self._context._pedigree_frame.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(
-            panel,
-            text="Exports",
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=("#0969da", "#58a6ff"),
-            anchor="w",
-        ).grid(row=6, column=0, sticky="ew", padx=8, pady=(4, 4))
-        self._context._pedigree_export_tree_btn = ctk.CTkButton(
-            panel,
-            text="Export tree PNG…",
-            fg_color="gray40",
-            state="disabled",
-            command=self._on_export_pedigree_tree,
-        )
-        self._context._pedigree_export_tree_btn.grid(
-            row=7, column=0, sticky="ew", padx=8, pady=(0, 6)
-        )
-        self._context._busy_sensitive_widgets.append(self._context._pedigree_export_tree_btn)
-        self._context._pedigree_export_csv_btn = ctk.CTkButton(
-            panel,
-            text="Export pedigree CSV…",
-            fg_color="gray40",
-            state="disabled",
-            command=self._on_export_pedigree_csv,
-        )
-        self._context._pedigree_export_csv_btn.grid(
-            row=8, column=0, sticky="ew", padx=8, pady=(0, 8)
-        )
-        self._context._busy_sensitive_widgets.append(self._context._pedigree_export_csv_btn)
 
     def _build_pedigree_display_controls(self, parent: ctk.CTkFrame) -> None:
         """Build display controls inside the pedigree visualization sidebar."""
@@ -660,29 +618,6 @@ class PedigreePanel:
                     anchor="e" if col else "w",
                 ).grid(row=row_idx, column=col, padx=(0 if col == 0 else 4, 0), pady=2, sticky="ew")
         return card
-
-    def _show_pedigree_help_menu(self) -> None:
-        """Show pedigree-tab help topics in a dropdown menu."""
-        menu = tk.Menu(self._context, tearoff=0)
-        for topic_id, label in self._context._PEDIGREE_HELP_MENU:
-            menu.add_command(
-                label=label, command=lambda tid=topic_id: self._open_pedigree_help_topic(tid)
-            )
-        btn = self._context._pedigree_help_btn
-        if btn is None:
-            return
-        try:
-            menu.tk_popup(btn.winfo_rootx(), btn.winfo_rooty() + btn.winfo_height())
-        finally:
-            menu.grab_release()
-
-    def _open_pedigree_help_topic(self, topic_id: str) -> None:
-        from src.ui.help_window import open_help_window
-
-        open_help_window(self._context, topic_id)
-
-    def _on_pedigree_help(self) -> None:
-        self._open_pedigree_help_topic("pedigree_analysis")
 
     def _clear_pedigree_tree_plot(self) -> None:
         """Release matplotlib canvas/toolbar used for the interactive tree preview."""

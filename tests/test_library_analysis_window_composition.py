@@ -230,15 +230,18 @@ def test_qc_owns_save_load_controls_and_shell_builds_busy_overlay() -> None:
 
 
 def test_pedigree_sidebar_owns_summary_and_display_controls() -> None:
-    """Pedigree controls must share the sidebar and leave the tab for its figure."""
+    """Pedigree controls stay in the sidebar; export actions live on the tab toolbar."""
     module_dir = Path(__file__).parents[1] / "src" / "ui" / "library_analysis"
     panel_source = (module_dir / "pedigree_panel.py").read_text(encoding="utf-8")
     shell_source = (module_dir / "window_shell.py").read_text(encoding="utf-8")
 
     assert "def _build_pedigree_display_controls" in panel_source
     assert "self._context._pedigree_frame = ctk.CTkFrame" in panel_source
-    assert "self._context._pedigree_export_tree_btn = ctk.CTkButton" in panel_source
-    assert "ped_viz_toolbar" not in shell_source
+    assert "self._context._pedigree_export_tree_btn = ctk.CTkButton" not in panel_source
+    assert "ped_viz_toolbar" in shell_source
+    assert 'text="Export tree PNG…"' in shell_source
+    assert 'text="Export pedigree CSV…"' in shell_source
+    assert 'fg_color="gray40"' in shell_source
     assert "_pedigree_body_paned" not in shell_source
     assert "_pedigree_left_paned" not in shell_source
     assert "_create_vertical_paned" not in shell_source
@@ -258,8 +261,7 @@ def test_splittree_sidebar_separates_data_and_display_controls() -> None:
 
     assert 'text="Plot data"' in sidebar_method
     assert 'text="Active plot parameters"' in sidebar_method
-    assert "spreadsheet retention times" in sidebar_method
-    assert "null RT threshold and time unit" in sidebar_method
+    assert "Validate RT column" in sidebar_method
     assert sidebar_method.index('text="Plot data"') < sidebar_method.index(
         'text="Active plot parameters"'
     )
@@ -267,6 +269,13 @@ def test_splittree_sidebar_separates_data_and_display_controls() -> None:
     assert "self._build_display_controls" not in tab_method
     assert "_splittree_body_paned" not in panel_source
     assert "build_tree_figure_host(" in tab_method
+    assert 'title="Split-tree"' in tab_method
+    assert "subtitle=" not in tab_method
+    assert 'text="Export tree PNG…"' in tab_method
+    assert 'text="Export all branches…"' in tab_method
+    assert 'fg_color="gray40"' in tab_method
+    assert "def _on_export_splittree_png" in panel_source
+    assert "def _on_export_splittree_branches" in panel_source
 
 
 def test_window_reveals_only_after_initial_widgets_are_built() -> None:

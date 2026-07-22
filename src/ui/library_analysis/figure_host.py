@@ -14,9 +14,10 @@ def build_tree_figure_host(
     *,
     tk_bg: str,
     title: str,
-    subtitle: str,
+    subtitle: str = "",
     placeholder: str,
-) -> Tuple[ctk.CTkFrame, ctk.CTkLabel, tk.Frame, ctk.CTkLabel]:
+    show_toolbar_hint: bool = True,
+) -> Tuple[ctk.CTkFrame, ctk.CTkLabel, tk.Frame, Optional[ctk.CTkLabel]]:
     """Create a titled Matplotlib figure host and placeholder."""
     column = ctk.CTkFrame(parent, corner_radius=8)
     column.pack(fill="both", expand=True)
@@ -32,25 +33,30 @@ def build_tree_figure_host(
         font=ctk.CTkFont(size=14, weight="bold"),
         anchor="w",
     ).grid(row=0, column=0, sticky="w")
-    subtitle_label = ctk.CTkLabel(
-        header,
-        text=subtitle,
-        font=ctk.CTkFont(size=11),
-        text_color="gray",
-        anchor="w",
-        wraplength=520,
-        justify="left",
-    )
-    subtitle_label.grid(row=1, column=0, sticky="ew", pady=(2, 0))
-    ctk.CTkLabel(
-        header,
-        text="Use the matplotlib toolbar below the figure to pan, zoom, and reset the view.",
-        font=ctk.CTkFont(size=11),
-        text_color="gray",
-        anchor="w",
-        wraplength=520,
-        justify="left",
-    ).grid(row=2, column=0, sticky="ew", pady=(2, 0))
+    subtitle_label: Optional[ctk.CTkLabel] = None
+    next_row = 1
+    if subtitle.strip():
+        subtitle_label = ctk.CTkLabel(
+            header,
+            text=subtitle,
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            anchor="w",
+            wraplength=520,
+            justify="left",
+        )
+        subtitle_label.grid(row=next_row, column=0, sticky="ew", pady=(2, 0))
+        next_row += 1
+    if show_toolbar_hint:
+        ctk.CTkLabel(
+            header,
+            text="Use the matplotlib toolbar below the figure to pan, zoom, and reset the view.",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            anchor="w",
+            wraplength=520,
+            justify="left",
+        ).grid(row=next_row, column=0, sticky="ew", pady=(2, 0))
     host = ctk.CTkFrame(column, fg_color=("gray90", "gray17"))
     host.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
     host.grid_columnconfigure(0, weight=1)

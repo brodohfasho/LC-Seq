@@ -442,18 +442,6 @@ class QcPanel:
                 self._context._busy_sensitive_widgets.append(cb)
                 row += 1
 
-        ctk.CTkLabel(
-            panel,
-            text=(
-                "Plots reuse the library scan from the top bar. Signal-quality plots "
-                "use peak parameters from the Summary metrics sidebar."
-            ),
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
-            wraplength=_SIDEBAR_WRAP,
-            justify="left",
-        ).grid(row=row, column=0, sticky="w", padx=8, pady=(8, 6))
-
     def _init_qc_picker_settings(self) -> None:
         """Set library QC picker defaults from loaded spreadsheet config."""
         if self._context._config is None:
@@ -628,14 +616,14 @@ class QcPanel:
             messagebox.showerror(
                 "Library Analysis",
                 "Fraction count must be a positive integer.",
-                parent=self,
+                parent=self._context,
             )
             return None
         if value <= 0:
             messagebox.showerror(
                 "Library Analysis",
                 "Fraction count must be greater than zero.",
-                parent=self,
+                parent=self._context,
             )
             return None
         return value
@@ -646,12 +634,12 @@ class QcPanel:
             messagebox.showerror(
                 "Library Analysis",
                 "Invalid peak picking algorithm for QC metrics.",
-                parent=self,
+                parent=self._context,
             )
             return None
         time_unit = self._context._qc_time_unit_var.get()
         if time_unit not in ("seconds", "minutes"):
-            messagebox.showerror("Library Analysis", "Invalid QC time unit.", parent=self)
+            messagebox.showerror("Library Analysis", "Invalid QC time unit.", parent=self._context)
             return None
         try:
             gaussian_min_height_factor = float(self._context._qc_gaussian_height_var.get().strip())
@@ -662,7 +650,7 @@ class QcPanel:
             messagebox.showerror(
                 "Library Analysis",
                 "Old-school QC peak picker parameters must be numbers.",
-                parent=self,
+                parent=self._context,
             )
             return None
         alpha = DEFAULT_SIGNAL_QUALITY_ALPHA
@@ -673,14 +661,14 @@ class QcPanel:
                 messagebox.showerror(
                     "Library Analysis",
                     "Peak significance α must be a number (e.g. 0.001).",
-                    parent=self,
+                    parent=self._context,
                 )
                 return None
             if alpha <= 0.0 or alpha >= 1.0:
                 messagebox.showerror(
                     "Library Analysis",
                     "Peak significance α must be between 0 and 1 (exclusive).",
-                    parent=self,
+                    parent=self._context,
                 )
                 return None
         quality = self._parse_qc_quality_params()
@@ -706,7 +694,7 @@ class QcPanel:
             messagebox.showerror(
                 "Library Analysis",
                 "Min prominence must be a number (0 = off).",
-                parent=self,
+                parent=self._context,
             )
             return None
         try:
@@ -715,21 +703,21 @@ class QcPanel:
             messagebox.showerror(
                 "Library Analysis",
                 "Min % area must be a number (0 = off).",
-                parent=self,
+                parent=self._context,
             )
             return None
         if min_prominence < 0:
             messagebox.showerror(
                 "Library Analysis",
                 "Min prominence must be >= 0.",
-                parent=self,
+                parent=self._context,
             )
             return None
         if min_pct_area < 0 or min_pct_area > 100:
             messagebox.showerror(
                 "Library Analysis",
                 "Min % area must be between 0 and 100.",
-                parent=self,
+                parent=self._context,
             )
             return None
         return (min_prominence, min_pct_area)
@@ -872,7 +860,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "Select at least one count channel.",
-                parent=self,
+                parent=self._context,
             )
             return
         if self._context._data_store is None or self._context._data_store.get_compound_count() == 0:
@@ -929,7 +917,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "No library scan is loaded or saved.",
-                parent=self,
+                parent=self._context,
             )
             return
         saved_note = (
@@ -944,7 +932,7 @@ class QcPanel:
             "Use Export scan… first if you need to keep a scan between sessions.\n\n"
             "Metrics, plots, and RT assignment results that depend on the scan "
             "will no longer be available until you run or import a scan again.",
-            parent=self,
+            parent=self._context,
             icon="warning",
         ):
             return
@@ -964,7 +952,7 @@ class QcPanel:
         messagebox.showinfo(
             "Library Analysis",
             f"Library scans cleared.\n\n{detail}",
-            parent=self,
+            parent=self._context,
         )
 
     def _on_export_library_scan(self) -> None:
@@ -977,7 +965,7 @@ class QcPanel:
         scan = self._context._cached_scan
         default_name = suggested_scan_export_filename(self._context._db_path, scan)
         dest = filedialog.asksaveasfilename(
-            parent=self,
+            parent=self._context,
             title="Export library scan",
             initialfile=default_name,
             defaultextension=".pkl",
@@ -994,13 +982,13 @@ class QcPanel:
             messagebox.showerror(
                 "Export library scan",
                 f"Could not save scan:\n{exc}",
-                parent=self,
+                parent=self._context,
             )
             return
         messagebox.showinfo(
             "Export library scan",
             f"Scan exported to:\n{dest}",
-            parent=self,
+            parent=self._context,
         )
 
     def _on_import_library_scan(self) -> None:
@@ -1011,7 +999,7 @@ class QcPanel:
         ):
             return
         source = filedialog.askopenfilename(
-            parent=self,
+            parent=self._context,
             title="Import library scan",
             filetypes=[
                 ("LC-Seq library scan", "*.pkl"),
@@ -1026,7 +1014,7 @@ class QcPanel:
             messagebox.showerror(
                 "Import library scan",
                 f"Could not read scan file:\n{exc}",
-                parent=self,
+                parent=self._context,
             )
             return
         compound_count = (
@@ -1045,7 +1033,7 @@ class QcPanel:
                 "Import library scan",
                 "This scan cannot be used with the active library:\n\n"
                 + "\n".join(f"• {line}" for line in report.errors),
-                parent=self,
+                parent=self._context,
             )
             return
         if report.warnings:
@@ -1055,7 +1043,7 @@ class QcPanel:
                 "The scan loaded, but please review these warnings:\n\n"
                 f"{warning_text}\n\n"
                 "Import this scan anyway?",
-                parent=self,
+                parent=self._context,
                 icon="warning",
             ):
                 return
@@ -1064,7 +1052,7 @@ class QcPanel:
             "Import library scan",
             f"Imported scan with {self._scan_entry_count(scan):,} entries "
             f"({', '.join(scan.channel_names) or 'no channels'}).",
-            parent=self,
+            parent=self._context,
         )
 
     def _on_calculate_metrics(self) -> None:
@@ -1075,7 +1063,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "Select at least one metric.",
-                parent=self,
+                parent=self._context,
             )
             return
         if self._parse_fraction_count() is None or self._parse_qc_signal_settings() is None:
@@ -1147,7 +1135,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "Select at least one count channel.",
-                parent=self,
+                parent=self._context,
             )
             return
         fraction_count = self._parse_fraction_count()
@@ -1281,7 +1269,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "Select at least one plot and one count channel.",
-                parent=self,
+                parent=self._context,
             )
             return
         qc_settings = self._parse_qc_signal_settings()
@@ -1415,10 +1403,10 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 f"Saved results to:\n{saved}\n\nPlots: {snapshot_plots_dir(saved)}",
-                parent=self,
+                parent=self._context,
             )
         except OSError as exc:
-            messagebox.showerror("Library Analysis", f"Could not save results:\n{exc}", parent=self)
+            messagebox.showerror("Library Analysis", f"Could not save results:\n{exc}", parent=self._context)
 
     def _on_load_last(self) -> None:
         if self._context._db_path is None:
@@ -1428,7 +1416,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "No saved results were found for this database.",
-                parent=self,
+                parent=self._context,
             )
             return
         self._load_snapshot_from_path(path)
@@ -1441,7 +1429,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "No saved Library QC metrics results were found.",
-                parent=self,
+                parent=self._context,
             )
             return
         if not messagebox.askyesno(
@@ -1451,7 +1439,7 @@ class QcPanel:
             f"{get_library_data_dir()}.\n\n"
             "This does not clear the in-memory library scan or unsaved metrics on screen.\n\n"
             "Continue?",
-            parent=self,
+            parent=self._context,
             icon="warning",
         ):
             return
@@ -1466,12 +1454,12 @@ class QcPanel:
         messagebox.showinfo(
             "Library Analysis",
             f"Removed {deleted:,} saved result file(s).",
-            parent=self,
+            parent=self._context,
         )
 
     def _on_browse_saved(self) -> None:
         path = filedialog.askopenfilename(
-            parent=self,
+            parent=self._context,
             title="Open saved library data",
             initialdir=str(get_library_data_dir()),
             filetypes=[("Library data JSON", "*.json"), ("All files", "*.*")],
@@ -1487,7 +1475,7 @@ class QcPanel:
             messagebox.showerror(
                 "Library Analysis",
                 f"Could not load saved results:\n{exc}",
-                parent=self,
+                parent=self._context,
             )
             return
         self._context._session_state.invalidate_qc_results()
@@ -1509,7 +1497,7 @@ class QcPanel:
                     f"Saved: {snapshot.database_name}\n"
                     f"Active: {self._context._db_path.name}\n\n"
                     "Results will still be shown, but they may not match the current library.",
-                    parent=self,
+                    parent=self._context,
                 )
 
         self._context._current_snapshot = snapshot
@@ -1602,7 +1590,7 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "Run library scan first.",
-                parent=self,
+                parent=self._context,
             )
             return
         channels = self._get_selected_channels()
@@ -1610,14 +1598,14 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "Select at least one count channel.",
-                parent=self,
+                parent=self._context,
             )
             return
         qc_settings = self._parse_qc_signal_settings()
         if qc_settings is None:
             return
         dest = filedialog.asksaveasfilename(
-            parent=self,
+            parent=self._context,
             title="Export per-entry signal CSV",
             initialfile="library_signal_per_entry.csv",
             defaultextension=".csv",
@@ -1668,7 +1656,7 @@ class QcPanel:
         messagebox.showinfo(
             "Library Analysis",
             f"Exported per-entry signal metrics to:\n{dest}",
-            parent=self,
+            parent=self._context,
         )
 
     def _render_results(self) -> None:
@@ -1791,11 +1779,11 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "Calculate metrics first.",
-                parent=self,
+                parent=self._context,
             )
             return
         dest = filedialog.asksaveasfilename(
-            parent=self,
+            parent=self._context,
             title="Export summary metrics CSV",
             initialfile="library_summary_metrics.csv",
             defaultextension=".csv",
@@ -1808,13 +1796,13 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 f"Exported summary metrics to:\n{saved}",
-                parent=self,
+                parent=self._context,
             )
         except OSError as exc:
             messagebox.showerror(
                 "Library Analysis",
                 f"Could not export metrics:\n{exc}",
-                parent=self,
+                parent=self._context,
             )
 
     def _update_plots_summary(self, plots: List[PlotResult]) -> None:
@@ -1985,11 +1973,11 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 "No plot files are available to export. Generate plots first.",
-                parent=self,
+                parent=self._context,
             )
             return
         dest = filedialog.askdirectory(
-            parent=self,
+            parent=self._context,
             title="Choose folder for exported plots",
         )
         if not dest:
@@ -2010,13 +1998,13 @@ class QcPanel:
                 "Library Analysis",
                 f"Exported {exported} plot(s) to:\n{out_dir}\n\n"
                 f"Some files failed:\n" + "\n".join(errors[:5]),
-                parent=self,
+                parent=self._context,
             )
         else:
             messagebox.showinfo(
                 "Library Analysis",
                 f"Exported {exported} plot(s) to:\n{out_dir}",
-                parent=self,
+                parent=self._context,
             )
 
     def _on_open_plots_folder(self) -> None:
@@ -2030,7 +2018,7 @@ class QcPanel:
             messagebox.showerror(
                 "Library Analysis",
                 f"Could not open plots folder:\n{folder}\n\n{exc}",
-                parent=self,
+                parent=self._context,
             )
 
     def _render_stat_card(
@@ -2090,19 +2078,19 @@ class QcPanel:
 
     def _open_plot_file(self, path: Path) -> None:
         if not path.is_file():
-            messagebox.showwarning("Open plot", "Plot file was not found.", parent=self)
+            messagebox.showwarning("Open plot", "Plot file was not found.", parent=self._context)
             return
         try:
             os.startfile(str(path.resolve()))  # type: ignore[attr-defined]
         except OSError as exc:
-            messagebox.showerror("Open plot", f"Could not open plot:\n{exc}", parent=self)
+            messagebox.showerror("Open plot", f"Could not open plot:\n{exc}", parent=self._context)
 
     def _export_plot_image(self, source: Path) -> None:
         if not source.is_file():
-            messagebox.showwarning("Export", "Plot file was not found.", parent=self)
+            messagebox.showwarning("Export", "Plot file was not found.", parent=self._context)
             return
         dest = filedialog.asksaveasfilename(
-            parent=self,
+            parent=self._context,
             title="Export plot image",
             initialfile=source.name,
             defaultextension=".png",
@@ -2115,9 +2103,9 @@ class QcPanel:
             return
         try:
             shutil.copy2(source, dest)
-            messagebox.showinfo("Export", f"Saved plot to:\n{dest}", parent=self)
+            messagebox.showinfo("Export", f"Saved plot to:\n{dest}", parent=self._context)
         except OSError as exc:
-            messagebox.showerror("Export", f"Could not export plot:\n{exc}", parent=self)
+            messagebox.showerror("Export", f"Could not export plot:\n{exc}", parent=self._context)
 
     def _add_channel_row(
         self,

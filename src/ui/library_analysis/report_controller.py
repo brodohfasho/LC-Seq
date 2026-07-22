@@ -472,7 +472,7 @@ class ReportController:
             messagebox.showinfo(
                 "Library Analysis",
                 "The database has no compounds to report on.",
-                parent=self,
+                parent=self._context,
             )
             return
         if not self._session_has_report_artifacts():
@@ -481,7 +481,7 @@ class ReportController:
                 "No report sections are ready yet.\n\n"
                 "Run library scan, metrics, plots, RT assignment, or split-tree steps "
                 "in this session, then return here to assemble a PDF.",
-                parent=self,
+                parent=self._context,
             )
             return
 
@@ -510,7 +510,7 @@ class ReportController:
             self._continue_report_export(result)
 
         show_library_report_dialog(
-            self,
+            self._context,
             section_statuses=section_statuses,
             prerequisites=prerequisites,
             on_confirm=on_dialog_confirm,
@@ -525,12 +525,12 @@ class ReportController:
                 "Generate report",
                 "Some selected sections are not available yet:\n\n"
                 + "\n".join(f"• {note}" for note in prerequisites.missing_sections),
-                parent=self,
+                parent=self._context,
             )
             return
 
         dest = filedialog.asksaveasfilename(
-            parent=self,
+            parent=self._context,
             title="Export library report",
             defaultextension=".pdf",
             filetypes=[("PDF document", "*.pdf")],
@@ -643,7 +643,7 @@ class ReportController:
             messagebox.showinfo(
                 "Library Analysis",
                 f"Library report saved to:\n{pdf_path}",
-                parent=self,
+                parent=self._context,
             )
 
         self._context.after(30, finish)

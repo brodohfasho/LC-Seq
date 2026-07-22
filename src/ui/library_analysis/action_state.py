@@ -28,6 +28,7 @@ class LibraryActionInputs:
     has_latest_pedigree: bool
     has_pedigree_tree: bool
     has_del_tree: bool
+    has_splittree_plot: bool
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,8 @@ class LibraryActionState:
     export_del_tree: bool
     export_assigned_rts: bool
     export_pedigree_tree: bool
+    export_splittree_png: bool
+    export_splittree_branches: bool
 
     @classmethod
     def decide(cls, inputs: LibraryActionInputs) -> "LibraryActionState":
@@ -87,5 +90,7 @@ class LibraryActionState:
             generate_pedigree_plot=inputs.has_pedigree and available,
             export_del_tree=inputs.has_del_tree and available,
             export_assigned_rts=inputs.has_rt_result and available,
-            export_pedigree_tree=inputs.has_pedigree_tree and available,
+            export_pedigree_tree=inputs.has_pedigree and available,
+            export_splittree_png=inputs.has_splittree_plot and available,
+            export_splittree_branches=inputs.has_splittree_plot and available,
         )

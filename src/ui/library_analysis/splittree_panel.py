@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Protocol, Tuple
 
 import customtkinter as ctk
@@ -100,6 +101,8 @@ class SplitTreePanel:
         host._splittree_tree_placeholder = None
         host._splittree_tree_plot_host = None
         host._splittree_figure_host = None
+        host._splittree_export_png_btn = None
+        host._splittree_export_branches_btn = None
         host._pedigree_tree_viz_mode_var = tk.StringVar(value=SPLITTREE_VIEW_FULL)
         host._pedigree_del_branch_var = tk.StringVar(value="")
         host._pedigree_del_color_rt_var = tk.BooleanVar(value=False)
@@ -120,27 +123,11 @@ class SplitTreePanel:
         host = self._context
         ctk.CTkLabel(
             panel,
-            text=(
-                "Build from an RT assignment run in this session, or from registered "
-                "spreadsheet retention times."
-            ),
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
-            wraplength=_SIDEBAR_WRAP,
-            justify="left",
-        ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
-        ctk.CTkLabel(
-            panel,
             text="Plot data",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=_SECTION_HEADER_COLOR,
             anchor="w",
-        ).grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 2))
-        self._add_status_label(
-            panel,
-            2,
-            "Choose the RT source and optional isoform used to build the plot.",
-        )
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
         host._splittree_generate_btn = ctk.CTkButton(
             panel,
             text="Generate plot",
@@ -150,11 +137,11 @@ class SplitTreePanel:
             command=self._on_generate_splittree_plot,
         )
         host._splittree_generate_btn.grid(
-            row=3, column=0, sticky="ew", padx=8, pady=(0, 12)
+            row=1, column=0, sticky="ew", padx=8, pady=(0, 12)
         )
         host._busy_sensitive_widgets.append(host._splittree_generate_btn)
 
-        row = 4
+        row = 2
         row = self._add_sidebar_label(panel, row, "RT source for plot", top=True)
         source_menu = ctk.CTkOptionMenu(
             panel,
@@ -213,7 +200,7 @@ class SplitTreePanel:
         host._splittree_metadata_validation_status_label = self._add_status_label(
             metadata_group,
             5,
-            "Select and validate the RT column before generating a plot.",
+            "",
         )
         host._splittree_metadata_control_labels = [
             group_header,
@@ -233,18 +220,6 @@ class SplitTreePanel:
             host._splittree_isoform_menu.grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 8))
             host._busy_sensitive_widgets.append(host._splittree_isoform_menu)
             row += 1
-        self._add_status_label(
-            panel,
-            row,
-            "Session RT assignment uses results from the RT assignment tab. "
-            "Spreadsheet metadata reads precomputed RTs from one registered column "
-            "and skips peak picking. Null verification is always recalculated from "
-            "those RTs using the null RT threshold and time unit from the RT "
-            "assignment tab (column headers like “(min)” / “(s)” select the stored "
-            "unit). Include RTs for truncation rows, not just full products; "
-            "empty cells are skipped.",
-        )
-        row += 1
         ctk.CTkFrame(
             panel,
             height=1,
@@ -258,14 +233,9 @@ class SplitTreePanel:
             text_color=_SECTION_HEADER_COLOR,
             anchor="w",
         ).grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 2))
-        self._add_status_label(
-            panel,
-            row + 1,
-            "These controls update how the active split-tree is displayed.",
-        )
         display_controls = ctk.CTkFrame(panel, corner_radius=8)
         display_controls.grid(
-            row=row + 2,
+            row=row + 1,
             column=0,
             sticky="ew",
             padx=8,
@@ -310,13 +280,41 @@ class SplitTreePanel:
         return label
 
     def _build_splittree_tab(self, tabview: ctk.CTkTabview, tk_bg: str) -> None:
-        """Build the split-tree tab as a dedicated FigureHost."""
+        """Build the split-tree tab with an RT-style export toolbar and figure host."""
         host = self._context
         tab = tabview.add("Split-tree visualization")
         tab.grid_columnconfigure(0, weight=1)
-        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
+
+        toolbar = ctk.CTkFrame(tab, fg_color="transparent")
+        toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+        actions = ctk.CTkFrame(toolbar, fg_color="transparent")
+        actions.pack(anchor="w")
+
+        host._splittree_export_png_btn = ctk.CTkButton(
+            actions,
+            text="Export tree PNG…",
+            width=150,
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_export_splittree_png,
+        )
+        host._splittree_export_png_btn.pack(side="left", padx=(0, 6))
+        host._busy_sensitive_widgets.append(host._splittree_export_png_btn)
+
+        host._splittree_export_branches_btn = ctk.CTkButton(
+            actions,
+            text="Export all branches…",
+            width=170,
+            fg_color="gray40",
+            state="disabled",
+            command=self._on_export_splittree_branches,
+        )
+        host._splittree_export_branches_btn.pack(side="left", padx=(0, 6))
+        host._busy_sensitive_widgets.append(host._splittree_export_branches_btn)
+
         body = ctk.CTkFrame(tab, fg_color="transparent")
-        body.grid(row=0, column=0, sticky="nsew", padx=8, pady=(6, 8))
+        body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         body.grid_columnconfigure(0, weight=1)
         body.grid_rowconfigure(0, weight=1)
         (
@@ -328,8 +326,8 @@ class SplitTreePanel:
             body,
             tk_bg=tk_bg,
             title="Split-tree",
-            subtitle="Build from session RT assignment or spreadsheet metadata (sidebar).",
             placeholder="Run RT assignment or choose metadata source, then refresh.",
+            show_toolbar_hint=False,
         )
         host._splittree_figure_host = FigureHost(
             host._splittree_tree_plot_host,
@@ -906,7 +904,7 @@ class SplitTreePanel:
             self._load_registered_metadata_columns()
             if host._splittree_metadata_validation_status_label is not None:
                 host._splittree_metadata_validation_status_label.configure(
-                    text="Select and validate the RT column before generating a plot.",
+                    text="",
                     text_color="gray",
                 )
         host._session_state.invalidate_splittree()
@@ -1281,6 +1279,196 @@ class SplitTreePanel:
     ) -> None:
         """Retain the legacy metadata-detection callback alias."""
         self._on_splittree_rt_columns_validated(discovered)
+
+    def _active_splittree_data(self) -> Optional[DelCycleTreeData]:
+        """Return the split-tree data currently available for export or display."""
+        host = self._context
+        return host._splittree_viz_data or host._del_cycle_tree_data
+
+    @staticmethod
+    def _safe_export_token(value: str) -> str:
+        """Sanitize a BB name for use in exported PNG filenames."""
+        import re
+
+        token = re.sub(r"[^\w\-]+", "_", str(value).strip())
+        token = token.strip("_")
+        return token[:48] if token else "branch"
+
+    def _on_export_splittree_png(self) -> None:
+        """Export the currently selected split-tree view as a PNG."""
+        host = self._context
+        if host._is_busy():
+            return
+        data = self._active_splittree_data()
+        if data is None:
+            messagebox.showinfo(
+                "Export tree PNG",
+                "Generate a split-tree plot first.",
+                parent=host,
+            )
+            return
+        dest = filedialog.asksaveasfilename(
+            parent=host,
+            title="Export split-tree PNG",
+            initialfile="split_tree.png",
+            defaultextension=".png",
+            filetypes=[("PNG image", "*.png"), ("All files", "*.*")],
+        )
+        if not dest:
+            return
+        try:
+            figure, _selected = self._resolve_splittree_figure(
+                data,
+                view_mode=host._splittree_view_mode_var.get(),
+                branch_selection=host._pedigree_del_branch_var.get().strip(),
+                color_by_rt=bool(host._pedigree_del_color_rt_var.get()),
+                color_mode=self._del_tree_color_mode(),
+                pass_pct_cutoff=self._read_del_tree_pass_pct_cutoff(),
+            )
+            figure.savefig(dest, dpi=150, bbox_inches="tight", facecolor="white")
+            import matplotlib.pyplot as plt
+
+            plt.close(figure)
+            messagebox.showinfo("Export tree PNG", f"Saved to:\n{dest}", parent=host)
+        except Exception as exc:
+            logger.error("Split-tree PNG export failed: %s", exc, exc_info=True)
+            messagebox.showerror("Export tree PNG", str(exc), parent=host)
+
+    def _on_export_splittree_branches(self) -> None:
+        """Export one PNG per BB1 branch (and the full tree) into a folder."""
+        host = self._context
+        if host._is_busy():
+            return
+        data = self._active_splittree_data()
+        if data is None:
+            messagebox.showinfo(
+                "Export all branches",
+                "Generate a split-tree plot first.",
+                parent=host,
+            )
+            return
+        branches = self._sorted_bb1_branch_names(data)
+        if not branches:
+            messagebox.showinfo(
+                "Export all branches",
+                "No BB1 branches are available to export.",
+                parent=host,
+            )
+            return
+        destination = filedialog.askdirectory(
+            parent=host,
+            title="Select folder for split-tree branch PNGs",
+        )
+        if not destination:
+            return
+        out_dir = Path(destination)
+        color_by_rt = bool(host._pedigree_del_color_rt_var.get())
+        color_mode = self._del_tree_color_mode()
+        pass_pct_cutoff = self._read_del_tree_pass_pct_cutoff()
+        host._show_loading_page(
+            "Exporting branch PNGs",
+            f"Preparing {len(branches):,} BB1 branch figure(s)…",
+        )
+
+        def worker() -> None:
+            try:
+                import matplotlib.pyplot as plt
+
+                written = 0
+                total = len(branches) + 1
+
+                def progress(done: int, status: str) -> None:
+                    host._raise_if_cancelled()
+                    host._thread_loading_progress(
+                        min(0.95, done / total if total else 1.0),
+                        status,
+                    )
+
+                progress(0, "Rendering full split-tree…")
+                full_fig = render_del_cycle_tree_figure(
+                    data,
+                    view=DelCycleTreeView.FULL,
+                    color_by_rt=color_by_rt,
+                    color_mode=color_mode,
+                    pass_pct_cutoff=pass_pct_cutoff,
+                )
+                full_path = out_dir / "split_tree_full.png"
+                full_fig.savefig(full_path, dpi=150, bbox_inches="tight", facecolor="white")
+                plt.close(full_fig)
+                written += 1
+
+                for index, bb1 in enumerate(branches, start=1):
+                    progress(
+                        index,
+                        f"Rendering branch {index:,} / {len(branches):,}: {bb1}…",
+                    )
+                    figure = render_del_cycle_tree_figure(
+                        data,
+                        view=DelCycleTreeView.BRANCH,
+                        branch_bb1=bb1,
+                        color_by_rt=color_by_rt,
+                        color_mode=color_mode,
+                        pass_pct_cutoff=pass_pct_cutoff,
+                    )
+                    bb_index = lookup_bb_display_index(
+                        bb1,
+                        data.bb_index_global,
+                        null_token=data.null_token,
+                    )
+                    safe = self._safe_export_token(bb1)
+                    prefix = (
+                        f"split_tree_bb1_{bb_index}_{safe}"
+                        if bb_index
+                        else f"split_tree_bb1_{safe}"
+                    )
+                    path = out_dir / f"{prefix}.png"
+                    figure.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+                    plt.close(figure)
+                    written += 1
+
+                host._bind_worker_callback(
+                    self._on_splittree_branch_export_ready,
+                    written,
+                    str(out_dir),
+                )
+            except LibraryOperationCancelled:
+                raise
+            except Exception as exc:
+                logger.error("Split-tree branch PNG export failed: %s", exc, exc_info=True)
+                host._bind_worker_callback(self._on_splittree_branch_export_failed, str(exc))
+
+        host._start_worker(worker)
+        host._update_action_states()
+
+    def _on_splittree_branch_export_ready(self, written: int, out_dir: str) -> None:
+        """Finish a successful multi-branch PNG export on Tk's thread."""
+        host = self._context
+        if not host._ui_is_active():
+            return
+        host._worker_thread = None
+
+        def finish() -> None:
+            if not host._ui_is_active():
+                return
+            host._hide_loading_page()
+            host._update_action_states()
+            messagebox.showinfo(
+                "Export all branches",
+                f"Saved {written:,} PNG file(s) to:\n{out_dir}",
+                parent=host,
+            )
+
+        host._schedule_on_main(finish)
+
+    def _on_splittree_branch_export_failed(self, message: str) -> None:
+        """Finish a failed multi-branch PNG export on Tk's thread."""
+        host = self._context
+        if not host._ui_is_active():
+            return
+        host._worker_thread = None
+        host._hide_loading_page()
+        host._update_action_states()
+        messagebox.showerror("Export all branches", message, parent=host)
 
     def _on_export_del_cycle_csv(self) -> None:
         """Export the current DEL analysis bundle in a background operation."""

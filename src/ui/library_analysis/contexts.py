@@ -46,7 +46,6 @@ class RtAssignmentCallbacks:
     save_pedigree: Callable[[], None]
     load_last_pedigree: Callable[[], None]
     browse_pedigree: Callable[[], None]
-    show_pedigree_help: Callable[[], None]
     run_pedigree: Callable[[], None]
     split_tree_color_mode: Callable[[], str]
     split_tree_pass_cutoff: Callable[[], float]
