@@ -854,9 +854,9 @@ class ConfigureSpreadsheetDialog(BaseWindow):
         ctk.CTkLabel(
             guide_col,
             text=(
-                "Split-tree visualization can read retention-time and null-verification metadata "
-                "from selected columns to build the tree — include those columns if you plan to "
-                "use that feature."
+                "Split-tree visualization can read retention times from a selected metadata "
+                "column and calculate null verification from those RTs — include the RT column "
+                "if you plan to use that feature."
             ),
             font=self._wizard_hint_font(),
             text_color="gray",

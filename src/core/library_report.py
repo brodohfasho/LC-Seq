@@ -252,7 +252,7 @@ def _append_splittree_session_section(
     config_rows = [
         ["RT source", artifact.rt_source],
         ["RT column", artifact.rt_column or "—"],
-        ["Verification column", artifact.verified_column or "—"],
+        ["Null verification", "Calculated from RT values"],
         ["Isoform", artifact.isoform],
         ["View", artifact.view_mode],
         ["Branch BB1", artifact.branch_bb1 or "—"],
@@ -583,7 +583,13 @@ def generate_library_report_pdf(
             ]
         )
         if qc_opts.peak_picking_algorithm == "modern":
-            summary_rows.append(["QC peak significance α", f"{qc_opts.alpha:g}"])
+            summary_rows.extend(
+                [
+                    ["QC peak significance α", f"{qc_opts.alpha:g}"],
+                    ["QC min prominence", f"{qc_opts.min_prominence:g}"],
+                    ["QC min % area", f"{qc_opts.min_pct_area:g}"],
+                ]
+            )
     summary_rows.append(["Count channels", ", ".join(snapshot.selected_channels) or "—"])
     sections = []
     if opts.include_metrics:

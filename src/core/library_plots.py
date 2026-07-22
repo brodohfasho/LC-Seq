@@ -405,7 +405,12 @@ def _render_total_count_per_fraction(
 def _signal_plot_suffix(options: SignalQualityComputeOptions) -> str:
     if options.peak_picking_algorithm == "old_school":
         return "old-school Gaussian"
-    return f"α={options.alpha:g}"
+    parts = [f"α={options.alpha:g}"]
+    if options.min_prominence > 0:
+        parts.append(f"min prom={options.min_prominence:g}")
+    if options.min_pct_area > 0:
+        parts.append(f"min % area={options.min_pct_area:g}")
+    return ", ".join(parts)
 
 
 def _signal_stats_for_channel(

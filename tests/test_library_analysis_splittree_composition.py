@@ -68,7 +68,7 @@ def test_generate_blocks_unvalidated_metadata_selection(monkeypatch) -> None:
 
     assert calls == []
     assert notices
-    assert "Validate both" in notices[0]
+    assert "Validate the selected spreadsheet RT column" in notices[0]
 
 
 def test_generate_reuses_session_before_rebuilding() -> None:
@@ -102,28 +102,10 @@ def test_rt_status_reports_selected_column_coverage() -> None:
     )
 
 
-def test_verified_status_distinguishes_unvalidated_column() -> None:
-    discovered = [
-        MetadataRtColumnInfo(
-            column_name="Null verified",
-            n_numeric_values=0,
-            n_compounds_scanned=0,
-        )
-    ]
-
-    status = SplitTreePanel._format_splittree_verified_column_status(
-        discovered,
-        selected="Null verified",
-    )
-
-    assert status == "“Null verified”: not validated yet."
-
-
-def test_metadata_validation_requires_both_selected_column_roles() -> None:
-    """RT and verification columns must each contain values usable by the tree."""
+def test_metadata_validation_accepts_numeric_rt_column_with_bb_positions() -> None:
+    """The selected RT column must contain numeric values on usable library rows."""
     selection = _MetadataValidationSelection(
         rt_column="Assigned RT",
-        verified_column="Null verified",
         isoform="All",
     )
     validated = [
@@ -132,25 +114,16 @@ def test_metadata_validation_requires_both_selected_column_roles() -> None:
             n_numeric_values=12,
             n_compounds_scanned=20,
             n_with_bb_positions=10,
-        ),
-        MetadataRtColumnInfo(
-            column_name="Null verified",
-            n_numeric_values=0,
-            n_compounds_scanned=20,
-            n_verified_values=8,
-            n_verified_with_bb_positions=8,
-            n_verified_full_products=8,
         ),
     ]
 
     assert SplitTreePanel._metadata_validation_error(selection, validated) is None
 
 
-def test_metadata_validation_rejects_verification_without_full_products() -> None:
-    """Pass/fail values on truncations cannot color full-product tree leaves."""
+def test_metadata_validation_rejects_rt_column_without_usable_rows() -> None:
+    """Numeric values must occur on rows with configured BB positions."""
     selection = _MetadataValidationSelection(
         rt_column="Assigned RT",
-        verified_column="Null verified",
         isoform="All",
     )
     validated = [
@@ -158,19 +131,11 @@ def test_metadata_validation_rejects_verification_without_full_products() -> Non
             column_name="Assigned RT",
             n_numeric_values=12,
             n_compounds_scanned=20,
-            n_with_bb_positions=10,
-        ),
-        MetadataRtColumnInfo(
-            column_name="Null verified",
-            n_numeric_values=0,
-            n_compounds_scanned=20,
-            n_verified_values=4,
-            n_verified_with_bb_positions=4,
-            n_verified_full_products=0,
+            n_with_bb_positions=0,
         ),
     ]
 
     error = SplitTreePanel._metadata_validation_error(selection, validated)
 
     assert error is not None
-    assert "full-product rows" in error
+    assert "BB positions" in error

@@ -78,7 +78,6 @@ class SplittreeVizReportArtifact:
     caption: str
     rt_source: str
     rt_column: str
-    verified_column: str
     isoform: str
     view_mode: str
     branch_bb1: str

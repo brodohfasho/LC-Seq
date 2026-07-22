@@ -292,7 +292,7 @@ class QcPanel:
         qc_alpha_lbl = ctk.CTkLabel(qc_modern_col, text="Peak significance α")
         qc_alpha_lbl.pack(anchor="w", padx=6)
         qc_alpha_entry = ctk.CTkEntry(qc_modern_col, textvariable=self._context._qc_alpha_var)
-        qc_alpha_entry.pack(fill="x", padx=6, pady=(2, 8))
+        qc_alpha_entry.pack(fill="x", padx=6, pady=(2, 4))
         attach_tooltip(
             qc_alpha_entry,
             "α for significant-peak metrics and signal plots. A local maximum counts as "
@@ -300,7 +300,41 @@ class QcPanel:
             "fewer significant peaks.",
         )
         self._context._busy_sensitive_widgets.append(qc_alpha_entry)
-        self._context._qc_modern_widgets.extend([qc_modern_hdr, qc_alpha_lbl, qc_alpha_entry])
+        qc_prom_lbl = ctk.CTkLabel(qc_modern_col, text="Min prominence")
+        qc_prom_lbl.pack(anchor="w", padx=6)
+        qc_prom_entry = ctk.CTkEntry(
+            qc_modern_col, textvariable=self._context._qc_min_prominence_var
+        )
+        qc_prom_entry.pack(fill="x", padx=6, pady=(2, 4))
+        attach_tooltip(
+            qc_prom_entry,
+            "Drop detected peaks below this prominence before QC counting/ranking "
+            "(0 = off). Applies to significant-peaks-per-entry and other peak-list metrics.",
+        )
+        self._context._busy_sensitive_widgets.append(qc_prom_entry)
+        qc_pct_lbl = ctk.CTkLabel(qc_modern_col, text="Min % area")
+        qc_pct_lbl.pack(anchor="w", padx=6)
+        qc_pct_entry = ctk.CTkEntry(
+            qc_modern_col, textvariable=self._context._qc_min_pct_area_var
+        )
+        qc_pct_entry.pack(fill="x", padx=6, pady=(2, 8))
+        attach_tooltip(
+            qc_pct_entry,
+            "Drop detected peaks below this share of total detected peak area "
+            "(0 = off). Same post-filter as RT assignment.",
+        )
+        self._context._busy_sensitive_widgets.append(qc_pct_entry)
+        self._context._qc_modern_widgets.extend(
+            [
+                qc_modern_hdr,
+                qc_alpha_lbl,
+                qc_alpha_entry,
+                qc_prom_lbl,
+                qc_prom_entry,
+                qc_pct_lbl,
+                qc_pct_entry,
+            ]
+        )
 
         qc_old_hdr = ctk.CTkLabel(
             qc_old_col, text="Old-school", font=ctk.CTkFont(size=10, weight="bold")
@@ -428,6 +462,9 @@ class QcPanel:
         self._context._qc_time_unit_var.set(unit)
         self._context._qc_alpha_var.set(str(DEFAULT_SIGNAL_QUALITY_ALPHA))
         self._context._qc_picker_algorithm_var.set("modern")
+        prom, pct = AnalysisSettings.default_quality_params()
+        self._context._qc_min_prominence_var.set(str(prom))
+        self._context._qc_min_pct_area_var.set(str(pct))
         self._apply_qc_gaussian_defaults(unit)
         self._sync_qc_picker_widgets()
 
@@ -441,6 +478,9 @@ class QcPanel:
 
     def _restore_qc_picker_defaults(self) -> None:
         self._context._qc_alpha_var.set(str(AnalysisSettings.default_modern_alpha()))
+        prom, pct = AnalysisSettings.default_quality_params()
+        self._context._qc_min_prominence_var.set(str(prom))
+        self._context._qc_min_pct_area_var.set(str(pct))
         self._apply_qc_gaussian_defaults(self._context._qc_time_unit_var.get())
         self._sync_qc_picker_widgets()
 
@@ -643,15 +683,66 @@ class QcPanel:
                     parent=self,
                 )
                 return None
+        quality = self._parse_qc_quality_params()
+        if quality is None:
+            return None
+        min_prominence, min_pct_area = quality
         return SignalQualityComputeOptions(
             peak_picking_algorithm=algorithm,
             alpha=alpha,
             time_unit=time_unit,  # type: ignore[arg-type]
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
             gaussian_min_height_factor=gaussian_min_height_factor,
             gaussian_fit_width=gaussian_fit_width,
             gaussian_stddev_threshold=gaussian_stddev_threshold,
             gaussian_minimum_rt=gaussian_minimum_rt,
         )
+
+    def _parse_qc_quality_params(self) -> Optional[Tuple[float, float]]:
+        try:
+            min_prominence = float(self._context._qc_min_prominence_var.get().strip())
+        except ValueError:
+            messagebox.showerror(
+                "Library Analysis",
+                "Min prominence must be a number (0 = off).",
+                parent=self,
+            )
+            return None
+        try:
+            min_pct_area = float(self._context._qc_min_pct_area_var.get().strip())
+        except ValueError:
+            messagebox.showerror(
+                "Library Analysis",
+                "Min % area must be a number (0 = off).",
+                parent=self,
+            )
+            return None
+        if min_prominence < 0:
+            messagebox.showerror(
+                "Library Analysis",
+                "Min prominence must be >= 0.",
+                parent=self,
+            )
+            return None
+        if min_pct_area < 0 or min_pct_area > 100:
+            messagebox.showerror(
+                "Library Analysis",
+                "Min % area must be between 0 and 100.",
+                parent=self,
+            )
+            return None
+        return (min_prominence, min_pct_area)
+
+    def _peek_qc_quality_params(self) -> Tuple[float, float]:
+        try:
+            min_prominence = float(self._context._qc_min_prominence_var.get().strip())
+            min_pct_area = float(self._context._qc_min_pct_area_var.get().strip())
+        except ValueError:
+            return (0.0, 0.0)
+        if min_prominence < 0 or min_pct_area < 0 or min_pct_area > 100:
+            return (0.0, 0.0)
+        return (min_prominence, min_pct_area)
 
     def _peek_qc_signal_settings(self) -> Optional[SignalQualityComputeOptions]:
         algorithm = self._context._qc_picker_algorithm_var.get()
@@ -675,10 +766,13 @@ class QcPanel:
                 return None
             if alpha <= 0.0 or alpha >= 1.0:
                 return None
+        min_prominence, min_pct_area = self._peek_qc_quality_params()
         return SignalQualityComputeOptions(
             peak_picking_algorithm=algorithm,
             alpha=alpha,
             time_unit=time_unit,  # type: ignore[arg-type]
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
             gaussian_min_height_factor=gaussian_min_height_factor,
             gaussian_fit_width=gaussian_fit_width,
             gaussian_stddev_threshold=gaussian_stddev_threshold,
@@ -688,6 +782,8 @@ class QcPanel:
     def _apply_qc_settings_to_form(self, options: SignalQualityComputeOptions) -> None:
         self._context._qc_picker_algorithm_var.set(options.peak_picking_algorithm)
         self._context._qc_alpha_var.set(str(options.alpha))
+        self._context._qc_min_prominence_var.set(str(options.min_prominence))
+        self._context._qc_min_pct_area_var.set(str(options.min_pct_area))
         self._context._qc_time_unit_var.set(options.time_unit)
         self._context._qc_gaussian_height_var.set(str(options.gaussian_min_height_factor))
         self._context._qc_gaussian_fit_width_var.set(str(options.gaussian_fit_width))
@@ -1470,11 +1566,15 @@ class QcPanel:
                 "scan in memory" if scan is not None else "metrics/plots only (rescan to refresh)"
             )
             qc_opts = snapshot.signal_quality_options
-            picker_note = (
-                f"picker: {qc_opts.picker_label()}"
-                if qc_opts.peak_picking_algorithm == "old_school"
-                else f"α: {qc_opts.alpha:g}"
-            )
+            if qc_opts.peak_picking_algorithm == "old_school":
+                picker_note = f"picker: {qc_opts.picker_label()}"
+            else:
+                filter_bits = [f"α: {qc_opts.alpha:g}"]
+                if qc_opts.min_prominence > 0:
+                    filter_bits.append(f"prom≥{qc_opts.min_prominence:g}")
+                if qc_opts.min_pct_area > 0:
+                    filter_bits.append(f"%area≥{qc_opts.min_pct_area:g}")
+                picker_note = ", ".join(filter_bits)
             self._context._status_label.configure(
                 text=(
                     f"Processed: {stamp}  ·  Database: {snapshot.database_name} "
@@ -1598,9 +1698,20 @@ class QcPanel:
                     "σ-clipped median (iteratively drop points above mean+2σ)."
                 )
             else:
+                filter_bits: List[str] = []
+                if qc_opts.min_prominence > 0:
+                    filter_bits.append(f"prominence ≥ {qc_opts.min_prominence:g}")
+                if qc_opts.min_pct_area > 0:
+                    filter_bits.append(f"% area ≥ {qc_opts.min_pct_area:g}")
+                filter_clause = (
+                    f" After detection, peaks must also pass {', '.join(filter_bits)}."
+                    if filter_bits
+                    else ""
+                )
                 signal_note = (
                     "Signal-quality metrics (significant peaks): peak height, SNR, and dynamic "
-                    "range use the tallest peak with p-value < α from the modern peak picker. "
+                    "range use the tallest peak with p-value < α from the modern peak picker."
+                    f"{filter_clause} "
                     "Baseline μ and σ come from a σ-clipped median "
                     f"(iteratively drop points above mean+2σ). α = {qc_opts.alpha:g}."
                 )

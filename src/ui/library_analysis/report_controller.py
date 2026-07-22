@@ -209,11 +209,6 @@ class ReportController:
         rt_column = (
             self._context._splittree_metadata_rt_column_var.get().strip() if metadata_mode else ""
         )
-        verified_column = (
-            self._context._splittree_metadata_verified_column_var.get().strip()
-            if metadata_mode
-            else ""
-        )
         caption = (
             f"Split-tree — {data.n_verified:,} verified of "
             f"{len(data.verified_sequences):,} products "
@@ -225,7 +220,6 @@ class ReportController:
             caption=caption,
             rt_source=rt_source,
             rt_column=rt_column,
-            verified_column=verified_column,
             isoform=isoform,
             view_mode=view_mode,
             branch_bb1=selected_branch if branch_mode else "",
@@ -381,6 +375,8 @@ class ReportController:
             ),
             qc_peak_picking_algorithm=qc_opts.peak_picking_algorithm,
             qc_signal_quality_alpha=qc_opts.alpha,
+            qc_min_prominence=qc_opts.min_prominence,
+            qc_min_pct_area=qc_opts.min_pct_area,
             qc_time_unit=qc_opts.time_unit,
             qc_gaussian_min_height_factor=qc_opts.gaussian_min_height_factor,
             qc_gaussian_fit_width=qc_opts.gaussian_fit_width,
@@ -424,7 +420,6 @@ class ReportController:
             rt_analysis_mode=rt_assignment.analysis_mode if rt_assignment is not None else "",
             splittree_rt_source=splittree.rt_source if splittree is not None else "",
             splittree_rt_column=splittree.rt_column if splittree is not None else "",
-            splittree_verified_column=splittree.verified_column if splittree is not None else "",
             splittree_isoform=splittree.isoform if splittree is not None else "All",
             splittree_view_mode=splittree.view_mode if splittree is not None else "",
             del_color_mode=(

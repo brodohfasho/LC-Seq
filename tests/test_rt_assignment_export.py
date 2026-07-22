@@ -11,8 +11,6 @@ from src.core.rt_assignment_export import (
     assigned_rt_column_name,
     export_rt_analysis_from_database,
     format_null_rt_verified,
-    parse_null_rt_verified_metadata,
-    build_verification_overrides_from_metadata,
 )
 from src.models.compound import Compound
 from src.models.spreadsheet_config import SpreadsheetConfig
@@ -32,13 +30,6 @@ def _config() -> SpreadsheetConfig:
         null_token="AgxNull",
         selected_metadata_columns=["BB1", "BB2", "BB3", "Isoform"],
     )
-
-
-def test_parse_null_rt_verified_metadata_accepts_export_tokens() -> None:
-    assert parse_null_rt_verified_metadata("TRUE") is True
-    assert parse_null_rt_verified_metadata("FALSE") is False
-    assert parse_null_rt_verified_metadata("pass") is True
-    assert parse_null_rt_verified_metadata("") is None
 
 
 def test_export_from_database_rows_includes_rt_and_verification(tmp_path) -> None:
@@ -79,27 +70,6 @@ def test_export_from_database_rows_includes_rt_and_verification(tmp_path) -> Non
     assert df.loc[0, assigned_rt_column_name("minutes")] == 15.0
     assert str(df.loc[0, EXPORT_NULL_RT_VERIFIED_COLUMN]).upper() == "TRUE"
     assert df.loc[0, "null_rt_threshold"] == 0.5
-
-
-def test_build_verification_overrides_from_metadata() -> None:
-    config = _config()
-    compounds = [
-        Compound(
-            compound_id="ProdA",
-            metadata={
-                "BB1": "A",
-                "BB2": "B",
-                "BB3": "C",
-                EXPORT_NULL_RT_VERIFIED_COLUMN: "FALSE",
-            },
-        )
-    ]
-    overrides = build_verification_overrides_from_metadata(
-        compounds,
-        config,
-        column=EXPORT_NULL_RT_VERIFIED_COLUMN,
-    )
-    assert overrides[("A", "B", "C")] is False
 
 
 def test_build_assignments_from_del_cycle_tree() -> None:

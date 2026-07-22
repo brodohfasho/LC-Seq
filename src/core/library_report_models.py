@@ -107,6 +107,8 @@ class LibraryReportAuditTrail:
     fraction_count: int = 96
     qc_peak_picking_algorithm: str = "modern"
     qc_signal_quality_alpha: float = 0.001
+    qc_min_prominence: float = 0.0
+    qc_min_pct_area: float = 0.0
     qc_time_unit: str = "seconds"
     qc_gaussian_min_height_factor: float = 0.35
     qc_gaussian_fit_width: float = 30.0
@@ -131,7 +133,6 @@ class LibraryReportAuditTrail:
     rt_analysis_mode: str = ""
     splittree_rt_source: str = ""
     splittree_rt_column: str = ""
-    splittree_verified_column: str = ""
     splittree_isoform: str = "All"
     splittree_view_mode: str = ""
     del_color_mode: str = "notebook"
@@ -176,8 +177,12 @@ class LibraryReportAuditTrail:
                     ]
                 )
             else:
-                rows.append(
-                    ["QC peak significance α", f"{self.qc_signal_quality_alpha:g}"]
+                rows.extend(
+                    [
+                        ["QC peak significance α", f"{self.qc_signal_quality_alpha:g}"],
+                        ["QC min prominence", f"{self.qc_min_prominence:g}"],
+                        ["QC min % area", f"{self.qc_min_pct_area:g}"],
+                    ]
                 )
         if opts.include_plots:
             rows.extend(
@@ -226,7 +231,7 @@ class LibraryReportAuditTrail:
                 [
                     ["Split-tree RT source", self.splittree_rt_source or "—"],
                     ["Split-tree RT column", self.splittree_rt_column or "—"],
-                    ["Split-tree verification column", self.splittree_verified_column or "—"],
+                    ["Split-tree null verification", "Calculated from RT values"],
                     ["Split-tree isoform", self.splittree_isoform or "—"],
                     ["Split-tree view", self.splittree_view_mode or "—"],
                     ["DEL color mode", self.del_color_mode],

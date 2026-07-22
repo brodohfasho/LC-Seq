@@ -511,7 +511,7 @@ def test_build_del_cycle_rows_skips_metadata_when_disabled() -> None:
     assert resolution_fresh.n_rt_from_peak_pick == 1
 
 
-def test_validate_registered_metadata_columns_counts_verification_values() -> None:
+def test_validate_registered_metadata_columns_counts_only_numeric_rt_values() -> None:
     from src.core.del_cycle_tree.service import validate_registered_metadata_columns
     from src.models.compound import Compound
     from src.models.spreadsheet_config import SpreadsheetConfig
@@ -554,12 +554,83 @@ def test_validate_registered_metadata_columns_counts_verification_values() -> No
     rt_info = next(info for info in validated if info.column_name == "assigned_rt")
     verify_info = next(info for info in validated if info.column_name == "verify_status")
     assert rt_info.n_numeric_values == 2
-    assert verify_info.n_verified_values == 2
-    assert verify_info.n_verified_with_bb_positions == 2
-    assert verify_info.n_verified_full_products == 2
+    assert rt_info.n_with_bb_positions == 2
+    assert verify_info.n_numeric_values == 0
 
 
-def test_metadata_tree_uses_user_verified_column_override() -> None:
+def test_infer_metadata_rt_time_unit_from_column_header() -> None:
+    from src.core.del_cycle_tree.service import infer_metadata_rt_time_unit
+
+    assert infer_metadata_rt_time_unit("Cyclized RT (min)", fallback="seconds") == "minutes"
+    assert infer_metadata_rt_time_unit("assigned_rt (s)", fallback="minutes") == "seconds"
+    assert infer_metadata_rt_time_unit("product_rt", fallback="minutes") == "minutes"
+    assert infer_metadata_rt_time_unit("product_rt", fallback="seconds") == "seconds"
+
+
+def test_metadata_tree_converts_minute_column_to_seconds_threshold_unit() -> None:
+    """Minute-scale spreadsheet RTs must not be verified against a seconds threshold."""
+    from src.core.del_cycle_tree.service import build_del_cycle_tree_from_metadata_column
+    from src.models.compound import Compound
+    from src.models.spreadsheet_config import SpreadsheetConfig
+
+    null = "AgxNull"
+    config = SpreadsheetConfig(
+        compound_id_column="Name",
+        chromatographic_data_column="Chromatogram",
+        delimiters=[","],
+        time_column_index=0,
+        count_column_indices=[1],
+        count_names=["Count"],
+        library_cycle_count=3,
+        bb_position_columns=["BB1", "BB2", "BB3", ""],
+        null_token=null,
+        selected_metadata_columns=["Cyclized RT (min)"],
+        analysis_time_unit="seconds",
+    )
+    compounds = [
+        Compound(
+            compound_id="ProdA",
+            metadata={
+                "BB1": "A",
+                "BB2": "B",
+                "BB3": "C",
+                "Cyclized RT (min)": 12.0,
+            },
+        ),
+        Compound(
+            compound_id="TruncC",
+            metadata={
+                "BB1": null,
+                "BB2": null,
+                "BB3": "C",
+                "Cyclized RT (min)": 5.0,
+            },
+        ),
+        Compound(
+            compound_id="FullNull",
+            metadata={
+                "BB1": null,
+                "BB2": null,
+                "BB3": null,
+                "Cyclized RT (min)": 3.0,
+            },
+        ),
+    ]
+
+    # Without conversion this would fail: abs(12-5) <= 30.
+    data = build_del_cycle_tree_from_metadata_column(
+        compounds,
+        config,
+        "Cyclized RT (min)",
+        rt_threshold=30.0,
+        time_unit="seconds",
+    )
+    assert data.verified_sequences[("A", "B", "C")].success is True
+    # Converted product RT is 12 min → 720 s.
+    assert data.verified_sequences[("A", "B", "C")].rt == 720.0
+
+
+def test_metadata_tree_ignores_precomputed_binary_verification() -> None:
     from src.core.del_cycle_tree.service import build_del_cycle_tree_from_metadata_column
     from src.models.compound import Compound
     from src.models.spreadsheet_config import SpreadsheetConfig
@@ -592,10 +663,9 @@ def test_metadata_tree_uses_user_verified_column_override() -> None:
         compounds,
         config,
         "assigned_rt",
-        verified_column="custom_verify",
         rt_threshold=0.5,
     )
-    assert data.verified_sequences[("A", "B", "C")].success is False
+    assert data.verified_sequences[("A", "B", "C")].success is True
 
 
 def test_build_del_cycle_tree_from_session_cache_all_returns_same_object() -> None:

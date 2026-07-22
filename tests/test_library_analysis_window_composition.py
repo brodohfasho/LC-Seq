@@ -256,10 +256,12 @@ def test_splittree_sidebar_separates_data_and_display_controls() -> None:
         "def _build_display_controls", maxsplit=1
     )[0]
 
-    assert 'text="1. Plot data"' in sidebar_method
-    assert 'text="2. Active plot parameters"' in sidebar_method
-    assert sidebar_method.index('text="1. Plot data"') < sidebar_method.index(
-        'text="2. Active plot parameters"'
+    assert 'text="Plot data"' in sidebar_method
+    assert 'text="Active plot parameters"' in sidebar_method
+    assert "spreadsheet retention times" in sidebar_method
+    assert "null RT threshold and time unit" in sidebar_method
+    assert sidebar_method.index('text="Plot data"') < sidebar_method.index(
+        'text="Active plot parameters"'
     )
     assert "self._build_display_controls(display_controls)" in sidebar_method
     assert "self._build_display_controls" not in tab_method

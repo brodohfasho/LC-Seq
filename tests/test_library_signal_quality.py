@@ -58,6 +58,54 @@ class TestComputeEntrySignalStats:
         entry = _flat_entry("C", [1.0, 2.0])
         assert compute_entry_signal_stats(entry, "Count") is None
 
+    def test_min_prominence_reduces_significant_peak_count(self) -> None:
+        # Two well-separated spikes on a flat baseline; both pass a loose α.
+        counts = [1.0] * 5 + [80.0] + [1.0] * 8 + [25.0] + [1.0] * 5
+        entry = _flat_entry("D", counts)
+        unfiltered = compute_entry_signal_stats(
+            entry,
+            "Count",
+            options=SignalQualityComputeOptions(alpha=0.05),
+        )
+        filtered = compute_entry_signal_stats(
+            entry,
+            "Count",
+            options=SignalQualityComputeOptions(alpha=0.05, min_prominence=40.0),
+        )
+        assert unfiltered is not None and filtered is not None
+        assert unfiltered.significant_peak_count >= 2
+        assert filtered.significant_peak_count < unfiltered.significant_peak_count
+        assert filtered.significant_peak_count >= 1
+        assert filtered.tallest_significant_peak_height == pytest.approx(80.0)
+
+    def test_min_pct_area_reduces_significant_peak_count(self) -> None:
+        counts = [1.0] * 5 + [80.0] + [1.0] * 8 + [25.0] + [1.0] * 5
+        entry = _flat_entry("E", counts)
+        unfiltered = compute_entry_signal_stats(
+            entry,
+            "Count",
+            options=SignalQualityComputeOptions(alpha=0.05),
+        )
+        filtered = compute_entry_signal_stats(
+            entry,
+            "Count",
+            options=SignalQualityComputeOptions(alpha=0.05, min_pct_area=50.0),
+        )
+        assert unfiltered is not None and filtered is not None
+        assert unfiltered.significant_peak_count >= 2
+        assert filtered.significant_peak_count < unfiltered.significant_peak_count
+
+    def test_options_to_analysis_settings_passes_quality_filters(self) -> None:
+        opts = SignalQualityComputeOptions(
+            alpha=0.01, min_prominence=5.0, min_pct_area=3.0
+        )
+        settings = opts.to_analysis_settings("Count")
+        assert settings.min_prominence == 5.0
+        assert settings.min_pct_area == 3.0
+        assert settings.alpha == 0.01
+        assert "5" in str(opts.cache_key())
+        assert opts.cache_key() != SignalQualityComputeOptions(alpha=0.01).cache_key()
+
 
 class TestLibraryAggregates:
     def test_mean_snr_excess_from_scan(self) -> None:
@@ -103,6 +151,8 @@ class TestExportCsv:
         )
         text = out.read_text(encoding="utf-8-sig")
         assert "signal_quality_alpha=0.05" in text
+        assert "min_prominence=" in text
+        assert "min_pct_area=" in text
         with out.open(encoding="utf-8-sig") as fh:
             lines = [line for line in fh if not line.startswith("#")]
         import io

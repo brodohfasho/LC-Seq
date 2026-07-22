@@ -122,6 +122,8 @@ class LibraryDataWindow(BaseWindow):
         self._fraction_count_var = tk.StringVar(value=str(DEFAULT_FRACTION_COUNT))
         self._qc_picker_algorithm_var = tk.StringVar(value="modern")
         self._qc_alpha_var = tk.StringVar(value=str(DEFAULT_SIGNAL_QUALITY_ALPHA))
+        self._qc_min_prominence_var = tk.StringVar(value="5")
+        self._qc_min_pct_area_var = tk.StringVar(value="3")
         self._qc_time_unit_var = tk.StringVar(value="seconds")
         self._qc_gaussian_height_var = tk.StringVar(value="0.35")
         self._qc_gaussian_fit_width_var = tk.StringVar(value="30")

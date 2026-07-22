@@ -43,11 +43,7 @@ from src.core.lineage_service import (
 )
 from src.core.pedigree_adapter import filter_compounds_by_variant
 from src.core.pedigree_export import chosen_rt_for_record, positions_n_to_c_from_record
-from src.core.rt_assignment_export import (
-    build_verification_overrides_from_metadata,
-    parse_null_rt_verified_metadata,
-)
-from src.core.time_display import convert_time_series
+from src.core.time_display import convert_time_series, convert_time_value
 from src.models.analysis_settings import AnalysisSettings, TimeUnit
 from src.models.compound import Compound
 from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeNodeRecord
@@ -204,6 +200,40 @@ def rt_from_metadata_column(compound: Compound, column_name: str) -> Optional[fl
     return parsed if _is_valid_metadata_rt(parsed) else None
 
 
+def infer_metadata_rt_time_unit(
+    column_name: str,
+    *,
+    fallback: TimeUnit,
+) -> TimeUnit:
+    """
+    Infer the time unit of a spreadsheet RT column from its header.
+
+    Recognizes common export suffixes such as ``(min)`` / ``(s)``. When the
+    header does not encode a unit, ``fallback`` is returned (typically the
+    spreadsheet ``analysis_time_unit``).
+    """
+    lowered = str(column_name).strip().lower()
+    if "(min)" in lowered or "(minutes)" in lowered:
+        return "minutes"
+    if "(s)" in lowered or "(sec)" in lowered or "(seconds)" in lowered:
+        return "seconds"
+    return "minutes" if fallback == "minutes" else "seconds"
+
+
+def metadata_columns_for_split_tree(config: SpreadsheetConfig) -> List[str]:
+    """Metadata columns required to resolve BB positions, isoform, and RT values."""
+    columns: List[str] = []
+    for name in (
+        *(config.selected_metadata_columns or []),
+        *config.active_bb_position_columns(),
+        str(config.compound_variant_column or "").strip(),
+    ):
+        column = str(name).strip()
+        if column and column not in columns:
+            columns.append(column)
+    return columns
+
+
 def registered_metadata_column_names(config: SpreadsheetConfig) -> List[str]:
     """Return configured metadata columns in spreadsheet order (no name heuristics)."""
     exclude = {
@@ -228,10 +258,10 @@ def validate_registered_metadata_columns(
     config: SpreadsheetConfig,
 ) -> List[MetadataRtColumnInfo]:
     """
-    Count usable RT and pass/fail values for each registered metadata column.
+    Count usable RT values for each registered metadata column.
 
-    Counts also track BB-position coverage and pass/fail values on full products.
-    The function does not infer or rank columns by name.
+    Counts also track BB-position coverage. The function does not infer or rank
+    columns by name.
     """
     columns = registered_metadata_column_names(config)
     if not columns:
@@ -239,29 +269,16 @@ def validate_registered_metadata_columns(
 
     numeric_counts = {column: 0 for column in columns}
     bb_counts = {column: 0 for column in columns}
-    verified_counts = {column: 0 for column in columns}
-    verified_bb_counts = {column: 0 for column in columns}
-    verified_full_product_counts = {column: 0 for column in columns}
     n_scanned = len(compounds)
-    null_token = normalize_bb_name(config.null_token)
 
     for compound in compounds:
         positions = positions_c_to_n(compound, config)
         has_bb = positions is not None
-        is_full_product = has_bb and all(
-            normalize_bb_name(bb) != null_token for bb in positions
-        )
         for column in columns:
             if rt_from_metadata_column(compound, column) is not None:
                 numeric_counts[column] += 1
                 if has_bb:
                     bb_counts[column] += 1
-            if parse_null_rt_verified_metadata(compound.metadata.get(column)) is not None:
-                verified_counts[column] += 1
-                if has_bb:
-                    verified_bb_counts[column] += 1
-                if is_full_product:
-                    verified_full_product_counts[column] += 1
 
     return [
         MetadataRtColumnInfo(
@@ -269,9 +286,6 @@ def validate_registered_metadata_columns(
             n_numeric_values=numeric_counts[column],
             n_compounds_scanned=n_scanned,
             n_with_bb_positions=bb_counts[column],
-            n_verified_values=verified_counts[column],
-            n_verified_with_bb_positions=verified_bb_counts[column],
-            n_verified_full_products=verified_full_product_counts[column],
         )
         for column in columns
     ]
@@ -304,11 +318,18 @@ def build_del_cycle_rows_from_metadata_column(
     config: SpreadsheetConfig,
     rt_column: str,
     *,
+    rt_source_unit: TimeUnit = "seconds",
+    rt_target_unit: TimeUnit = "seconds",
     progress_callback: Optional[ProgressCallback] = None,
     progress_start: float = _LOAD_PROGRESS_END,
     progress_end: float = _RT_PROGRESS_END,
 ) -> Tuple[List[DelCycleRow], DelCycleRtResolution]:
-    """Build DEL rows using only the selected spreadsheet RT column (no peak pick)."""
+    """Build DEL rows using only the selected spreadsheet RT column (no peak pick).
+
+    Retention times are converted from ``rt_source_unit`` (column / spreadsheet
+    unit) into ``rt_target_unit`` so null verification can use the same unit as
+    the RT-assignment null threshold.
+    """
     column = str(rt_column).strip()
     if not column:
         raise ValueError("Select a spreadsheet RT column before generating the split-tree.")
@@ -328,7 +349,8 @@ def build_del_cycle_rows_from_metadata_column(
         if rt is None:
             n_skipped_empty_rt += 1
             continue
-        rows.append(DelCycleRow(positions=positions, rt=float(rt)))
+        converted = convert_time_value(float(rt), rt_source_unit, rt_target_unit)
+        rows.append(DelCycleRow(positions=positions, rt=converted))
 
         if progress_callback is not None and (index % 500 == 0 or index == total):
             sub = index / total if total else 1.0
@@ -363,18 +385,21 @@ def build_del_cycle_tree_from_metadata_column(
     config: SpreadsheetConfig,
     rt_column: str,
     *,
-    verified_column: str,
     rt_threshold: float,
+    time_unit: TimeUnit = "seconds",
     isoform_label: str = "All",
     progress_callback: Optional[ProgressCallback] = None,
 ) -> DelCycleTreeData:
     """
     Build a split-tree from spreadsheet RT metadata only.
 
-    Skips peak picking / pedigree RT assignment but still runs notebook null
-    verification (``verify_reaction_sequences_notebook``). Pass/fail coloring
-    for full products uses ``verified_column`` when present; truncation
-    intermediates must have RT values in ``rt_column`` for verification to work.
+    Skips peak picking and pedigree RT assignment. Null verification is always
+    calculated from RT values by ``verify_reaction_sequences_notebook``;
+    truncation intermediates must therefore have values in ``rt_column``.
+
+    Spreadsheet RT values are converted into ``time_unit`` (the unit of
+    ``rt_threshold``) before verification so minute-scale columns are not
+    compared against a seconds-scale null threshold.
     """
     if not config.pedigree_configured():
         raise ValueError("BB position columns must be configured for split-tree analysis.")
@@ -384,21 +409,25 @@ def build_del_cycle_tree_from_metadata_column(
         None if isoform_label.strip().lower() == "all" else [isoform_label],
     )
     index_discovery_rows = index_discovery_rows_from_compounds(filtered, config)
+    stored_unit: TimeUnit = (
+        "minutes" if config.analysis_time_unit == "minutes" else "seconds"
+    )
+    source_unit = infer_metadata_rt_time_unit(rt_column, fallback=stored_unit)
     _report_fraction(
         progress_callback,
         _LOAD_PROGRESS_END,
-        f"Reading RT column “{rt_column}” for {len(filtered):,} compound(s)…",
+        (
+            f"Reading RT column “{rt_column}” ({source_unit}) for "
+            f"{len(filtered):,} compound(s)…"
+        ),
     )
     rows, resolution = build_del_cycle_rows_from_metadata_column(
         filtered,
         config,
         rt_column,
+        rt_source_unit=source_unit,
+        rt_target_unit=time_unit,
         progress_callback=progress_callback,
-    )
-    verification_overrides = build_verification_overrides_from_metadata(
-        filtered,
-        config,
-        column=verified_column,
     )
     return _finalize_del_cycle_tree(
         rows,
@@ -407,7 +436,6 @@ def build_del_cycle_tree_from_metadata_column(
         rt_source=resolution.rt_source,
         rt_resolution=resolution,
         index_discovery_rows=index_discovery_rows,
-        verification_success_overrides=verification_overrides or None,
         progress_callback=progress_callback,
     )
 
@@ -417,8 +445,8 @@ def build_del_cycle_tree_from_metadata_for_path(
     config: SpreadsheetConfig,
     rt_column: str,
     *,
-    verified_column: str,
     rt_threshold: float,
+    time_unit: TimeUnit = "seconds",
     isoform_label: str = "All",
     progress_callback: Optional[ProgressCallback] = None,
 ) -> DelCycleTreeData:
@@ -435,15 +463,15 @@ def build_del_cycle_tree_from_metadata_for_path(
 
         compounds = load_all_compound_metadata(
             store,
-            metadata_columns=config.selected_metadata_columns,
+            metadata_columns=metadata_columns_for_split_tree(config),
             progress_callback=load_progress,
         )
         return build_del_cycle_tree_from_metadata_column(
             compounds,
             config,
             rt_column,
-            verified_column=verified_column,
             rt_threshold=rt_threshold,
+            time_unit=time_unit,
             isoform_label=isoform_label,
             progress_callback=progress_callback,
         )
@@ -726,7 +754,7 @@ def _load_compounds_for_rt_assignment(
 
         metadata = load_all_compound_metadata(
             store,
-            metadata_columns=config.selected_metadata_columns,
+            metadata_columns=metadata_columns_for_split_tree(config),
             progress_callback=load_progress,
         )
         _report_fraction(
@@ -765,7 +793,6 @@ def _finalize_del_cycle_tree(
     rt_resolution: Optional[DelCycleRtResolution] = None,
     pedigree_passed_lookup: Optional[Dict[Tuple[str, ...], bool]] = None,
     index_discovery_rows: Optional[Sequence[DelCycleRow]] = None,
-    verification_success_overrides: Optional[Dict[Tuple[str, ...], bool]] = None,
     progress_callback: Optional[ProgressCallback] = None,
 ) -> DelCycleTreeData:
     """Sort, verify (notebook logic), and nest rows into ``DelCycleTreeData``."""
@@ -820,18 +847,6 @@ def _finalize_del_cycle_tree(
         rt_threshold=rt_threshold,
         progress_callback=verify_progress if progress_callback else None,
     )
-    if verification_success_overrides:
-        for positions, success in verification_success_overrides.items():
-            existing = verified.get(positions)
-            rt_value = existing.rt if existing is not None else next(
-                (row.rt for row in sorted_rows if row.positions == positions),
-                0.0,
-            )
-            verified[positions] = VerifiedSequence(
-                positions=positions,
-                rt=float(rt_value),
-                success=bool(success),
-            )
     _report_fraction(progress_callback, _ANALYZE_PROGRESS_END, "Building tree structure…")
     tree = create_tree(sorted_rows)
     pruned = prune_tree(tree, verified)
@@ -1216,7 +1231,7 @@ def build_del_cycle_tree_from_session_cache_for_path(
     try:
         compounds = load_all_compound_metadata(
             store,
-            metadata_columns=config.selected_metadata_columns,
+            metadata_columns=metadata_columns_for_split_tree(config),
             progress_callback=progress_callback,
         )
         return build_del_cycle_tree_from_session_cache(

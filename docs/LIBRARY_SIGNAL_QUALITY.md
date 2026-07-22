@@ -7,6 +7,8 @@ All signal-quality metrics share:
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
 | **α (alpha)** | `0.001` | Significance threshold for *significant* peaks. A local maximum is kept only if `p-value < α`, where p-value is the minimum of height and area tail tests under the baseline noise model (same engine as Chromatogram Visualizer → Peak Analysis). **Lower α → fewer significant peaks.** |
+| **Min prominence** | `5` | After detection, drop peaks below this prominence (`0` = off). Same post-filter as RT assignment / Chromatogram Visualizer. |
+| **Min % area** | `3` | After detection, drop peaks below this share of total detected peak area (`0` = off). |
 | **Baseline** | σ-clipped median | Same algorithm as peak picking: iterative removal of points above `mean + 2σ`, then median → **μ**; sample σ of kept points → **σ**. |
 | **Minimum points** | 3 | Entries with fewer than 3 time points are skipped for signal metrics. |
 
@@ -32,15 +34,18 @@ Peak picking algorithm (**Modern** or **Old-school**) is chosen on the Library Q
 
 **Note:** The tallest peak may be an impurity or artifact, not the DEL product.
 
-### Significant peaks (α-dependent)
+### Significant peaks (α- and quality-filter-dependent)
 
 1. Run the full peak picker with the configured **α** (Modern) or Old-school parameters.
-2. **Significant peak count** = number of peaks returned.
-3. **Has significant peak** = count ≥ 1.
-4. **Max significant prominence** = max prominence among significant peaks (0 if none).
-5. **Median significant prominence** = median prominence among significant peaks (empty if none).
-6. **Tallest significant peak height** = max apex height among significant peaks (0 if none).
-7. **Tallest significant SNR excess** = tallest significant height − baseline_μ.
+2. Apply shared **min prominence** / **min % area** filters (same as RT assignment).
+3. **Significant peak count** = number of peaks remaining.
+4. **Has significant peak** = count ≥ 1.
+5. **Max significant prominence** = max prominence among significant peaks (0 if none).
+6. **Median significant prominence** = median prominence among significant peaks (empty if none).
+7. **Tallest significant peak height** = max apex height among significant peaks (0 if none).
+8. **Tallest significant SNR excess** = tallest significant height − baseline_μ.
+
+Baseline μ/σ are estimated from the raw trace and are **not** affected by these peak filters.
 
 Prominence = apex height minus the higher of the two adjacent valley intensities (same as the peak table).
 
@@ -78,7 +83,7 @@ For each metric below, LC-Seq computes **mean**, **sample standard deviation**, 
 
 ## Related exports
 
-- **Per-entry signal CSV** from Library Analysis (one row per compound; α and picker settings in the header comment).
+- **Per-entry signal CSV** from Library Analysis (one row per compound; α, picker, and quality-filter settings in the header comment).
 - **Library report PDF** — metrics, plots, and optional pedigree / split-tree sections.
 - **`product_prominence.csv`** — prominence at pedigree-chosen product RTs after **Pedigree** RT assignment (inside **Export analysis bundle…**).
 

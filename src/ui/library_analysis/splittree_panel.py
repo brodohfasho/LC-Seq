@@ -28,6 +28,7 @@ from src.core.del_cycle_tree.bb_index_scheme import (
     lookup_bb_display_index,
 )
 from src.core.del_cycle_tree.models import MetadataRtColumnInfo
+from src.core.del_cycle_tree.service import metadata_columns_for_split_tree
 from src.core.del_cycle_tree.render import COLOR_MODE_NOTEBOOK, COLOR_MODE_PEDIGREE
 from src.ui.library_analysis.contexts import (
     LibraryPanelContext,
@@ -51,10 +52,9 @@ _SELECT_COLUMN = "(select column)"
 
 @dataclass(frozen=True)
 class _MetadataValidationSelection:
-    """Metadata columns and isoform covered by one successful validation."""
+    """Metadata RT column and isoform covered by one successful validation."""
 
     rt_column: str
-    verified_column: str
     isoform: str
 
 class SplitTreePanelContext(LibraryPanelContext, Protocol):
@@ -84,13 +84,10 @@ class SplitTreePanel:
         host._splittree_view_mode_var = tk.StringVar(value=SPLITTREE_VIEW_FULL)
         host._splittree_rt_source_var = tk.StringVar(value=SPLITTREE_RT_SESSION)
         host._splittree_metadata_rt_column_var = tk.StringVar(value="")
-        host._splittree_metadata_verified_column_var = tk.StringVar(value="")
         host._splittree_generate_btn = None
         host._splittree_rt_column_menu = None
-        host._splittree_verified_column_menu = None
         host._splittree_rt_detect_btn = None
         host._splittree_rt_column_status_label = None
-        host._splittree_verified_column_status_label = None
         host._splittree_metadata_validation_status_label = None
         host._splittree_metadata_controls_frame = None
         host._splittree_metadata_control_labels = []
@@ -123,14 +120,25 @@ class SplitTreePanel:
         host = self._context
         ctk.CTkLabel(
             panel,
-            text="1. Plot data",
+            text=(
+                "Build from an RT assignment run in this session, or from registered "
+                "spreadsheet retention times."
+            ),
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=8)
+        ctk.CTkLabel(
+            panel,
+            text="Plot data",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=_SECTION_HEADER_COLOR,
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
+        ).grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 2))
         self._add_status_label(
             panel,
-            1,
+            2,
             "Choose the RT source and optional isoform used to build the plot.",
         )
         host._splittree_generate_btn = ctk.CTkButton(
@@ -142,11 +150,11 @@ class SplitTreePanel:
             command=self._on_generate_splittree_plot,
         )
         host._splittree_generate_btn.grid(
-            row=2, column=0, sticky="ew", padx=8, pady=(0, 12)
+            row=3, column=0, sticky="ew", padx=8, pady=(0, 12)
         )
         host._busy_sensitive_widgets.append(host._splittree_generate_btn)
 
-        row = 3
+        row = 4
         row = self._add_sidebar_label(panel, row, "RT source for plot", top=True)
         source_menu = ctk.CTkOptionMenu(
             panel,
@@ -169,7 +177,7 @@ class SplitTreePanel:
 
         group_header = ctk.CTkLabel(
             metadata_group,
-            text="Spreadsheet metadata columns",
+            text="Spreadsheet metadata",
             font=ctk.CTkFont(size=11, weight="bold"),
         )
         group_header.grid(row=0, column=0, sticky="w", padx=8, pady=(8, 6))
@@ -191,50 +199,26 @@ class SplitTreePanel:
             3,
             "Select the registered column containing numeric retention times.",
         )
-        verified_label = ctk.CTkLabel(
-            metadata_group,
-            text="Null verification column",
-        )
-        verified_label.grid(row=4, column=0, sticky="w", padx=8, pady=(4, 4))
-        host._splittree_verified_column_menu = ctk.CTkOptionMenu(
-            metadata_group,
-            variable=host._splittree_metadata_verified_column_var,
-            values=[_SELECT_COLUMN],
-            state="disabled",
-            command=lambda _value: self._on_splittree_verified_column_selected(),
-        )
-        host._splittree_verified_column_menu.grid(
-            row=5, column=0, sticky="ew", padx=8, pady=(0, 4)
-        )
-        host._busy_sensitive_widgets.append(host._splittree_verified_column_menu)
-        host._splittree_verified_column_status_label = self._add_status_label(
-            metadata_group,
-            6,
-            "Select the registered metadata column with null-analysis pass/fail "
-            "(e.g. from RT export).",
-        )
         host._splittree_rt_detect_btn = ctk.CTkButton(
             metadata_group,
-            text="Validate columns",
+            text="Validate RT column",
             fg_color="gray40",
             state="disabled",
             command=self._on_validate_splittree_rt_column,
         )
         host._splittree_rt_detect_btn.grid(
-            row=7, column=0, sticky="ew", padx=8, pady=(6, 4)
+            row=4, column=0, sticky="ew", padx=8, pady=(6, 4)
         )
         host._busy_sensitive_widgets.append(host._splittree_rt_detect_btn)
         host._splittree_metadata_validation_status_label = self._add_status_label(
             metadata_group,
-            8,
-            "Select both columns, then validate before generating a plot.",
+            5,
+            "Select and validate the RT column before generating a plot.",
         )
         host._splittree_metadata_control_labels = [
             group_header,
             rt_label,
             host._splittree_rt_column_status_label,
-            verified_label,
-            host._splittree_verified_column_status_label,
             host._splittree_metadata_validation_status_label,
         ]
         row += 2
@@ -253,10 +237,12 @@ class SplitTreePanel:
             panel,
             row,
             "Session RT assignment uses results from the RT assignment tab. "
-            "Spreadsheet metadata reads precomputed RTs and null verification "
-            "from registered metadata columns (skips peak picking only); null "
-            "truncation verification still runs. Include RTs for truncation rows, "
-            "not just full products. Empty cells are skipped.",
+            "Spreadsheet metadata reads precomputed RTs from one registered column "
+            "and skips peak picking. Null verification is always recalculated from "
+            "those RTs using the null RT threshold and time unit from the RT "
+            "assignment tab (column headers like “(min)” / “(s)” select the stored "
+            "unit). Include RTs for truncation rows, not just full products; "
+            "empty cells are skipped.",
         )
         row += 1
         ctk.CTkFrame(
@@ -267,7 +253,7 @@ class SplitTreePanel:
         row += 1
         ctk.CTkLabel(
             panel,
-            text="2. Active plot parameters",
+            text="Active plot parameters",
             font=ctk.CTkFont(size=14, weight="bold"),
             text_color=_SECTION_HEADER_COLOR,
             anchor="w",
@@ -612,44 +598,8 @@ class SplitTreePanel:
             f"{count} contain numeric values after validation."
         )
 
-    @staticmethod
-    def _format_splittree_verified_column_status(
-        discovered: List[MetadataRtColumnInfo],
-        *,
-        selected: str = "",
-    ) -> str:
-        """Format null-verification metadata validation status."""
-        if not discovered:
-            return (
-                "No metadata columns are registered. "
-                "Select columns in Configure Spreadsheet and re-process the library."
-            )
-        match = next(
-            (info for info in discovered if info.column_name == selected.strip()),
-            None,
-        )
-        if match is not None:
-            if match.n_compounds_scanned == 0:
-                return f"“{match.column_name}”: not validated yet."
-            pct = 100.0 * match.n_verified_values / match.n_compounds_scanned
-            return (
-                f"“{match.column_name}”: {match.n_verified_values:,} pass/fail values "
-                f"({pct:.1f}% of library), "
-                f"{match.n_verified_full_products:,} on full products."
-            )
-        count = sum(info.n_verified_values > 0 for info in discovered)
-        if count == 0:
-            return (
-                f"{len(discovered)} registered column(s); none have pass/fail values yet. "
-                "Click Validate column to scan the library."
-            )
-        return (
-            f"{len(discovered)} registered metadata column(s). "
-            f"{count} contain pass/fail values after validation."
-        )
-
     def _load_registered_metadata_columns(self) -> None:
-        """Populate metadata dropdowns from spreadsheet configuration."""
+        """Populate the metadata RT dropdown from spreadsheet configuration."""
         host = self._context
         if host._config is None:
             return
@@ -668,7 +618,7 @@ class SplitTreePanel:
             host._splittree_rt_column_status_label.configure(
                 text=(
                     f"{len(names)} registered metadata column(s). "
-                    "Select both columns, then click Validate columns."
+                    "Select an RT column, then click Validate RT column."
                     if names
                     else "No metadata columns registered in Configure Spreadsheet."
                 ),
@@ -679,31 +629,22 @@ class SplitTreePanel:
         self,
         discovered: List[MetadataRtColumnInfo],
     ) -> None:
-        """Update metadata RT and verification dropdowns."""
+        """Update the metadata RT dropdown."""
         host = self._context
         if host._splittree_rt_column_menu is None:
             return
         choices = [_SELECT_COLUMN, *(info.column_name for info in discovered)]
-        for menu, variable in (
-            (host._splittree_rt_column_menu, host._splittree_metadata_rt_column_var),
-            (
-                host._splittree_verified_column_menu,
-                host._splittree_metadata_verified_column_var,
-            ),
-        ):
-            if menu is not None:
-                menu.configure(values=choices)
-                if variable.get().strip() not in choices:
-                    variable.set(choices[1] if len(choices) > 1 else choices[0])
+        host._splittree_rt_column_menu.configure(values=choices)
+        variable = host._splittree_metadata_rt_column_var
+        if variable.get().strip() not in choices:
+            variable.set(choices[1] if len(choices) > 1 else choices[0])
         self._on_splittree_rt_column_selected()
-        self._on_splittree_verified_column_selected()
 
     def _current_metadata_selection(self) -> _MetadataValidationSelection:
         """Return the metadata inputs whose validation gates plot generation."""
         host = self._context
         return _MetadataValidationSelection(
             rt_column=host._splittree_metadata_rt_column_var.get().strip(),
-            verified_column=host._splittree_metadata_verified_column_var.get().strip(),
             isoform=self._splittree_isoform_label(),
         )
 
@@ -715,29 +656,17 @@ class SplitTreePanel:
         """Return why selected metadata inputs are unusable, or ``None``."""
         if not selection.rt_column or selection.rt_column == _SELECT_COLUMN:
             return "Select a spreadsheet RT column."
-        if not selection.verified_column or selection.verified_column == _SELECT_COLUMN:
-            return "Select a null verification column."
-        if selection.rt_column == selection.verified_column:
-            return "Select different RT and null verification columns."
 
         by_name = {info.column_name: info for info in validated}
         rt_info = by_name.get(selection.rt_column)
-        verified_info = by_name.get(selection.verified_column)
         if rt_info is None:
             return f"RT column “{selection.rt_column}” is not registered."
-        if verified_info is None:
-            return f"Verification column “{selection.verified_column}” is not registered."
         if rt_info.n_compounds_scanned == 0:
             return "No compounds were available for the selected isoform."
         if rt_info.n_with_bb_positions == 0:
             return (
                 f"RT column “{selection.rt_column}” has no numeric RT values on rows "
                 "with configured BB positions."
-            )
-        if verified_info.n_verified_full_products == 0:
-            return (
-                f"Verification column “{selection.verified_column}” has no recognized "
-                "pass/fail values on full-product rows."
             )
         return None
 
@@ -752,6 +681,12 @@ class SplitTreePanel:
             )
             is None
         )
+
+    def _can_generate_splittree(self) -> bool:
+        """Return whether the selected RT source is ready to generate a plot."""
+        if self._context._splittree_rt_source_var.get() == SPLITTREE_RT_METADATA:
+            return self._metadata_selection_is_validated()
+        return self._callbacks.session_rt_ready()
 
     def _invalidate_metadata_validation(self, reason: str) -> None:
         """Invalidate the validation gate after a metadata input changes."""
@@ -771,33 +706,22 @@ class SplitTreePanel:
             or self._metadata_tasks.is_busy
         )
         metadata_enabled = metadata and not busy
-        for menu in (
-            host._splittree_rt_column_menu,
-            host._splittree_verified_column_menu,
-        ):
-            if menu is not None:
-                menu.configure(state="normal" if metadata_enabled else "disabled")
+        if host._splittree_rt_column_menu is not None:
+            host._splittree_rt_column_menu.configure(
+                state="normal" if metadata_enabled else "disabled"
+            )
 
         selection = self._current_metadata_selection()
         selections_ready = (
             bool(selection.rt_column)
             and selection.rt_column != _SELECT_COLUMN
-            and bool(selection.verified_column)
-            and selection.verified_column != _SELECT_COLUMN
-            and selection.rt_column != selection.verified_column
         )
         if host._splittree_rt_detect_btn is not None:
             host._splittree_rt_detect_btn.configure(
                 state="normal" if metadata_enabled and selections_ready else "disabled"
             )
         if host._splittree_generate_btn is not None:
-            can_generate = (
-                not busy
-                and (
-                    not metadata
-                    or self._metadata_selection_is_validated()
-                )
-            )
+            can_generate = not busy and self._can_generate_splittree()
             host._splittree_generate_btn.configure(
                 state="normal" if can_generate else "disabled"
             )
@@ -813,7 +737,7 @@ class SplitTreePanel:
                 label.configure(text_color=label_color)
 
     def _on_validate_splittree_rt_column(self) -> None:
-        """Validate both selected metadata columns under an immutable task token."""
+        """Validate the selected metadata RT column under an immutable task token."""
         host = self._context
         if self._metadata_tasks.is_busy or host._is_busy():
             return
@@ -834,19 +758,16 @@ class SplitTreePanel:
         if selection_error is not None and (
             not selection.rt_column
             or selection.rt_column == _SELECT_COLUMN
-            or not selection.verified_column
-            or selection.verified_column == _SELECT_COLUMN
-            or selection.rt_column == selection.verified_column
         ):
             messagebox.showinfo(
-                "Validate columns",
+                "Validate RT column",
                 selection_error,
                 parent=host,
             )
             return
         if not registered_metadata_column_names(host._config):
             messagebox.showinfo(
-                "Validate columns",
+                "Validate RT column",
                 "No metadata columns are registered in Configure Spreadsheet.",
                 parent=host,
             )
@@ -855,7 +776,7 @@ class SplitTreePanel:
         self._set_validation_status("Scanning library metadata…")
         if host._splittree_metadata_validation_status_label is not None:
             host._splittree_metadata_validation_status_label.configure(
-                text="Validating both selected columns…",
+                text="Validating the selected RT column…",
                 text_color="gray",
             )
         config, db_path = host._config, host._db_path
@@ -876,7 +797,7 @@ class SplitTreePanel:
 
                 compounds = load_all_compound_metadata(
                     store,
-                    metadata_columns=config.selected_metadata_columns,
+                    metadata_columns=metadata_columns_for_split_tree(config),
                     progress_callback=progress,
                 )
                 if isoform.lower() != "all":
@@ -905,12 +826,11 @@ class SplitTreePanel:
 
     def _set_validation_status(self, text: str) -> None:
         host = self._context
-        for label in (
-            host._splittree_rt_column_status_label,
-            host._splittree_verified_column_status_label,
-        ):
-            if label is not None:
-                label.configure(text=text, text_color="gray")
+        if host._splittree_rt_column_status_label is not None:
+            host._splittree_rt_column_status_label.configure(
+                text=text,
+                text_color="gray",
+            )
 
     def _update_splittree_rt_detect_progress(
         self,
@@ -936,7 +856,7 @@ class SplitTreePanel:
             if status_label is not None:
                 status_label.configure(
                     text=(
-                        "Both columns validated for "
+                        "RT column validated for "
                         f"{selection.isoform} data. Plot generation is enabled."
                     ),
                     text_color="#238636",
@@ -947,7 +867,7 @@ class SplitTreePanel:
             if status_label is not None:
                 status_label.configure(text=message, text_color="#D29922")
             messagebox.showinfo(
-                "Validate columns",
+                "Validate RT column",
                 f"{message}\n\nPlot generation remains disabled.",
                 parent=host,
             )
@@ -962,7 +882,7 @@ class SplitTreePanel:
                 text_color="#D29922",
             )
         self._sync_metadata_control_states()
-        messagebox.showerror("Validate columns", message, parent=host)
+        messagebox.showerror("Validate RT column", message, parent=host)
 
     def _on_splittree_rt_column_selected(self) -> None:
         host = self._context
@@ -975,21 +895,7 @@ class SplitTreePanel:
                 text_color=("gray10", "gray90"),
             )
         self._invalidate_metadata_validation(
-            "RT column selection changed. Validate both columns again."
-        )
-
-    def _on_splittree_verified_column_selected(self) -> None:
-        host = self._context
-        if host._splittree_verified_column_status_label is not None:
-            host._splittree_verified_column_status_label.configure(
-                text=self._format_splittree_verified_column_status(
-                    host._splittree_rt_columns_detected,
-                    selected=host._splittree_metadata_verified_column_var.get(),
-                ),
-                text_color=("gray10", "gray90"),
-            )
-        self._invalidate_metadata_validation(
-            "Null verification column changed. Validate both columns again."
+            "RT column selection changed. Validate the RT column again."
         )
 
     def _on_splittree_rt_source_changed(self) -> None:
@@ -1000,12 +906,12 @@ class SplitTreePanel:
             self._load_registered_metadata_columns()
             if host._splittree_metadata_validation_status_label is not None:
                 host._splittree_metadata_validation_status_label.configure(
-                    text="Select both columns, then validate before generating a plot.",
+                    text="Select and validate the RT column before generating a plot.",
                     text_color="gray",
                 )
         host._session_state.invalidate_splittree()
         self._show_splittree_placeholder(
-            "Select and validate both metadata columns, then click Generate plot."
+            "Select and validate an RT column, then click Generate plot."
             if metadata
             else "Choose RT source and click Generate plot in the sidebar."
         )
@@ -1017,10 +923,10 @@ class SplitTreePanel:
         host._splittree_viz_isoform = None
         if host._splittree_rt_source_var.get() == SPLITTREE_RT_METADATA:
             self._set_validation_status(
-                "Isoform filter changed — click Validate columns to refresh counts."
+                "Isoform filter changed — click Validate RT column to refresh counts."
             )
             self._invalidate_metadata_validation(
-                "Isoform filter changed. Validate both columns again."
+                "Isoform filter changed. Validate the RT column again."
             )
         self._show_splittree_placeholder("Isoform filter changed. Click Generate plot to rebuild.")
 
@@ -1032,8 +938,8 @@ class SplitTreePanel:
             if not self._metadata_selection_is_validated():
                 messagebox.showinfo(
                     "Split-tree visualization",
-                    "Validate both selected spreadsheet metadata columns before "
-                    "generating the plot.",
+                    "Validate the selected spreadsheet RT column before generating "
+                    "the plot.",
                     parent=host,
                 )
                 return
@@ -1063,25 +969,17 @@ class SplitTreePanel:
         if not self._metadata_selection_is_validated():
             messagebox.showinfo(
                 "Split-tree visualization",
-                "The selected RT and null verification columns have not been "
-                "successfully validated for the current isoform.",
+                "The selected RT column has not been successfully validated for "
+                "the current isoform.",
                 parent=host,
             )
             self._sync_metadata_control_states()
             return
         column = host._splittree_metadata_rt_column_var.get().strip()
-        verified = host._splittree_metadata_verified_column_var.get().strip()
         if not column or column == _SELECT_COLUMN:
             messagebox.showinfo(
                 "Split-tree visualization",
                 "Select a registered metadata RT column before generating the plot.",
-                parent=host,
-            )
-            return
-        if not verified or verified == _SELECT_COLUMN:
-            messagebox.showinfo(
-                "Split-tree visualization",
-                "Select a registered null verification column before generating the plot.",
                 parent=host,
             )
             return
@@ -1100,8 +998,11 @@ class SplitTreePanel:
         )
         host._show_loading_page(
             "Generating split-tree",
-            f"Reading RT values from “{column}” and verification from “{verified}”"
-            f"{f' · isoform: {isoform}' if isoform != 'All' else ''}…",
+            (
+                f"Reading RT values from “{column}” and calculating null verification "
+                f"(threshold {settings.tolerance:g} {settings.time_unit})"
+                f"{f' · isoform: {isoform}' if isoform != 'All' else ''}…"
+            ),
         )
         db_path, config = host._db_path, host._config
 
@@ -1118,8 +1019,8 @@ class SplitTreePanel:
                     db_path,
                     config,
                     column,
-                    verified_column=verified,
                     rt_threshold=float(settings.tolerance),
+                    time_unit=settings.time_unit,
                     isoform_label=isoform,
                     progress_callback=progress,
                 )

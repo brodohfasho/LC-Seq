@@ -52,28 +52,6 @@ def product_rt_column_name(time_unit: str) -> str:
     return f"rt ({unit_suffix})"
 
 
-def parse_null_rt_verified_metadata(value: object) -> Optional[bool]:
-    """Parse TRUE/FALSE pass-fail cells exported by LC-Seq (or common synonyms)."""
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)) and not pd.isna(value):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-    text = str(value).strip()
-    if not text or text.lower() in {"na", "n/a", "nan", "-", ""}:
-        return None
-    lowered = text.lower()
-    if lowered in {"true", "t", "yes", "y", "1", "pass", "passed"}:
-        return True
-    if lowered in {"false", "f", "no", "n", "0", "fail", "failed"}:
-        return False
-    return None
-
-
 def format_null_rt_verified(value: Optional[bool]) -> str:
     """Spreadsheet-friendly pass/fail token."""
     if value is None:
@@ -97,46 +75,6 @@ def spreadsheet_export_columns(config: SpreadsheetConfig) -> List[str]:
         if column not in columns:
             columns.append(column)
     return columns
-
-
-def build_verification_overrides_from_metadata(
-    compounds: Sequence[Compound],
-    config: SpreadsheetConfig,
-    *,
-    column: str,
-) -> Dict[Tuple[str, ...], bool]:
-    """
-    Read precomputed null pass/fail values from compound metadata.
-
-    Used when regenerating a split-tree from an exported RT analysis spreadsheet.
-    """
-    from src.core.del_cycle_tree.models import DelCycleRow
-
-    null_token = normalize_bb_name(config.null_token)
-    n_cycles = config.library_cycle_count
-    del_rows = [
-        DelCycleRow(positions=positions, rt=0.0)
-        for compound in compounds
-        if (positions := positions_c_to_n(compound, config)) is not None
-    ]
-    canonical_by_lower = build_bb_name_canonical_map(del_rows, null_token)
-    overrides: Dict[Tuple[str, ...], bool] = {}
-    for compound in compounds:
-        positions = positions_c_to_n(compound, config)
-        if positions is None or len(positions) != n_cycles:
-            continue
-        if any(normalize_bb_name(bb) == null_token for bb in positions):
-            continue
-        parsed = parse_null_rt_verified_metadata(compound.metadata.get(column))
-        if parsed is None:
-            continue
-        key = canonicalize_positions(
-            tuple(normalize_bb_name(bb) for bb in positions),
-            null_token=null_token,
-            canonical_by_lower=canonical_by_lower,
-        )
-        overrides[key] = parsed
-    return overrides
 
 
 def build_null_verification_by_compound_id(

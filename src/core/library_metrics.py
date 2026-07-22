@@ -373,13 +373,15 @@ _BASELINE_ALGORITHM = (
 )
 
 _SIGNIFICANT_PEAK_NOTE = (
-    "Peaks are called significant when the peak picker's height or area p-value "
-    "is below α (same engine as Chromatogram Visualizer). Lower α keeps fewer peaks."
+    "Peaks are first required to pass the peak picker's significance test "
+    "(modern α, or old-school Gaussian criteria). Optional min prominence and "
+    "min % area filters then drop weak detections before counting or ranking "
+    "peaks (same post-filters as RT assignment / Chromatogram Visualizer)."
 )
 
 _SIGNIFICANT_PEAK_HEIGHT_NOTE = (
-    "The tallest significant peak is the highest apex among peaks with p-value < α—it may "
-    "not be the DEL product."
+    "The tallest significant peak is the highest apex among peaks that remain "
+    "after significance and quality filters—it may not be the DEL product."
 )
 
 LIBRARY_METRIC_DEFINITIONS: Dict[str, MetricDefinition] = {
@@ -499,8 +501,8 @@ LIBRARY_METRIC_DEFINITIONS: Dict[str, MetricDefinition] = {
         metric_id=METRIC_SIG_PEAK_COUNT_MEAN,
         title="Significant peaks per entry — library mean ± SD",
         help_text=(
-            "Per entry: number of peaks returned by the peak picker at the configured α. "
-            f"{_SIGNIFICANT_PEAK_NOTE}"
+            "Per entry: number of peaks that pass the configured picker and quality "
+            f"filters (significance, min prominence, min % area). {_SIGNIFICANT_PEAK_NOTE}"
         ),
         compute_fn=lambda scan, ch, opt: _compute_signal_metric(
             scan, ch, opt, lambda s: float(s.significant_peak_count)
@@ -762,7 +764,12 @@ def compute_metrics_from_scan(
             if sq.peak_picking_algorithm == "old_school":
                 title = f"{definition.title} (old-school Gaussian)"
             else:
-                title = f"{definition.title} (α={sq.alpha:g})"
+                filter_bits = [f"α={sq.alpha:g}"]
+                if sq.min_prominence > 0:
+                    filter_bits.append(f"prom≥{sq.min_prominence:g}")
+                if sq.min_pct_area > 0:
+                    filter_bits.append(f"%area≥{sq.min_pct_area:g}")
+                title = f"{definition.title} ({', '.join(filter_bits)})"
         channel_stats = definition.compute_fn(scan, selected_channels, options)
         results.append(
             MetricResult(

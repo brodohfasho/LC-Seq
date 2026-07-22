@@ -43,6 +43,8 @@ def _signal_quality_options_to_dict(
         "peak_picking_algorithm": options.peak_picking_algorithm,
         "alpha": options.alpha,
         "time_unit": options.time_unit,
+        "min_prominence": options.min_prominence,
+        "min_pct_area": options.min_pct_area,
         "gaussian_min_height_factor": options.gaussian_min_height_factor,
         "gaussian_fit_width": options.gaussian_fit_width,
         "gaussian_stddev_threshold": options.gaussian_stddev_threshold,
@@ -61,6 +63,8 @@ def _signal_quality_options_from_dict(
         peak_picking_algorithm=str(data.get("peak_picking_algorithm", "modern")),
         alpha=float(data.get("alpha", legacy_alpha)),
         time_unit=str(data.get("time_unit", "seconds")),  # type: ignore[arg-type]
+        min_prominence=float(data.get("min_prominence", 0.0)),
+        min_pct_area=float(data.get("min_pct_area", 0.0)),
         gaussian_min_height_factor=float(
             data.get("gaussian_min_height_factor", 0.35)
         ),
