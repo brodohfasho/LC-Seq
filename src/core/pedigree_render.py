@@ -16,7 +16,7 @@ import shutil
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import matplotlib
 
@@ -28,6 +28,17 @@ from matplotlib.figure import Figure
 from src.models.pedigree_result import PedigreeNodeRecord
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[float, str], None]
+
+
+def _report_progress(
+    callback: Optional[ProgressCallback],
+    fraction: float,
+    status: str,
+) -> None:
+    if callback is not None:
+        callback(min(1.0, max(0.0, fraction)), status)
 
 # Above this visible-node count, default to passed-only tree (fewer crossing edges).
 AUTO_PASSED_ONLY_NODE_THRESHOLD = 500
@@ -306,6 +317,7 @@ def build_pedigree_tree_matplotlib_figure(
     include_failed: bool = True,
     show_rt: bool = True,
     dpi: int = 150,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Figure:
     """
     Matplotlib tier-ring figure for in-app pan/zoom (no Graphviz required).
@@ -313,6 +325,7 @@ def build_pedigree_tree_matplotlib_figure(
     Places each tier on a concentric ring (root at centre), matching the
     split-tree colour scheme used by the Rust renderer.
     """
+    _report_progress(progress_callback, 0.05, "Filtering visible pedigree nodes…")
     visible = visible_pedigree_nodes(
         records,
         include_failed=include_failed,
@@ -321,6 +334,7 @@ def build_pedigree_tree_matplotlib_figure(
     if not visible:
         raise ValueError("No pedigree nodes to render.")
 
+    _report_progress(progress_callback, 0.12, "Computing concentric ring layout…")
     by_tier: Dict[int, List[PedigreeNodeRecord]] = defaultdict(list)
     for record in visible.values():
         by_tier[record.tier].append(record)
@@ -346,7 +360,11 @@ def build_pedigree_tree_matplotlib_figure(
     ax.axis("off")
     ax.set_facecolor("white")
 
-    for record in visible.values():
+    visible_list = list(visible.values())
+    edge_total = max(len(visible_list), 1)
+    edge_step = max(1, edge_total // 40)
+    _report_progress(progress_callback, 0.25, f"Drawing edges (0/{edge_total:,})…")
+    for index, record in enumerate(visible_list):
         for parent_id in record.parent_ids:
             if parent_id not in positions:
                 continue
@@ -360,12 +378,20 @@ def build_pedigree_tree_matplotlib_figure(
                 alpha=0.7,
                 zorder=1,
             )
+        if index % edge_step == 0 or index + 1 == edge_total:
+            fraction = 0.25 + 0.40 * ((index + 1) / edge_total)
+            _report_progress(
+                progress_callback,
+                fraction,
+                f"Drawing edges ({index + 1:,}/{edge_total:,})…",
+            )
 
+    _report_progress(progress_callback, 0.70, "Drawing nodes…")
     xs: List[float] = []
     ys: List[float] = []
     colors: List[str] = []
     sizes: List[float] = []
-    for record in visible.values():
+    for record in visible_list:
         x, y = positions[record.id]
         xs.append(x)
         ys.append(y)
@@ -383,7 +409,8 @@ def build_pedigree_tree_matplotlib_figure(
 
     label_limit = 250
     if node_count <= label_limit:
-        for record in visible.values():
+        _report_progress(progress_callback, 0.82, "Adding node labels…")
+        for record in visible_list:
             x, y = positions[record.id]
             text = _node_label(record, show_rt=show_rt)
             fontsize = 5 if node_count > 80 else 7
@@ -398,6 +425,7 @@ def build_pedigree_tree_matplotlib_figure(
                 clip_on=True,
             )
 
+    _report_progress(progress_callback, 0.92, "Finishing figure…")
     legend_handles = [
         plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=_COLOR_ROOT, markersize=8, label="root"),
         plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=_COLOR_CLASS, markersize=8, label="passed class"),
@@ -427,6 +455,7 @@ def build_pedigree_tree_matplotlib_figure(
         fontsize=11,
         pad=12,
     )
+    _report_progress(progress_callback, 1.0, "Pedigree figure ready…")
     return fig
 
 
@@ -499,14 +528,20 @@ def render_pedigree_tree_matplotlib(
     include_failed: bool = True,
     show_rt: bool = True,
     dpi: int = 150,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> Path:
     """Save the matplotlib tier-ring pedigree tree to disk."""
+
+    def build_progress(fraction: float, status: str) -> None:
+        _report_progress(progress_callback, 0.05 + 0.80 * fraction, status)
+
     fig = build_pedigree_tree_matplotlib_figure(
         records,
         max_display_tier=max_display_tier,
         include_failed=include_failed,
         show_rt=show_rt,
         dpi=dpi,
+        progress_callback=build_progress if progress_callback is not None else None,
     )
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -515,8 +550,10 @@ def render_pedigree_tree_matplotlib(
         image_fmt = "png"
     if out_path.suffix.lower() != f".{image_fmt}":
         out_path = out_path.with_suffix(f".{image_fmt}")
+    _report_progress(progress_callback, 0.90, "Saving pedigree image…")
     fig.savefig(out_path, format=image_fmt, bbox_inches="tight", facecolor="white", dpi=dpi)
     plt.close(fig)
+    _report_progress(progress_callback, 1.0, "Pedigree image saved…")
     return out_path
 
 
@@ -528,6 +565,7 @@ def render_pedigree_tree(
     max_display_tier: Optional[int] = None,
     include_failed: bool = True,
     show_rt: bool = True,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> PedigreeTreeRenderResult:
     """
     Render a pedigree tree image, preferring Graphviz when available.
@@ -535,8 +573,14 @@ def render_pedigree_tree(
     Always attempts rendering (matplotlib fallback when Graphviz is missing).
     """
     out_path = Path(out_path)
+    _report_progress(progress_callback, 0.02, "Selecting pedigree layout engine…")
     if configure_graphviz():
         try:
+            _report_progress(
+                progress_callback,
+                0.12,
+                "Laying out pedigree with Graphviz (this can take a while)…",
+            )
             rendered = render_pedigree_tree_graphviz(
                 records,
                 out_path,
@@ -545,6 +589,7 @@ def render_pedigree_tree(
                 include_failed=include_failed,
                 show_rt=show_rt,
             )
+            _report_progress(progress_callback, 1.0, "Graphviz pedigree image ready…")
             return PedigreeTreeRenderResult(
                 path=rendered,
                 engine="graphviz",
@@ -556,6 +601,11 @@ def render_pedigree_tree(
                 exc,
                 exc_info=True,
             )
+            _report_progress(
+                progress_callback,
+                0.15,
+                "Graphviz failed — falling back to matplotlib preview…",
+            )
 
     rendered = render_pedigree_tree_matplotlib(
         records,
@@ -564,6 +614,7 @@ def render_pedigree_tree(
         max_display_tier=max_display_tier,
         include_failed=include_failed,
         show_rt=show_rt,
+        progress_callback=progress_callback,
     )
     detail = graphviz_install_hint()
     return PedigreeTreeRenderResult(

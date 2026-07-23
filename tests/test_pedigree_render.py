@@ -92,6 +92,26 @@ def test_render_pedigree_tree_always_produces_image(tmp_path) -> None:
     assert result.engine in ("graphviz", "matplotlib")
 
 
+def test_render_pedigree_tree_reports_progress(tmp_path) -> None:
+    updates: list[tuple[float, str]] = []
+
+    def on_progress(fraction: float, status: str) -> None:
+        updates.append((fraction, status))
+
+    result = render_pedigree_tree(
+        _TINY_TREE,
+        tmp_path / "tree_progress.png",
+        max_display_tier=1,
+        progress_callback=on_progress,
+    )
+    assert result.path.is_file()
+    assert updates
+    assert updates[0][0] <= 0.05
+    assert updates[-1][0] == 1.0
+    fractions = [fraction for fraction, _status in updates]
+    assert fractions == sorted(fractions)
+
+
 def test_suggest_include_failed_dense_tree() -> None:
     records = [
         PedigreeNodeRecord(

@@ -170,6 +170,47 @@ def test_full_tree_figure_labels_bb1_with_global_index() -> None:
     plt.close(figure)
 
 
+def test_full_tree_figure_reports_progress() -> None:
+    from src.core.del_cycle_tree.models import DelCycleTreeData
+    from src.core.del_cycle_tree.render import render_del_cycle_tree_figure
+
+    null = "AgxNull"
+    data = DelCycleTreeData(
+        library_cycle_count=3,
+        null_token=null,
+        rt_threshold=0.5,
+        tree={
+            "LA03": {"DPhe": {"X": 1.0}},
+            "Leu": {"DPhe": {"Y": 2.0}},
+        },
+        pruned_tree={},
+        verified_sequences={},
+        full_null_rt=10.0,
+        bb_index_global={"DPhe": 4, "LA03": 30, "Leu": 12, "X": 20, "Y": 21},
+        bb1_names=[null, "LA03", "Leu"],
+    )
+    updates: list[tuple[float, str]] = []
+
+    def on_progress(fraction: float, status: str) -> None:
+        updates.append((fraction, status))
+
+    figure = render_del_cycle_tree_figure(
+        data,
+        view=DelCycleTreeView.FULL,
+        show_figure_title=False,
+        figsize=(8.0, 8.0),
+        progress_callback=on_progress,
+    )
+    import matplotlib.pyplot as plt
+
+    plt.close(figure)
+    assert updates
+    assert updates[-1][0] == 1.0
+    fractions = [fraction for fraction, _status in updates]
+    assert fractions == sorted(fractions)
+    assert any("layout" in status.lower() or "graph" in status.lower() for _f, status in updates)
+
+
 def test_full_tree_bb1_labels_match_branch_roots() -> None:
     from src.core.del_cycle_tree.models import DelCycleTreeData
     from src.core.del_cycle_tree.render import _node_label, render_del_cycle_tree_figure

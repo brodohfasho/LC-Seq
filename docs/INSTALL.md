@@ -68,9 +68,9 @@ Copy **all** of the following into the same relative places next to the other ma
 
 | Goal | Use |
 |------|-----|
-| Pedigree snapshot | **Save results** → JSON + tree PNG under `output\pedigree_analysis\` |
 | Tables / grids | **Export analysis bundle…** or **Export RTs…** (CSV / Excel) |
 | PDF summary | **Generate library report…** |
+| Pedigree figure | **Export tree PNG…** / **Export pedigree CSV…** on Pedigree visualization |
 
 Those formats are safer across machines and versions than copying `.session` alone.
 

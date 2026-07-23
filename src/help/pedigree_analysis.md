@@ -6,7 +6,7 @@ Evaluates the **entire library** on the null-truncation tree: each class must sh
 
 **Library Analysis → RT assignment → Analysis mode: Pedigree → Run RT assignment.**
 
-Requires BB columns configured (**DEL library setup**) and a prior library scan. Needs the Rust `lcseq` engine.
+Requires BB columns configured (**DEL library setup**). Needs the Rust `lcseq` engine.
 
 RT assignment does not generate or open the figure automatically. After it finishes, open
 **Pedigree visualization**, choose the display options, and click **Generate plot**.
@@ -22,7 +22,6 @@ RT assignment does not generate or open the figure automatically. After it finis
 | **Export pedigree CSV…** | One row per node (`bb_cycle_*` columns) |
 | **Export tree PNG…** | Pedigree figure |
 | **Export analysis bundle…** | Split-tree CSVs + optional `product_prominence.csv` |
-| **Save results** | JSON snapshot, including the generated tree path when available |
 
 ## Colors (pedigree figure)
 

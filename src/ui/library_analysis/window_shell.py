@@ -98,58 +98,14 @@ class WindowShell:
             font=ctk.CTkFont(size=20, weight="bold"),
         ).pack(side="left", padx=(0, 16))
 
-        self._host._scan_btn = ctk.CTkButton(
+        self._host._export_report_btn = ctk.CTkButton(
             title_row,
-            text="Run library scan",
-            width=150,
+            text="Generate report…",
+            width=160,
             height=32,
             font=_primary_action_font(),
             fg_color="#238636",
             hover_color="#2ea043",
-            command=self._host._qc_panel._on_run_library_scan,
-        )
-        self._host._scan_btn.pack(side="left", padx=(0, 8))
-        self._host._busy_sensitive_widgets.append(self._host._scan_btn)
-
-        self._host._clear_scan_btn = ctk.CTkButton(
-            title_row,
-            text="Clear scan",
-            width=96,
-            height=32,
-            fg_color="gray40",
-            command=self._host._qc_panel._on_clear_library_scan,
-        )
-        self._host._clear_scan_btn.pack(side="left", padx=(0, 4))
-        self._host._busy_sensitive_widgets.append(self._host._clear_scan_btn)
-
-        self._host._export_scan_btn = ctk.CTkButton(
-            title_row,
-            text="Export scan…",
-            width=108,
-            height=32,
-            fg_color="gray40",
-            command=self._host._qc_panel._on_export_library_scan,
-        )
-        self._host._export_scan_btn.pack(side="left", padx=(0, 4))
-        self._host._busy_sensitive_widgets.append(self._host._export_scan_btn)
-
-        self._host._import_scan_btn = ctk.CTkButton(
-            title_row,
-            text="Import scan…",
-            width=108,
-            height=32,
-            fg_color="gray40",
-            command=self._host._qc_panel._on_import_library_scan,
-        )
-        self._host._import_scan_btn.pack(side="left", padx=(0, 8))
-        self._host._busy_sensitive_widgets.append(self._host._import_scan_btn)
-
-        self._host._export_report_btn = ctk.CTkButton(
-            title_row,
-            text="Generate report…",
-            width=150,
-            height=32,
-            fg_color="gray40",
             command=self._host._report_controller._on_export_report,
         )
         self._host._export_report_btn.pack(side="left")
@@ -270,7 +226,7 @@ class WindowShell:
 
         self._host._status_label = ctk.CTkLabel(
             shell,
-            text="No scan loaded.",
+            text="No chromatogram cache loaded.",
             font=ctk.CTkFont(size=10),
             text_color="gray",
             anchor="w",
@@ -318,21 +274,11 @@ class WindowShell:
 
         rt_toolbar = ctk.CTkFrame(rt_tab, fg_color="transparent")
         rt_toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
-        rt_toolbar.grid_columnconfigure(0, weight=1)
 
-        self._host._pedigree_summary_label = ctk.CTkLabel(
-            rt_toolbar,
-            text="",
-            font=ctk.CTkFont(size=12),
-            text_color="gray",
-            anchor="w",
-            wraplength=760,
-            justify="left",
-        )
-        self._host._pedigree_summary_label.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self._host._pedigree_summary_label = None
 
         rt_actions = ctk.CTkFrame(rt_toolbar, fg_color="transparent")
-        rt_actions.grid(row=1, column=0, sticky="w")
+        rt_actions.pack(anchor="w")
 
         self._host._export_rts_btn = ctk.CTkButton(
             rt_actions,
@@ -349,7 +295,8 @@ class WindowShell:
             rt_actions,
             text="Export analysis bundle…",
             width=170,
-            fg_color="gray40",
+            fg_color="#0969da",
+            hover_color="#1f6feb",
             state="disabled",
             command=self._host._splittree_panel._on_export_del_cycle_csv,
         )
@@ -359,16 +306,11 @@ class WindowShell:
         rt_body = ctk.CTkScrollableFrame(rt_tab, label_text="Assignment results")
         rt_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
         rt_body.grid_columnconfigure(0, weight=1)
-        self._host._rt_assignment_results_label = ctk.CTkLabel(
-            rt_body,
-            text="No RT assignment run yet.",
-            font=ctk.CTkFont(size=12),
-            text_color="gray",
-            anchor="nw",
-            wraplength=760,
-            justify="left",
-        )
-        self._host._rt_assignment_results_label.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
+        # Use the scrollable frame itself as the results host (same pattern as QC metrics).
+        # Nested grid children inside CTkScrollableFrame often fail to size/show.
+        self._host._rt_assignment_results_frame = rt_body
+        self._host._rt_assignment_results_label = None
+        self._host._rt_assignment_panel._update_rt_assignment_results(None)
 
         # --- Pedigree visualization tab ---
         ped_viz_tab = self._host._content_tabview.add(_TAB_PEDIGREE_VIZ)
@@ -395,7 +337,8 @@ class WindowShell:
             ped_viz_actions,
             text="Export pedigree CSV…",
             width=170,
-            fg_color="gray40",
+            fg_color="#0969da",
+            hover_color="#1f6feb",
             state="disabled",
             command=self._host._pedigree_panel._on_export_pedigree_csv,
         )
@@ -449,17 +392,8 @@ class WindowShell:
         metrics_toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
         metrics_toolbar.grid_columnconfigure(0, weight=1)
 
-        self._host._metrics_summary_label = ctk.CTkLabel(
-            metrics_toolbar,
-            text="Summary metrics appear after Calculate metrics.",
-            font=ctk.CTkFont(size=12),
-            text_color="gray",
-            anchor="w",
-        )
-        self._host._metrics_summary_label.grid(row=0, column=0, sticky="w", pady=(0, 6))
-
         metrics_actions = ctk.CTkFrame(metrics_toolbar, fg_color="transparent")
-        metrics_actions.grid(row=1, column=0, sticky="w")
+        metrics_actions.grid(row=0, column=0, sticky="w")
 
         self._host._export_metrics_csv_btn = ctk.CTkButton(
             metrics_actions,
@@ -486,19 +420,8 @@ class WindowShell:
         plots_toolbar.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
         plots_toolbar.grid_columnconfigure(0, weight=1)
 
-        self._host._plots_summary_label = ctk.CTkLabel(
-            plots_toolbar,
-            text="No plots generated yet.",
-            font=ctk.CTkFont(size=12),
-            text_color="gray",
-            anchor="w",
-        )
-        self._host._plots_summary_label.grid(
-            row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6)
-        )
-
         plots_actions = ctk.CTkFrame(plots_toolbar, fg_color="transparent")
-        plots_actions.grid(row=1, column=0, columnspan=2, sticky="ew")
+        plots_actions.grid(row=0, column=0, sticky="ew")
 
         self._host._plot_export_btn = ctk.CTkButton(
             plots_actions,
@@ -521,15 +444,28 @@ class WindowShell:
         self._host._export_all_plots_btn.pack(side="left", padx=(0, 6))
         self._host._busy_sensitive_widgets.append(self._host._export_all_plots_btn)
 
-        self._host._open_plots_folder_btn = ctk.CTkButton(
+        self._host._export_plots_csv_btn = ctk.CTkButton(
             plots_actions,
-            text="Open plots folder",
-            width=120,
-            fg_color="gray40",
-            command=self._host._qc_panel._on_open_plots_folder,
+            text="Export plot data CSV…",
+            width=170,
+            fg_color="#0969da",
+            hover_color="#1f6feb",
+            state="disabled",
+            command=self._host._qc_panel._on_export_signal_csv,
         )
-        self._host._open_plots_folder_btn.pack(side="left")
-        self._host._busy_sensitive_widgets.append(self._host._open_plots_folder_btn)
+        self._host._export_plots_csv_btn.pack(side="left")
+        self._host._busy_sensitive_widgets.append(self._host._export_plots_csv_btn)
+
+        self._host._plots_params_label = ctk.CTkLabel(
+            plots_toolbar,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            anchor="w",
+            wraplength=900,
+            justify="left",
+        )
+        self._host._plots_params_label.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
         plot_body = ctk.CTkFrame(plots_tab, fg_color="transparent")
         plot_body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))

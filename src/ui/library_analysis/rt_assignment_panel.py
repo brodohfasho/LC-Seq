@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import tkinter as tk
 from pathlib import Path
-from typing import List, Optional, Protocol
+from typing import List, Optional, Protocol, Tuple
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -29,7 +29,7 @@ from src.core.del_cycle_tree import (
 )
 from src.core.del_cycle_tree.bb_index_scheme import format_bb_branch_label
 from src.models.analysis_settings import AnalysisSettings
-from src.models.pedigree_result import PedigreeAnalysisResult
+from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeTierSummary
 from src.ui.library_analysis.contexts import (
     LibraryPanelContext,
     RtAssignmentCallbacks,
@@ -76,11 +76,34 @@ class RtAssignmentPanel:
         actions = ctk.CTkFrame(panel, fg_color="transparent")
         actions.grid(row=row, column=0, sticky="ew", padx=8, pady=(4, 12))
         row += 1
+        self._context._rt_assignment_run_btn = ctk.CTkButton(
+            actions,
+            text="Run RT assignment",
+            font=_primary_action_font(),
+            height=36,
+            fg_color="#1F6FEB",
+            state="disabled",
+            command=self._on_run_rt_assignment,
+        )
+        self._context._rt_assignment_run_btn.pack(fill="x", pady=(0, 8))
+        self._context._busy_sensitive_widgets.append(self._context._rt_assignment_run_btn)
+        self._context._pedigree_run_btn = self._context._rt_assignment_run_btn
+        self._context._del_cycle_run_btn = self._context._rt_assignment_run_btn
+        self._context._pedigree_status_label = ctk.CTkLabel(
+            actions,
+            text="Direct pick reads chromatograms from the database.",
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            anchor="w",
+            wraplength=_SIDEBAR_WRAP,
+            justify="left",
+        )
+        self._context._pedigree_status_label.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(actions, text="Analysis mode", font=ctk.CTkFont(size=11, weight="bold")).pack(
             anchor="w", pady=(0, 4)
         )
         mode_row = ctk.CTkFrame(actions, fg_color="transparent")
-        mode_row.pack(fill="x", pady=(0, 8))
+        mode_row.pack(fill="x", pady=(0, 4))
         pedigree_mode_btn = ctk.CTkRadioButton(
             mode_row,
             text="Pedigree",
@@ -103,59 +126,6 @@ class RtAssignmentPanel:
             direct_mode_btn,
             "Per-compound peak pick for product RTs (paper Methods; pair with Old-school picking).",
         )
-        self._context._rt_assignment_run_btn = ctk.CTkButton(
-            actions,
-            text="Run RT assignment",
-            font=_primary_action_font(),
-            height=36,
-            fg_color="#1F6FEB",
-            state="disabled",
-            command=self._on_run_rt_assignment,
-        )
-        self._context._rt_assignment_run_btn.pack(fill="x", pady=(0, 8))
-        self._context._busy_sensitive_widgets.append(self._context._rt_assignment_run_btn)
-        self._context._pedigree_run_btn = self._context._rt_assignment_run_btn
-        self._context._del_cycle_run_btn = self._context._rt_assignment_run_btn
-        self._context._pedigree_save_btn = ctk.CTkButton(
-            actions,
-            text="Save results",
-            fg_color="gray40",
-            state="disabled",
-            command=self._callbacks.save_pedigree,
-        )
-        self._context._pedigree_save_btn.pack(fill="x", pady=(0, 4))
-        self._context._busy_sensitive_widgets.append(self._context._pedigree_save_btn)
-        ped_row = ctk.CTkFrame(actions, fg_color="transparent")
-        ped_row.pack(fill="x", pady=(0, 4))
-        self._context._pedigree_load_btn = ctk.CTkButton(
-            ped_row,
-            text="Load last",
-            width=90,
-            fg_color="gray40",
-            command=self._callbacks.load_last_pedigree,
-        )
-        self._context._pedigree_load_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
-        self._context._pedigree_browse_btn = ctk.CTkButton(
-            ped_row,
-            text="Browse…",
-            width=90,
-            fg_color="gray40",
-            command=self._callbacks.browse_pedigree,
-        )
-        self._context._pedigree_browse_btn.pack(side="left", expand=True, fill="x")
-        self._context._busy_sensitive_widgets.extend(
-            [self._context._pedigree_load_btn, self._context._pedigree_browse_btn]
-        )
-        self._context._pedigree_status_label = ctk.CTkLabel(
-            actions,
-            text="Direct pick reads chromatograms from the database.",
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
-            anchor="w",
-            wraplength=_SIDEBAR_WRAP,
-            justify="left",
-        )
-        self._context._pedigree_status_label.pack(fill="x", pady=(4, 0))
         pedigree_box = ctk.CTkFrame(panel, fg_color="transparent")
         pedigree_box.grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 8))
         row += 1
@@ -634,38 +604,324 @@ class RtAssignmentPanel:
         *,
         pedigree_result: Optional[PedigreeAnalysisResult] = None,
     ) -> None:
-        if self._context._rt_assignment_results_label is None:
+        """Render the centered RT assignment summary table."""
+        frame = getattr(self._context, "_rt_assignment_results_frame", None)
+        if frame is None:
+            logger.warning("RT assignment results frame is missing; cannot show summary.")
             return
-        if pedigree_result is not None:
-            picker = pedigree_result.settings.peak_picking_algorithm
-            lines = [
-                "Analysis mode: Pedigree",
-                f"Peak picking mode: {self._context._format_peak_picking_mode_label(picker)}",
-                f"Nodes evaluated: {len(pedigree_result.records):,}",
-                f"Chromatograms: {pedigree_result.n_chromatograms:,}",
-                "Open Pedigree visualization and click Generate plot to view the tier-ring.",
-            ]
-            if data is not None:
-                lines.append(
-                    f"Split-tree verification (optional): {data.n_verified:,} RT-verified products."
+        try:
+            self._qc_panel._clear_frame_children(frame)
+
+            if pedigree_result is not None:
+                self._render_rt_results_table(
+                    frame,
+                    title="Pedigree RT assignment",
+                    subtitle=self._format_rt_results_subtitle(
+                        mode=_RT_ANALYSIS_PEDIGREE,
+                        picker=pedigree_result.settings.peak_picking_algorithm,
+                    ),
+                    rows=self._pedigree_result_rows(pedigree_result, data),
+                    footnote=(
+                        "Open Pedigree visualization and click Generate plot to view the tier-ring."
+                    ),
+                    tier_summaries=list(pedigree_result.tier_summaries),
                 )
-            self._context._rt_assignment_results_label.configure(text="\n".join(lines))
-            return
-        if data is None:
-            self._context._rt_assignment_results_label.configure(text="No RT assignment run yet.")
-            return
-        mode = self._context._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
-        picker = data.peak_picking_algorithm or ""
-        if mode == _RT_ANALYSIS_PEDIGREE and self._context._pedigree_result is not None:
-            if not picker:
-                picker = self._context._pedigree_result.settings.peak_picking_algorithm
-            self._context._rt_assignment_results_label.configure(
-                text=f"Analysis mode: Pedigree\nPeak picking mode: {self._context._format_peak_picking_mode_label(picker)}\nNodes evaluated: {len(self._context._pedigree_result.records):,}\nChromatograms: {self._context._pedigree_result.n_chromatograms:,}\nSplit-tree verification: {data.n_verified:,} RT-verified products.\nOpen Pedigree visualization and click Generate plot to view the tier-ring."
-            )
-            return
-        self._context._rt_assignment_results_label.configure(
-            text=f"Analysis mode: Direct pick\nPeak picking mode: {self._context._format_peak_picking_mode_label(picker)}\nProducts with RT: {data.n_rows:,}\nRT verified: {data.n_verified:,}\nFrom pedigree lookup: {data.n_rt_from_pedigree:,} · direct pick: {data.n_rt_from_peak_pick:,} · metadata: {data.n_rt_from_metadata:,}\nOpen Split-tree visualization to view the combinatorial split-tree."
+            elif data is None:
+                empty = ctk.CTkFrame(
+                    frame,
+                    corner_radius=14,
+                    fg_color=("gray92", "gray20"),
+                    border_width=1,
+                    border_color=("gray80", "gray30"),
+                )
+                empty.pack(fill="x", padx=24, pady=40)
+                ctk.CTkLabel(
+                    empty,
+                    text="No RT assignment run yet",
+                    font=ctk.CTkFont(size=20, weight="bold"),
+                    anchor="center",
+                ).pack(padx=28, pady=(28, 8), fill="x")
+                ctk.CTkLabel(
+                    empty,
+                    text=(
+                        "Choose Direct pick or Pedigree in the sidebar, set parameters, "
+                        "then click Run RT assignment."
+                    ),
+                    font=ctk.CTkFont(size=14),
+                    text_color="gray",
+                    anchor="center",
+                    wraplength=640,
+                    justify="center",
+                ).pack(padx=28, pady=(0, 28), fill="x")
+            else:
+                mode = self._context._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
+                picker = data.peak_picking_algorithm or ""
+                if mode == _RT_ANALYSIS_PEDIGREE and self._context._pedigree_result is not None:
+                    pedigree = self._context._pedigree_result
+                    if not picker:
+                        picker = pedigree.settings.peak_picking_algorithm
+                    self._render_rt_results_table(
+                        frame,
+                        title="Pedigree RT assignment",
+                        subtitle=self._format_rt_results_subtitle(mode=mode, picker=picker),
+                        rows=self._pedigree_result_rows(pedigree, data),
+                        footnote=(
+                            "Open Pedigree visualization and click Generate plot "
+                            "to view the tier-ring."
+                        ),
+                        tier_summaries=list(pedigree.tier_summaries),
+                    )
+                else:
+                    self._render_rt_results_table(
+                        frame,
+                        title="Direct pick RT assignment",
+                        subtitle=self._format_rt_results_subtitle(mode=mode, picker=picker),
+                        rows=self._direct_pick_result_rows(data),
+                        footnote=(
+                            "Open Split-tree visualization to view the combinatorial split-tree."
+                        ),
+                    )
+            try:
+                self._context._focus_tab(_TAB_RT_ASSIGNMENT)
+                frame.update_idletasks()
+            except tk.TclError:
+                pass
+        except Exception:
+            logger.exception("Failed to render RT assignment results summary")
+            try:
+                self._qc_panel._clear_frame_children(frame)
+                ctk.CTkLabel(
+                    frame,
+                    text="RT assignment finished, but the results summary could not be displayed.",
+                    font=ctk.CTkFont(size=14),
+                    text_color="#D29922",
+                    anchor="w",
+                    wraplength=640,
+                    justify="left",
+                ).pack(fill="x", padx=24, pady=24)
+            except Exception:
+                logger.exception("Could not show RT assignment results fallback message")
+
+    def _format_rt_results_subtitle(self, *, mode: str, picker: str) -> str:
+        return (
+            f"{self._format_analysis_mode_label(mode)}"
+            f"  ·  Peak picking: {self._context._format_peak_picking_mode_label(picker)}"
         )
+
+    def _direct_pick_result_rows(
+        self, data: DelCycleTreeData
+    ) -> List[Tuple[str, str]]:
+        n_products = len(data.verified_sequences) or data.n_rows
+        n_failed = max(0, n_products - data.n_verified)
+        return [
+            ("Products with assigned RT", f"{data.n_rows:,}"),
+            (
+                "Passed null verification",
+                f"{data.n_verified:,} of {n_products:,}",
+            ),
+            (
+                "Null-matching products",
+                f"{n_failed:,} of {n_products:,}",
+            ),
+            ("Null RT threshold", f"{data.rt_threshold:g}"),
+            ("Library cycles", f"{data.library_cycle_count}"),
+        ]
+
+    def _pedigree_result_rows(
+        self,
+        pedigree: PedigreeAnalysisResult,
+        data: Optional[DelCycleTreeData],
+    ) -> List[Tuple[str, str]]:
+        settings = pedigree.settings
+        picker_label = self._context._format_peak_picking_mode_label(
+            settings.peak_picking_algorithm
+        )
+        rows: List[Tuple[str, str]] = [
+            ("Nodes evaluated", f"{len(pedigree.records):,}"),
+            ("Chromatograms", f"{pedigree.n_chromatograms:,}"),
+            ("Count channel", str(pedigree.channel)),
+            ("Peak picking mode", picker_label),
+            (
+                "Null RT threshold",
+                f"{settings.tolerance:g} {settings.time_unit}",
+            ),
+        ]
+        if settings.uses_modern_peak_picker:
+            rows.append(("Modern α", f"{settings.alpha:g}"))
+        if settings.min_prominence > 0 or settings.min_pct_area > 0:
+            rows.append(
+                (
+                    "Quality filters",
+                    (
+                        f"prominence ≥ {settings.min_prominence:g}, "
+                        f"%area ≥ {settings.min_pct_area:g}"
+                    ),
+                )
+            )
+        if pedigree.isoform_label and pedigree.isoform_label != "All":
+            rows.append(("Isoform filter", pedigree.isoform_label))
+        if data is not None:
+            n_products = len(data.verified_sequences) or data.n_rows
+            n_failed = max(0, n_products - data.n_verified)
+            rows.extend(
+                [
+                    (
+                        "Passed null verification",
+                        f"{data.n_verified:,} of {n_products:,}",
+                    ),
+                    (
+                        "Null-matching products",
+                        f"{n_failed:,} of {n_products:,}",
+                    ),
+                ]
+            )
+        return rows
+
+    def _render_rt_results_table(
+        self,
+        parent: ctk.CTkFrame,
+        *,
+        title: str,
+        subtitle: str,
+        rows: List[Tuple[str, str]],
+        footnote: str = "",
+        tier_summaries: Optional[List[PedigreeTierSummary]] = None,
+    ) -> None:
+        """Build a large centered results card with Metric | Value rows."""
+        card = ctk.CTkFrame(
+            parent,
+            corner_radius=14,
+            fg_color=("gray94", "gray18"),
+            border_width=1,
+            border_color=("gray78", "gray32"),
+        )
+        card.pack(fill="x", padx=24, pady=(16, 24))
+        card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            card,
+            text=title,
+            font=ctk.CTkFont(size=22, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, padx=28, pady=(24, 4), sticky="w")
+        ctk.CTkLabel(
+            card,
+            text=subtitle,
+            font=ctk.CTkFont(size=14),
+            text_color=("gray35", "gray70"),
+            anchor="w",
+        ).grid(row=1, column=0, padx=28, pady=(0, 16), sticky="w")
+
+        table = ctk.CTkFrame(card, fg_color="transparent")
+        table.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 8))
+        table.grid_columnconfigure(0, weight=1)
+        table.grid_columnconfigure(1, weight=1)
+
+        header = ctk.CTkFrame(
+            table,
+            corner_radius=8,
+            fg_color=("gray88", "gray24"),
+        )
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            header,
+            text="Metric",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, padx=16, pady=10, sticky="w")
+        ctk.CTkLabel(
+            header,
+            text="Value",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="e",
+        ).grid(row=0, column=1, padx=16, pady=10, sticky="e")
+
+        for index, (metric, value) in enumerate(rows):
+            row_bg = ("gray90", "gray22") if index % 2 == 0 else ("gray96", "gray16")
+            row_frame = ctk.CTkFrame(
+                table,
+                corner_radius=8,
+                fg_color=row_bg,
+            )
+            row_frame.grid(row=index + 1, column=0, columnspan=2, sticky="ew", pady=3)
+            row_frame.grid_columnconfigure(0, weight=1)
+            row_frame.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(
+                row_frame,
+                text=metric,
+                font=ctk.CTkFont(size=15),
+                anchor="w",
+            ).grid(row=0, column=0, padx=16, pady=12, sticky="w")
+            ctk.CTkLabel(
+                row_frame,
+                text=value,
+                font=ctk.CTkFont(size=16, weight="bold"),
+                text_color=("#0969da", "#58a6ff"),
+                anchor="e",
+            ).grid(row=0, column=1, padx=16, pady=12, sticky="e")
+
+        next_row = 3
+        if tier_summaries:
+            tier_card = ctk.CTkFrame(card, fg_color="transparent")
+            tier_card.grid(row=next_row, column=0, sticky="ew", padx=20, pady=(12, 4))
+            tier_card.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                tier_card,
+                text="By coupling tier",
+                font=ctk.CTkFont(size=16, weight="bold"),
+                anchor="w",
+            ).grid(row=0, column=0, padx=8, pady=(4, 8), sticky="w")
+
+            tier_table = ctk.CTkFrame(tier_card, fg_color="transparent")
+            tier_table.grid(row=1, column=0, sticky="ew", padx=4)
+            for col in range(4):
+                tier_table.grid_columnconfigure(col, weight=1)
+
+            for col, heading in enumerate(("Tier", "Pass", "Fail", "Pruned")):
+                ctk.CTkLabel(
+                    tier_table,
+                    text=heading,
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                    anchor="center",
+                ).grid(row=0, column=col, padx=6, pady=(0, 6), sticky="ew")
+
+            for row_idx, summary in enumerate(tier_summaries, start=1):
+                values = (
+                    str(summary.tier),
+                    f"{summary.pass_count:,}",
+                    f"{summary.fail_count:,}",
+                    f"{summary.pruned_count:,}",
+                )
+                row_bg = (
+                    ("gray90", "gray22") if row_idx % 2 else ("gray96", "gray16")
+                )
+                for col, value in enumerate(values):
+                    cell = ctk.CTkFrame(
+                        tier_table,
+                        corner_radius=6,
+                        fg_color=row_bg,
+                    )
+                    cell.grid(row=row_idx, column=col, sticky="ew", padx=3, pady=2)
+                    ctk.CTkLabel(
+                        cell,
+                        text=value,
+                        font=ctk.CTkFont(size=15, weight="bold" if col else "normal"),
+                        anchor="center",
+                    ).pack(padx=8, pady=10)
+            next_row += 1
+
+        if footnote:
+            ctk.CTkLabel(
+                card,
+                text=footnote,
+                font=ctk.CTkFont(size=13),
+                text_color=("gray40", "gray65"),
+                anchor="w",
+                wraplength=720,
+                justify="left",
+            ).grid(row=next_row, column=0, padx=28, pady=(12, 24), sticky="w")
 
     def _on_run_rt_assignment(self) -> None:
         self._context._session_state.invalidate_splittree()
@@ -847,7 +1103,6 @@ class RtAssignmentPanel:
                 )
             )
         self._callbacks.update_tree_status(data)
-        self._update_rt_assignment_results(data)
         settings = self._peek_pedigree_settings()
         if settings is not None:
             mode = self._context._last_rt_analysis_mode or _RT_ANALYSIS_DIRECT
@@ -868,8 +1123,11 @@ class RtAssignmentPanel:
                 text=f"RT assignment ready — {data.n_verified:,} RT-verified of {len(data.verified_sequences):,} products. Analysis mode: {self._format_analysis_mode_label(mode)}. Peak picking mode: {self._context._format_peak_picking_mode_label(picker)}.",
                 text_color=("gray10", "gray90"),
             )
+        # Hide the overlay before painting results — updating a CTkScrollableFrame while
+        # the content tabview is grid_removed often leaves a blank results area.
         if self._context._del_build_show_loading:
             self._context._hide_loading_page()
+        self._update_rt_assignment_results(data)
         pending_isoform = self._context._pending_splittree_isoform
         if pending_isoform is not None:
             self._context._pending_splittree_isoform = None

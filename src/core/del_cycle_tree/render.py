@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -18,6 +18,7 @@ ACTIVE_COLOR = "powderblue"
 ROOT_COLOR = "lightgray"
 COLOR_MODE_NOTEBOOK = "notebook"
 COLOR_MODE_PEDIGREE = "pedigree"
+ProgressCallback = Callable[[float, str], None]
 
 # Notebook ``visualize_*`` uses figsize=(40, 40) with these point sizes.
 NOTEBOOK_REFERENCE_FIGSIZE = 40.0
@@ -25,6 +26,15 @@ FULL_TREE_HUB_SIZES = {0: 700, 1: 500, 2: 150}
 BRANCH_HUB_SIZES = {1: 700, 2: 500, 3: 400, 4: 320, 5: 280}
 LEAF_NODE_SIZE = 90
 HUB_LABEL_FONT = {0: 12, 1: 12, 2: 10, 3: 9, 4: 8, 5: 7}
+
+
+def _report_progress(
+    callback: Optional[ProgressCallback],
+    fraction: float,
+    status: str,
+) -> None:
+    if callback is not None:
+        callback(min(1.0, max(0.0, fraction)), status)
 
 
 def _figsize_scale(figsize: Tuple[float, float]) -> float:
@@ -134,6 +144,7 @@ def render_del_cycle_tree_figure(
     pass_pct_cutoff: float = 0.0,
     figsize: Tuple[float, float] = (12.0, 12.0),
     show_figure_title: bool = True,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> plt.Figure:
     """Build a matplotlib figure for the requested split-tree view."""
     if view == DelCycleTreeView.FULL:
@@ -144,6 +155,7 @@ def render_del_cycle_tree_figure(
             pass_pct_cutoff=pass_pct_cutoff,
             figsize=figsize,
             show_figure_title=show_figure_title,
+            progress_callback=progress_callback,
         )
     if not branch_bb1:
         raise ValueError("branch_bb1 is required for branch view")
@@ -157,6 +169,7 @@ def render_del_cycle_tree_figure(
         pass_pct_cutoff=pass_pct_cutoff,
         figsize=figsize,
         show_figure_title=show_figure_title,
+        progress_callback=progress_callback,
     )
 
 
@@ -168,20 +181,22 @@ def _render_full_tree(
     pass_pct_cutoff: float,
     figsize: Tuple[float, float],
     show_figure_title: bool = True,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> plt.Figure:
     """Root → BB1 → BB2 overview (deepest cycle omitted, matching legacy notebook)."""
     n_cycles = data.library_cycle_count
     if n_cycles < 2:
         raise ValueError("Split-tree requires at least two coupling cycles")
 
+    _report_progress(progress_callback, 0.08, "Building full split-tree graph…")
     graph = nx.Graph()
     root: TreeNode = (0, data.null_token)
     graph.add_node(root, color=ROOT_COLOR, edgecolor="k")
     null = data.null_token
 
-    for bb1_name in data.bb1_names:
-        if bb1_name not in data.tree or bb1_name == null:
-            continue
+    bb1_list = [name for name in data.bb1_names if name in data.tree and name != null]
+    bb1_total = max(len(bb1_list), 1)
+    for index, bb1_name in enumerate(bb1_list):
         bb1_node: TreeNode = (1, bb1_name)
         pruned = _path_fails_pass_cutoff(
             data,
@@ -219,10 +234,19 @@ def _render_full_tree(
                 bb2_node,
                 color="r" if pruned_bb2 else "k",
             )
+        if index % max(1, bb1_total // 20) == 0 or index + 1 == bb1_total:
+            _report_progress(
+                progress_callback,
+                0.08 + 0.32 * ((index + 1) / bb1_total),
+                f"Building full split-tree graph ({index + 1}/{bb1_total})…",
+            )
 
+    _report_progress(progress_callback, 0.45, "Computing node sizes…")
     node_sizes = _assign_node_sizes(graph, view=DelCycleTreeView.FULL, figsize=figsize)
+    _report_progress(progress_callback, 0.58, "Computing sunflower layout…")
     positions = _sunflower_fractal_layout(graph, root, node_sizes)
-    return _draw_graph(
+    _report_progress(progress_callback, 0.72, "Drawing split-tree figure…")
+    figure = _draw_graph(
         graph,
         positions,
         node_sizes,
@@ -234,6 +258,8 @@ def _render_full_tree(
         view=DelCycleTreeView.FULL,
         title="Split-tree (full)" if show_figure_title else "",
     )
+    _report_progress(progress_callback, 1.0, "Split-tree figure ready…")
+    return figure
 
 
 def _render_branch_tree(
@@ -245,12 +271,18 @@ def _render_branch_tree(
     pass_pct_cutoff: float,
     figsize: Tuple[float, float],
     show_figure_title: bool = True,
+    progress_callback: Optional[ProgressCallback] = None,
 ) -> plt.Figure:
     """BB1 → BB2 → … branch for one BB1 root."""
     null = data.null_token
     if branch_bb1 == null:
         raise ValueError("Null BB1 branch is not rendered")
 
+    _report_progress(
+        progress_callback,
+        0.08,
+        f"Building branch graph for {branch_bb1}…",
+    )
     graph = nx.Graph()
     bb1_node: TreeNode = (1, branch_bb1)
     pruned_bb1 = _path_fails_pass_cutoff(
@@ -279,9 +311,12 @@ def _render_branch_tree(
             pass_pct_cutoff=pass_pct_cutoff,
         )
 
+    _report_progress(progress_callback, 0.45, "Computing branch node sizes…")
     node_sizes = _assign_node_sizes(graph, view=DelCycleTreeView.BRANCH, figsize=figsize)
+    _report_progress(progress_callback, 0.58, "Computing branch layout…")
     positions = _sunflower_fractal_layout(graph, bb1_node, node_sizes)
-    return _draw_graph(
+    _report_progress(progress_callback, 0.72, "Drawing branch figure…")
+    figure = _draw_graph(
         graph,
         positions,
         node_sizes,
@@ -293,6 +328,8 @@ def _render_branch_tree(
         view=DelCycleTreeView.BRANCH,
         title=f"Split-tree branch — {branch_bb1}" if show_figure_title else "",
     )
+    _report_progress(progress_callback, 1.0, "Split-tree figure ready…")
+    return figure
 
 
 def _add_branch_nodes(

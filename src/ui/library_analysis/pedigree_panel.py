@@ -10,19 +10,13 @@ from typing import List, Optional, Protocol
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
-from src.core.library_metrics_store import database_paths_match
-from src.core.pedigree_analysis_store import (
-    get_latest_pedigree_snapshot_path,
-    get_pedigree_analysis_dir,
-    load_pedigree_result,
-    save_pedigree_result,
-    session_pedigree_dir,
-)
+from src.core.pedigree_analysis_store import session_pedigree_dir
 from src.core.pedigree_backend import pedigree_backend_available
 from src.core.pedigree_export import export_pedigree_csv
 from src.core.pedigree_render import (
     PedigreeTreeRenderOptions,
     build_default_tree_render_options,
+    build_pedigree_tree_matplotlib_figure,
     build_pedigree_tree_preview_figure,
     count_visible_pedigree_nodes,
     graphviz_available,
@@ -32,7 +26,6 @@ from src.core.pedigree_render import (
     suggest_include_failed,
 )
 from src.core.pedigree_service import run_pedigree_analysis_for_path
-from src.core.del_cycle_tree import DelCycleTreeData, build_del_cycle_tree_for_path
 from src.models.analysis_settings import AnalysisSettings
 from src.models.pedigree_result import PedigreeAnalysisResult, PedigreeTierSummary
 from src.ui.library_analysis.contexts import (
@@ -307,6 +300,7 @@ class PedigreePanel:
         *,
         fmt: str = "png",
         options: Optional[PedigreeTreeRenderOptions] = None,
+        progress_callback=None,
     ):
         """Render a pedigree tree with supplied or current display controls."""
         opts = options or self._pedigree_tree_render_options()
@@ -318,6 +312,7 @@ class PedigreePanel:
             max_display_tier=opts.max_display_tier,
             include_failed=opts.include_failed,
             show_rt=opts.show_rt,
+            progress_callback=progress_callback,
         )
         result.tree_image_path = render_out.path
         result.tree_render_engine = render_out.engine
@@ -423,6 +418,8 @@ class PedigreePanel:
         self._context._pedigree_result = result
         self._context._pedigree_snapshot_path = None
         self._update_pedigree_graphviz_banner()
+        # Restore the content tabview before painting the results card.
+        self._context._hide_loading_page()
         self._callbacks.update_rt_results(pedigree_result=result)
         if tree_opts is not None:
             self._context._pedigree_show_rt_var.set(tree_opts.show_rt)
@@ -446,7 +443,6 @@ class PedigreePanel:
                 self._context._content_tabview.set(_TAB_RT_ASSIGNMENT)
             except ValueError:
                 pass
-        self._context._hide_loading_page()
         self._context._update_action_states()
         self._callbacks.update_split_tree_status()
         self._context._schedule_on_main(self._callbacks.ensure_del_cycle_tree)
@@ -466,21 +462,50 @@ class PedigreePanel:
         self._show_pedigree_tree_placeholder("Generating pedigree plot…")
         self._context._show_loading_page(
             "Generating pedigree plot",
-            "Rendering the pedigree tier-ring with the selected display options…",
+            "Preparing pedigree layout…",
         )
         self._context._update_action_states()
 
         def worker() -> None:
             try:
+
+                def export_progress(fraction: float, status: str) -> None:
+                    self._context._thread_loading_progress(
+                        min(0.55, 0.02 + 0.53 * fraction),
+                        status or "Rendering pedigree export image…",
+                    )
+
+                def preview_progress(fraction: float, status: str) -> None:
+                    self._context._thread_loading_progress(
+                        min(0.98, 0.58 + 0.40 * fraction),
+                        status or "Building interactive pedigree preview…",
+                    )
+
+                self._context._thread_loading_progress(
+                    0.02, "Writing pedigree export image…"
+                )
                 render_out = self._render_pedigree_tree_image(
                     result,
                     tree_path,
                     options=options,
+                    progress_callback=export_progress,
                 )
+                self._context._thread_loading_progress(
+                    0.58, "Building interactive pedigree preview…"
+                )
+                preview_figure = build_pedigree_tree_matplotlib_figure(
+                    result.records,
+                    max_display_tier=options.max_display_tier,
+                    include_failed=options.include_failed,
+                    show_rt=options.show_rt,
+                    progress_callback=preview_progress,
+                )
+                self._context._thread_loading_progress(0.99, "Mounting pedigree plot…")
                 self._context._bind_worker_callback(
                     self._on_pedigree_plot_ready,
                     result,
                     render_out.engine,
+                    preview_figure,
                 )
             except Exception as exc:
                 logger.error("Pedigree plot generation failed: %s", exc, exc_info=True)
@@ -492,12 +517,16 @@ class PedigreePanel:
         self,
         result: PedigreeAnalysisResult,
         render_engine: str,
+        preview_figure=None,
     ) -> None:
         """Publish and display a completed pedigree visualization."""
         self._context._worker_thread = None
         self._update_pedigree_graphviz_banner()
         self._update_pedigree_tree_density_note(result)
-        self._show_pedigree_tree_preview(result)
+        if preview_figure is not None:
+            self._mount_pedigree_tree_figure(preview_figure)
+        else:
+            self._show_pedigree_tree_preview(result)
         try:
             self._callbacks.capture_visualization(result)
         except Exception as exc:
@@ -544,10 +573,6 @@ class PedigreePanel:
         self._context._update_action_states()
 
     def _display_pedigree_result(self, result: PedigreeAnalysisResult) -> None:
-        if self._context._pedigree_summary_label is not None:
-            self._context._pedigree_summary_label.configure(
-                text=self._format_pedigree_summary(result), text_color=("gray10", "gray90")
-            )
         self._qc_panel._clear_frame_children(self._context._pedigree_frame)
         if self._context._pedigree_frame is not None:
             total_pass = sum((s.pass_count for s in result.tier_summaries))
@@ -723,134 +748,3 @@ class PedigreePanel:
                     else "Install Graphviz for the preferred layout (see docs/DEVELOPER_SETUP.md), or export again with the matplotlib fallback."
                 ),
             )
-
-    def _on_save_pedigree(self) -> None:
-        if self._context._pedigree_result is None:
-            return
-        try:
-            saved = save_pedigree_result(self._context._pedigree_result)
-            self._context._pedigree_snapshot_path = saved
-            messagebox.showinfo(
-                "Pedigree", f"Saved pedigree snapshot to:\n{saved}", parent=self._context
-            )
-            self._context._update_action_states()
-        except Exception as exc:
-            messagebox.showerror("Pedigree", str(exc), parent=self._context)
-
-    def _on_load_last_pedigree(self) -> None:
-        if self._context._db_path is None:
-            return
-        path = get_latest_pedigree_snapshot_path(self._context._db_path)
-        if path is None:
-            messagebox.showinfo(
-                "Pedigree", "No saved pedigree run for this database.", parent=self._context
-            )
-            return
-        self._load_pedigree_from_path(path)
-
-    def _on_browse_pedigree(self) -> None:
-        initial = str(get_pedigree_analysis_dir()) if self._context._db_path else ""
-        path = filedialog.askopenfilename(
-            parent=self._context,
-            title="Open pedigree snapshot",
-            initialdir=initial,
-            filetypes=[("Pedigree JSON", "*.json")],
-        )
-        if not path:
-            return
-        self._load_pedigree_from_path(Path(path))
-
-    def _load_pedigree_from_path(self, path: Path) -> None:
-        try:
-            result = load_pedigree_result(path)
-        except Exception as exc:
-            messagebox.showerror(
-                "Pedigree", f"Could not load snapshot:\n{exc}", parent=self._context
-            )
-            return
-        if self._context._db_path is not None and (
-            not database_paths_match(result.database_path, self._context._db_path)
-        ):
-            if not messagebox.askyesno(
-                "Pedigree",
-                "This snapshot was saved from a different database. Load anyway?",
-                parent=self._context,
-            ):
-                return
-        self._context._show_loading_page(
-            "Loading pedigree", "Restoring pedigree snapshot and rebuilding split-tree data…"
-        )
-        config = self._context._config
-
-        def worker() -> None:
-            del_data = None
-            try:
-                if (
-                    config is not None
-                    and config.pedigree_configured()
-                    and (self._context._db_path is not None)
-                ):
-                    del_data = build_del_cycle_tree_for_path(
-                        self._context._db_path,
-                        config,
-                        result.settings,
-                        result.settings.count_channel,
-                        result.settings.time_unit,
-                        rt_threshold=float(result.settings.tolerance),
-                        pedigree_result=result,
-                        use_metadata_rt=False,
-                        progress_callback=None,
-                    )
-            except Exception as exc:
-                logger.warning("Split-tree rebuild on pedigree load failed: %s", exc, exc_info=True)
-            self._context._bind_worker_callback(self._on_pedigree_loaded, result, path, del_data)
-
-        self._context._start_worker(worker)
-
-    def _on_pedigree_loaded(
-        self, result: PedigreeAnalysisResult, path: Path, del_data: Optional[DelCycleTreeData]
-    ) -> None:
-        self._context._worker_thread = None
-        self._context._pedigree_result = result
-        self._context._pedigree_snapshot_path = path
-        if del_data is not None:
-            self._context._del_cycle_tree_data = del_data
-            self._context._del_cycle_tree_isoform = "All"
-            self._callbacks.update_branch_choices(del_data)
-        else:
-            self._context._del_cycle_tree_data = None
-            self._context._del_cycle_tree_isoform = None
-        self._sync_pedigree_controls(result)
-        self._update_pedigree_graphviz_banner()
-        self._configure_pedigree_tier_slider(result)
-        if result.max_display_tier is not None:
-            self._context._pedigree_include_failed_var.set(
-                suggest_include_failed(result.records, max_display_tier=result.max_display_tier)
-            )
-        self._update_pedigree_tree_density_note(result)
-        self._display_pedigree_result(result)
-        self._context._pedigree_viz_artifact = None
-        self._show_pedigree_tree_placeholder(
-            "Pedigree snapshot loaded. Click Generate plot in the sidebar."
-        )
-        if self._context._pedigree_status_label is not None:
-            note = f"Loaded pedigree snapshot from {path.name}"
-            if del_data is not None:
-                note += f" — DEL tree ready ({del_data.n_verified:,} verified)."
-            self._context._pedigree_status_label.configure(
-                text=note, text_color=("gray10", "gray90")
-            )
-        if self._context._content_tabview is not None:
-            try:
-                self._context._content_tabview.set(_TAB_RT_ASSIGNMENT)
-            except ValueError:
-                pass
-        self._context._hide_loading_page()
-        self._context._update_action_states()
-
-    def _sync_pedigree_controls(self, result: PedigreeAnalysisResult) -> None:
-        settings = result.settings
-        self._context._pedigree_channel_var.set(settings.count_channel)
-        self._context._pedigree_time_unit_var.set(settings.time_unit)
-        self._context._pedigree_tolerance_var.set(str(settings.tolerance))
-        self._context._pedigree_alpha_var.set(str(settings.alpha))

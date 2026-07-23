@@ -67,6 +67,35 @@ def _report_progress(
         callback(min(1.0, max(0.0, fraction)), status)
 
 
+def _report_span_progress(
+    callback: Optional[ProgressCallback],
+    *,
+    start: float,
+    end: float,
+    index: int,
+    total: int,
+    status: str,
+    min_step: float = 0.01,
+    force: bool = False,
+    last_fraction: Optional[List[float]] = None,
+) -> None:
+    """Report progress within ``[start, end]`` for step ``index`` of ``total``.
+
+    Throttles UI updates so large loops do not flood the main thread. Pass a
+    one-element ``last_fraction`` list to share throttle state across calls.
+    """
+    if callback is None or total <= 0:
+        return
+    span = max(end - start, 0.0)
+    fraction = start + span * min(1.0, (index + 1) / total)
+    if last_fraction is not None and not force:
+        previous = last_fraction[0] if last_fraction else start
+        if fraction - previous < min_step and index + 1 < total:
+            return
+        last_fraction[:] = [fraction]
+    _report_progress(callback, fraction, status)
+
+
 def _bool_csv(value: bool) -> str:
     return "TRUE" if value else "FALSE"
 
@@ -296,15 +325,32 @@ def _write_products_csv(
     path: Path,
     *,
     time_unit: str = "seconds",
+    products: Optional[Sequence[Tuple[Tuple[str, ...], VerifiedSequence]]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
+    progress_start: float = 0.05,
+    progress_end: float = 0.22,
 ) -> None:
     rt_column = product_rt_column_name(time_unit)
     fieldnames = _products_fieldnames(data.library_cycle_count, rt_column=rt_column)
+    rows = list(products) if products is not None else list(_iter_full_products(data))
+    total = len(rows)
+    last_fraction: List[float] = [progress_start]
     with path.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
-        for positions, info in _iter_full_products(data):
+        for index, (positions, info) in enumerate(rows):
             writer.writerow(
                 _product_row(data, positions, info, rt_column=rt_column)
+            )
+            _report_span_progress(
+                progress_callback,
+                start=progress_start,
+                end=progress_end,
+                index=index,
+                total=total,
+                status=f"Writing product table ({index + 1:,}/{total:,})…",
+                last_fraction=last_fraction,
+                force=index + 1 == total,
             )
 
 
@@ -345,11 +391,25 @@ def _prefix_stats(
     return total, passed, total - passed
 
 
-def _build_summary_rows(data: DelCycleTreeData) -> List[Dict[str, object]]:
+def _build_summary_rows(
+    data: DelCycleTreeData,
+    *,
+    progress_callback: Optional[ProgressCallback] = None,
+    progress_start: float = 0.28,
+    progress_end: float = 0.55,
+) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     null = data.null_token
+    bb1_list = _bb1_names_for_export(data)
+    bb2_names = [name for name in _unique_bbs_at_depth(data, 1) if name != null]
+    # Three phases: cycle-1 hubs, cycle-2 globals, cycle-1×cycle-2 couplings.
+    phase_weights = (0.35, 0.25, 0.40)
+    span = max(progress_end - progress_start, 0.0)
+    phase1_end = progress_start + span * phase_weights[0]
+    phase2_end = phase1_end + span * phase_weights[1]
+    last_fraction: List[float] = [progress_start]
 
-    for bb1 in _bb1_names_for_export(data):
+    for index, bb1 in enumerate(bb1_list):
         total, passed, failed = _prefix_stats(data, (bb1,))
         pass_pct = (100.0 * passed / total) if total else 0.0
         rows.append(
@@ -371,11 +431,18 @@ def _build_summary_rows(data: DelCycleTreeData) -> List[Dict[str, object]]:
                 ),
             }
         )
+        _report_span_progress(
+            progress_callback,
+            start=progress_start,
+            end=phase1_end,
+            index=index,
+            total=max(len(bb1_list), 1),
+            status=f"Summarizing cycle-1 hubs ({index + 1}/{len(bb1_list)})…",
+            last_fraction=last_fraction,
+            force=index + 1 == len(bb1_list),
+        )
 
-    bb2_names = _unique_bbs_at_depth(data, 1)
-    for bb2 in bb2_names:
-        if bb2 == null:
-            continue
+    for index, bb2 in enumerate(bb2_names):
         total = 0
         passed = 0
         for positions, info in _iter_full_products(data):
@@ -405,36 +472,65 @@ def _build_summary_rows(data: DelCycleTreeData) -> List[Dict[str, object]]:
                 ),
             }
         )
+        _report_span_progress(
+            progress_callback,
+            start=phase1_end,
+            end=phase2_end,
+            index=index,
+            total=max(len(bb2_names), 1),
+            status=f"Summarizing cycle-2 building blocks ({index + 1}/{len(bb2_names)})…",
+            last_fraction=last_fraction,
+            force=index + 1 == len(bb2_names),
+        )
 
-    for bb1 in _bb1_names_for_export(data):
-        bb2_under = _unique_bbs_at_depth(data, 1)
-        for bb2 in bb2_under:
-            if bb2 == null:
-                continue
+    coupling_total = max(len(bb1_list) * len(bb2_names), 1)
+    coupling_index = 0
+    for bb1 in bb1_list:
+        for bb2 in bb2_names:
             total, passed, failed = _prefix_stats(data, (bb1, bb2))
-            if total == 0:
-                continue
-            pass_pct = 100.0 * passed / total
-            if pass_pct >= _MAJOR_FAIL_PASS_PCT:
-                continue
-            rows.append(
-                {
-                    "scope": "cycle_1_and_2",
-                    "bb_cycle_1": bb1,
-                    "bb_cycle_2": bb2,
-                    "bb1_index": lookup_bb_display_index(bb1, data.bb_index_global, null_token=null) or "",
-                    "bb2_index": lookup_bb_display_index(bb2, data.bb_index_global, null_token=null) or "",
-                    "total_products": total,
-                    "n_rt_verified_pass": passed,
-                    "n_rt_verified_fail": failed,
-                    "pass_pct": round(pass_pct, 1),
-                    "majority_failed": "TRUE",
-                    "flag_reason": (
-                        f"Under BB1={bb1}, cycle-2 arm {bb2} yields majority RT verification failures"
-                    ),
-                }
+            if total > 0:
+                pass_pct = 100.0 * passed / total
+                if pass_pct < _MAJOR_FAIL_PASS_PCT:
+                    rows.append(
+                        {
+                            "scope": "cycle_1_and_2",
+                            "bb_cycle_1": bb1,
+                            "bb_cycle_2": bb2,
+                            "bb1_index": lookup_bb_display_index(
+                                bb1, data.bb_index_global, null_token=null
+                            )
+                            or "",
+                            "bb2_index": lookup_bb_display_index(
+                                bb2, data.bb_index_global, null_token=null
+                            )
+                            or "",
+                            "total_products": total,
+                            "n_rt_verified_pass": passed,
+                            "n_rt_verified_fail": failed,
+                            "pass_pct": round(pass_pct, 1),
+                            "majority_failed": "TRUE",
+                            "flag_reason": (
+                                f"Under BB1={bb1}, cycle-2 arm {bb2} yields majority "
+                                "RT verification failures"
+                            ),
+                        }
+                    )
+            _report_span_progress(
+                progress_callback,
+                start=phase2_end,
+                end=progress_end,
+                index=coupling_index,
+                total=coupling_total,
+                status=(
+                    f"Checking cycle-1×cycle-2 couplings "
+                    f"({coupling_index + 1}/{coupling_total})…"
+                ),
+                last_fraction=last_fraction,
+                force=coupling_index + 1 == coupling_total,
             )
+            coupling_index += 1
 
+    _report_progress(progress_callback, progress_end, "Summary report ready…")
     return rows
 
 
@@ -513,9 +609,13 @@ def _build_flagged_bb_commentary(
     return " ".join(parts)
 
 
-def _build_flagged_bb_rows(data: DelCycleTreeData) -> List[Dict[str, object]]:
+def _build_flagged_bb_rows(
+    data: DelCycleTreeData,
+    *,
+    summary_rows: Optional[Sequence[Dict[str, object]]] = None,
+) -> List[Dict[str, object]]:
     """Aggregate repeatedly flagged building blocks with commentary."""
-    summary = _build_summary_rows(data)
+    summary = list(summary_rows) if summary_rows is not None else _build_summary_rows(data)
     null = data.null_token
     _total_lib, _passed_lib, library_pass_pct = _library_pass_stats(data)
 
@@ -619,7 +719,12 @@ def _build_flagged_bb_rows(data: DelCycleTreeData) -> List[Dict[str, object]]:
     return rows_out
 
 
-def _write_flagged_bb_csv(data: DelCycleTreeData, path: Path) -> int:
+def _write_flagged_bb_csv(
+    data: DelCycleTreeData,
+    path: Path,
+    *,
+    summary_rows: Optional[Sequence[Dict[str, object]]] = None,
+) -> int:
     fieldnames = [
         "bb_name",
         "bb_index",
@@ -637,7 +742,7 @@ def _write_flagged_bb_csv(data: DelCycleTreeData, path: Path) -> int:
         "flagged_coupling_details",
         "commentary",
     ]
-    rows = _build_flagged_bb_rows(data)
+    rows = _build_flagged_bb_rows(data, summary_rows=summary_rows)
     with path.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
@@ -646,7 +751,15 @@ def _write_flagged_bb_csv(data: DelCycleTreeData, path: Path) -> int:
     return len(rows)
 
 
-def _write_summary_csv(data: DelCycleTreeData, path: Path) -> None:
+def _write_summary_csv(
+    data: DelCycleTreeData,
+    path: Path,
+    *,
+    summary_rows: Optional[Sequence[Dict[str, object]]] = None,
+    progress_callback: Optional[ProgressCallback] = None,
+    progress_start: float = 0.28,
+    progress_end: float = 0.55,
+) -> List[Dict[str, object]]:
     fieldnames = [
         "scope",
         "bb_cycle_1",
@@ -660,12 +773,22 @@ def _write_summary_csv(data: DelCycleTreeData, path: Path) -> None:
         "majority_failed",
         "flag_reason",
     ]
-    rows = _build_summary_rows(data)
+    rows = (
+        list(summary_rows)
+        if summary_rows is not None
+        else _build_summary_rows(
+            data,
+            progress_callback=progress_callback,
+            progress_start=progress_start,
+            progress_end=progress_end,
+        )
+    )
     with path.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+    return rows
 
 
 def _write_bb1_grid_xlsx(
@@ -716,26 +839,38 @@ def _write_bb1_grids(
     progress_end: float = 0.95,
 ) -> List[Path]:
     if data.library_cycle_count != 3:
+        _report_progress(
+            progress_callback,
+            progress_end,
+            "Skipping BB1 grids (requires a 3-cycle library)…",
+        )
         return []
 
     bb2_names = _unique_bbs_at_depth(data, 1)
     bb3_names = _unique_bbs_at_depth(data, 2)
     if not bb2_names or not bb3_names:
+        _report_progress(
+            progress_callback,
+            progress_end,
+            "Skipping BB1 grids (missing BB2/BB3 names)…",
+        )
         return []
 
     grids_dir.mkdir(parents=True, exist_ok=True)
     written: List[Path] = []
     bb1_list = _bb1_names_for_export(data)
     total = len(bb1_list)
+    if total == 0:
+        _report_progress(progress_callback, progress_end, "No BB1 grids to write…")
+        return []
     span = max(progress_end - progress_start, 0.0)
     for index, bb1 in enumerate(bb1_list):
-        if total > 0:
-            fraction = progress_start + span * (index / total)
-            _report_progress(
-                progress_callback,
-                fraction,
-                f"Writing BB1 grid {index + 1}/{total}: {bb1}…",
-            )
+        fraction = progress_start + span * (index / total)
+        _report_progress(
+            progress_callback,
+            fraction,
+            f"Writing BB1 grid {index + 1}/{total}: {bb1}…",
+        )
         safe = _safe_filename(bb1)
         bb_index = lookup_bb_display_index(bb1, data.bb_index_global, null_token=data.null_token)
         prefix = f"del_grid_bb1_{bb_index}_{safe}" if bb_index else f"del_grid_bb1_{safe}"
@@ -748,12 +883,11 @@ def _write_bb1_grids(
             path=path,
         )
         written.append(path)
-    if total > 0:
-        _report_progress(
-            progress_callback,
-            progress_end,
-            f"Finished {total} BB1 grid workbook(s).",
-        )
+    _report_progress(
+        progress_callback,
+        progress_end,
+        f"Finished {total} BB1 grid workbook(s).",
+    )
     return written
 
 
@@ -791,14 +925,26 @@ def export_del_cycle_package(
     flagged_csv = out_dir / "split_tree_flagged_building_blocks.csv"
     grids_dir = out_dir / "grids"
 
-    _report_progress(progress_callback, 0.05, "Writing product table…")
+    _report_progress(
+        progress_callback,
+        0.02,
+        f"Writing product table ({len(products):,} products)…",
+    )
     export_time_unit = (
         analysis_settings.time_unit
         if analysis_settings is not None
         else "seconds"
     )
-    _write_products_csv(data, products_csv, time_unit=export_time_unit)
-    _report_progress(progress_callback, 0.15, "Writing audit metadata…")
+    _write_products_csv(
+        data,
+        products_csv,
+        time_unit=export_time_unit,
+        products=products,
+        progress_callback=progress_callback,
+        progress_start=0.02,
+        progress_end=0.18,
+    )
+    _report_progress(progress_callback, 0.20, "Writing audit metadata…")
     _write_audit_csv(
         data,
         audit_csv,
@@ -806,24 +952,32 @@ def export_del_cycle_package(
         analysis_settings=analysis_settings,
         rt_analysis_mode=rt_analysis_mode,
     )
-    _report_progress(progress_callback, 0.22, "Writing summary report…")
-    _write_summary_csv(data, summary_csv)
-    _report_progress(progress_callback, 0.28, "Writing flagged building blocks…")
-    _write_flagged_bb_csv(data, flagged_csv)
+    _report_progress(progress_callback, 0.24, "Building summary report…")
+    summary_rows = _write_summary_csv(
+        data,
+        summary_csv,
+        progress_callback=progress_callback,
+        progress_start=0.24,
+        progress_end=0.58,
+    )
+    _report_progress(progress_callback, 0.60, "Writing flagged building blocks…")
+    _write_flagged_bb_csv(data, flagged_csv, summary_rows=summary_rows)
+    _report_progress(progress_callback, 0.66, "Preparing BB1 grid workbooks…")
     grid_files = _write_bb1_grids(
         data,
         grids_dir,
         progress_callback=progress_callback,
-        progress_start=0.32,
-        progress_end=0.92,
+        progress_start=0.68,
+        progress_end=0.94,
     )
+
     prominence_csv: Optional[Path] = None
     if (
         pedigree_result is not None
         and pedigree_result.product_prominence is not None
         and pedigree_result.product_prominence.entries
     ):
-        _report_progress(progress_callback, 0.94, "Writing product prominence…")
+        _report_progress(progress_callback, 0.96, "Writing product prominence…")
         prominence_csv = out_dir / "product_prominence.csv"
         export_product_prominence_csv(
             pedigree_result.product_prominence,

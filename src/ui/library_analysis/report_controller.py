@@ -479,7 +479,7 @@ class ReportController:
             messagebox.showinfo(
                 "Generate report",
                 "No report sections are ready yet.\n\n"
-                "Run library scan, metrics, plots, RT assignment, or split-tree steps "
+                "Run metrics, plots, RT assignment, or split-tree steps "
                 "in this session, then return here to assemble a PDF.",
                 parent=self._context,
             )

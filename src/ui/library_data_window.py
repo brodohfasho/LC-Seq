@@ -1,6 +1,6 @@
 # src/ui/library_data_window.py
 """
-Library Analysis dashboard: scan parsed chromatograms, RT assignment, and QC plots.
+Library Analysis dashboard: QC metrics/plots, RT assignment, and pedigree/split-tree.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ from src.core.library_metrics_store import (
 from src.core.library_signal_quality import (
     DEFAULT_SIGNAL_QUALITY_ALPHA,
 )
-from src.core.pedigree_analysis_store import get_latest_pedigree_snapshot_path
 from src.core.pedigree_backend import pedigree_backend_available
 from src.ui.library_analysis import FigureHost, LibraryAnalysisState, TaskCoordinator
 from src.ui.library_analysis.action_state import LibraryActionInputs, LibraryActionState
@@ -66,15 +65,10 @@ _RT_ANALYSIS_PEDIGREE = "pedigree"
 _RT_ANALYSIS_DIRECT = "direct_pick"
 
 
-def _primary_action_font() -> ctk.CTkFont:
-    """Primary action button font (must be created after a Tk root exists)."""
-    return ctk.CTkFont(size=14, weight="bold")
-
-
 class LibraryDataWindow(BaseWindow):
     """
-    Library-wide analysis: scan entries once (parse + sort by time), then
-    optionally compute summary metrics and/or visualizations from that scan.
+    Library-wide analysis: load chromatograms as needed for QC, then RT assignment
+    and pedigree / split-tree visualization.
     """
 
     def __init__(
@@ -136,6 +130,8 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_frame: Optional[ctk.CTkFrame] = None
         self._pedigree_summary_label: Optional[ctk.CTkLabel] = None
         self._pedigree_status_label: Optional[ctk.CTkLabel] = None
+        self._rt_assignment_results_frame: Optional[ctk.CTkFrame] = None
+        self._rt_assignment_results_label: Optional[ctk.CTkLabel] = None
         self._pedigree_tree_host: Optional[ctk.CTkFrame] = None
         self._pedigree_tree_placeholder: Optional[ctk.CTkLabel] = None
         self._pedigree_tree_plot_host: Optional[tk.Frame] = None
@@ -171,12 +167,12 @@ class LibraryDataWindow(BaseWindow):
         self._export_rts_btn: Optional[ctk.CTkButton] = None
         self._splittree_export_png_btn: Optional[ctk.CTkButton] = None
         self._splittree_export_branches_btn: Optional[ctk.CTkButton] = None
+        self._splittree_export_bundle_btn: Optional[ctk.CTkButton] = None
         self._rt_analysis_mode_var = tk.StringVar(value=_RT_ANALYSIS_DIRECT)
         self._last_rt_analysis_mode: Optional[str] = None
         self._del_cycle_tree_isoform: Optional[str] = None
         self._pedigree_viz_sidebar: Optional[ctk.CTkScrollableFrame] = None
         self._splittree_viz_sidebar: Optional[ctk.CTkScrollableFrame] = None
-        self._rt_assignment_results_label: Optional[ctk.CTkLabel] = None
         self._del_build_show_loading: bool = True
         self._pedigree_tree_viz_mode_menu: Optional[ctk.CTkOptionMenu] = None
         self._pedigree_tree_header_label: Optional[ctk.CTkLabel] = None
@@ -227,9 +223,6 @@ class LibraryDataWindow(BaseWindow):
             self,
             self._qc_panel,
             RtAssignmentCallbacks(
-                save_pedigree=lambda: self._pedigree_panel._on_save_pedigree(),
-                load_last_pedigree=lambda: (self._pedigree_panel._on_load_last_pedigree()),
-                browse_pedigree=lambda: self._pedigree_panel._on_browse_pedigree(),
                 run_pedigree=lambda: self._pedigree_panel._on_run_pedigree(),
                 split_tree_color_mode=lambda: (self._splittree_panel._del_tree_color_mode()),
                 split_tree_pass_cutoff=lambda: (
@@ -286,9 +279,6 @@ class LibraryDataWindow(BaseWindow):
                 ),
                 ensure_del_cycle_tree=lambda: (
                     self._rt_assignment_panel._ensure_session_del_cycle_after_pedigree()
-                ),
-                update_branch_choices=lambda data: (
-                    self._splittree_panel._update_del_branch_choices(data)
                 ),
             ),
         )
@@ -696,9 +686,6 @@ class LibraryDataWindow(BaseWindow):
         )
         if self._rt_analysis_mode_var.get() == _RT_ANALYSIS_PEDIGREE:
             rt_can_run = rt_can_run and pedigree_ready
-        latest_pedigree = (
-            get_latest_pedigree_snapshot_path(self._db_path) if self._db_path else None
-        )
         tree_path = (
             self._pedigree_result.tree_image_path if self._pedigree_result is not None else None
         )
@@ -721,7 +708,6 @@ class LibraryDataWindow(BaseWindow):
                     self._pedigree_result is not None or self._del_cycle_tree_data is not None
                 ),
                 has_pedigree=self._pedigree_result is not None,
-                has_latest_pedigree=latest_pedigree is not None,
                 has_pedigree_tree=tree_path is not None and Path(tree_path).is_file(),
                 has_del_tree=self._del_cycle_tree_data is not None,
                 has_splittree_plot=(
@@ -734,15 +720,8 @@ class LibraryDataWindow(BaseWindow):
             return "normal" if enabled else "disabled"
 
         try:
-            self._scan_btn.configure(
-                state=state(actions.scan),
-                fg_color="gray40" if has_scan else "#238636",
-                hover_color="gray50" if has_scan else "#2ea043",
-                font=ctk.CTkFont(size=14) if has_scan else _primary_action_font(),
-            )
             self._clear_scan_btn.configure(state=state(actions.clear_scan))
-            self._export_scan_btn.configure(state=state(actions.export_scan))
-            self._import_scan_btn.configure(state=state(actions.import_scan))
+            self._plots_clear_scan_btn.configure(state=state(actions.clear_scan))
             self._metrics_btn.configure(state=state(actions.calculate_metrics))
             self._plots_btn.configure(state=state(actions.generate_plots))
             self._save_btn.configure(state=state(actions.save_snapshot))
@@ -752,19 +731,18 @@ class LibraryDataWindow(BaseWindow):
             self._browse_btn.configure(state=state(actions.browse_snapshot))
             self._plots_browse_btn.configure(state=state(actions.browse_snapshot))
             self._export_plots_csv_btn.configure(state=state(actions.export_signal_csv))
-            self._open_plots_folder_btn.configure(state=state(actions.open_plots_folder))
             self._export_all_plots_btn.configure(state=state(actions.export_all_plots))
             self._export_metrics_csv_btn.configure(state=state(actions.export_metrics_csv))
             self._clear_metrics_results_btn.configure(state=state(actions.clear_metrics_results))
+            self._plots_clear_metrics_results_btn.configure(
+                state=state(actions.clear_metrics_results)
+            )
             self._export_report_btn.configure(state=state(actions.export_report))
             self._rt_assignment_run_btn.configure(state=state(actions.run_rt_assignment))
-            self._pedigree_load_btn.configure(state=state(actions.load_pedigree))
-            self._pedigree_browse_btn.configure(state=state(actions.browse_pedigree))
             self._pedigree_export_csv_btn.configure(state=state(actions.export_pedigree))
             self._pedigree_generate_btn.configure(state=state(actions.generate_pedigree_plot))
             self._pedigree_export_del_csv_btn.configure(state=state(actions.export_del_tree))
             self._export_rts_btn.configure(state=state(actions.export_assigned_rts))
-            self._pedigree_save_btn.configure(state=state(actions.export_pedigree))
             self._pedigree_export_tree_btn.configure(state=state(actions.export_pedigree_tree))
             if self._splittree_export_png_btn is not None:
                 self._splittree_export_png_btn.configure(
@@ -773,6 +751,10 @@ class LibraryDataWindow(BaseWindow):
             if self._splittree_export_branches_btn is not None:
                 self._splittree_export_branches_btn.configure(
                     state=state(actions.export_splittree_branches)
+                )
+            if self._splittree_export_bundle_btn is not None:
+                self._splittree_export_bundle_btn.configure(
+                    state=state(actions.export_del_tree)
                 )
             if (
                 self._pedigree_status_label is not None
@@ -786,17 +768,12 @@ class LibraryDataWindow(BaseWindow):
                     or hint.startswith("Chromatograms are read")
                     or hint == "No pedigree run yet."
                 )
-                if not has_scan and stale_hint:
+                if stale_hint:
                     self._pedigree_status_label.configure(
                         text=(
-                            "Chromatograms are read from the database. "
-                            "Run library scan first to reuse parsed traces (faster)."
+                            "Chromatograms are read from the database "
+                            "(or the QC cache when available)."
                         ),
-                        text_color="gray",
-                    )
-                elif has_scan and stale_hint:
-                    self._pedigree_status_label.configure(
-                        text="",
                         text_color="gray",
                     )
         except tk.TclError:

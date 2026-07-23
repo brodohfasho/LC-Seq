@@ -16,6 +16,7 @@ from src.core.library_metrics_store import (
     list_session_scan_paths,
     load_scan_pickle,
     load_session_scan,
+    other_session_scan_paths,
     save_session_scan,
     session_scan_exists,
     session_scan_path,
@@ -119,9 +120,34 @@ class TestLibraryScanStore:
         )
         db_a = tmp_path / "LibA_index_20260703.db"
         db_b = tmp_path / "LibB_index_20260704.db"
-        save_session_scan(_sample_scan(source_name=db_a.name), db_a)
-        save_session_scan(_sample_scan(source_name=db_b.name), db_b)
+        # Bypass single-cache replacement so delete_all can exercise multiple files.
+        path_a = session_scan_path(db_a)
+        path_b = session_scan_path(db_b)
+        export_scan_pickle(_sample_scan(source_name=db_a.name), path_a)
+        export_scan_pickle(_sample_scan(source_name=db_b.name), path_b)
         assert len(list_session_scan_paths()) == 2
         assert delete_all_session_scans() == 2
         assert not list_session_scan_paths()
         assert delete_all_session_scans() == 0
+
+    def test_save_session_scan_keeps_only_one_cache(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        library_dir = tmp_path / "library_data"
+        library_dir.mkdir()
+        monkeypatch.setattr(
+            "src.core.library_metrics_store.get_library_data_dir",
+            lambda: library_dir,
+        )
+        db_a = tmp_path / "LibA_index_20260703.db"
+        db_b = tmp_path / "LibB_index_20260704.db"
+        save_session_scan(_sample_scan(source_name=db_a.name), db_a)
+        assert session_scan_exists(db_a)
+        assert other_session_scan_paths(db_b) == [session_scan_path(db_a)]
+
+        removed = save_session_scan(_sample_scan(source_name=db_b.name), db_b)
+        assert removed == [session_scan_path(db_a)]
+        assert session_scan_exists(db_b)
+        assert not session_scan_exists(db_a)
+        assert list_session_scan_paths() == [session_scan_path(db_b)]
+        assert other_session_scan_paths(db_b) == []

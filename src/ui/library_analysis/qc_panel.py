@@ -9,7 +9,7 @@ import shutil
 import tkinter as tk
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional, Protocol, Tuple
+from typing import List, Optional, Protocol, Tuple
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -31,20 +31,17 @@ from src.core.library_metrics_store import (
     database_paths_match,
     delete_all_saved_snapshots,
     delete_all_session_scans,
-    export_scan_pickle,
     get_latest_snapshot_path,
     get_library_data_dir,
     list_session_scan_paths,
     list_snapshots,
-    load_scan_pickle,
     load_session_scan,
     load_snapshot,
+    other_session_scan_paths,
     save_session_scan,
     save_snapshot,
     session_plots_dir,
     snapshot_plots_dir,
-    suggested_scan_export_filename,
-    validate_scan_for_database,
 )
 from src.core.library_plots import (
     generate_plots,
@@ -107,39 +104,59 @@ class QcPanel:
         if self._restore_tasks is not None:
             self._restore_tasks.cancel_active()
 
-    def _pack_save_load_row(
+    def _pack_qc_result_controls(
         self,
         parent: ctk.CTkFrame,
-        *,
-        save_command: Callable[[], None],
-        load_command: Callable[[], None],
-        browse_command: Callable[[], None],
-    ) -> Tuple[ctk.CTkButton, ctk.CTkButton, ctk.CTkButton]:
-        """Build the shared QC save/load/browse controls."""
-        save_btn = ctk.CTkButton(parent, text="Save results", command=save_command)
+    ) -> Tuple[ctk.CTkButton, ctk.CTkButton, ctk.CTkButton, ctk.CTkButton, ctk.CTkButton]:
+        """
+        Build shared QC Save / Load / Clear results / Browse / Clear cache controls.
+
+        Returns:
+            (save, load_last, clear_all_results, browse, clear_cached_chromatograms)
+        """
+        save_btn = ctk.CTkButton(parent, text="Save results", command=self._on_save)
         save_btn.pack(fill="x", pady=(0, 4))
         self._context._busy_sensitive_widgets.append(save_btn)
 
-        row_btns = ctk.CTkFrame(parent, fg_color="transparent")
-        row_btns.pack(fill="x", pady=(0, 4))
+        load_row = ctk.CTkFrame(parent, fg_color="transparent")
+        load_row.pack(fill="x", pady=(0, 4))
         load_btn = ctk.CTkButton(
-            row_btns,
+            load_row,
             text="Load last",
             width=90,
             fg_color="gray40",
-            command=load_command,
+            command=self._on_load_last,
         )
         load_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
-        browse_btn = ctk.CTkButton(
-            row_btns,
-            text="Browse…",
+        clear_results_btn = ctk.CTkButton(
+            load_row,
+            text="Clear all results",
             width=90,
             fg_color="gray40",
-            command=browse_command,
+            command=self._on_clear_all_metrics_results,
         )
-        browse_btn.pack(side="left", expand=True, fill="x")
-        self._context._busy_sensitive_widgets.extend([load_btn, browse_btn])
-        return save_btn, load_btn, browse_btn
+        clear_results_btn.pack(side="left", expand=True, fill="x")
+        self._context._busy_sensitive_widgets.extend([load_btn, clear_results_btn])
+
+        browse_btn = ctk.CTkButton(
+            parent,
+            text="Browse…",
+            fg_color="gray40",
+            command=self._on_browse_saved,
+        )
+        browse_btn.pack(fill="x", pady=(0, 4))
+        self._context._busy_sensitive_widgets.append(browse_btn)
+
+        clear_scan_btn = ctk.CTkButton(
+            parent,
+            text="Clear cached chromatograms",
+            fg_color="gray40",
+            command=self._on_clear_library_scan,
+        )
+        clear_scan_btn.pack(fill="x", pady=(0, 4))
+        self._context._busy_sensitive_widgets.append(clear_scan_btn)
+
+        return save_btn, load_btn, clear_results_btn, browse_btn, clear_scan_btn
 
     def _build_metrics_sidebar_content(self, panel: ctk.CTkScrollableFrame) -> None:
         row = 0
@@ -157,44 +174,13 @@ class QcPanel:
         self._context._metrics_btn.pack(fill="x", pady=(0, 8))
         self._context._busy_sensitive_widgets.append(self._context._metrics_btn)
 
-        self._context._save_btn = ctk.CTkButton(
-            actions,
-            text="Save results",
-            command=self._on_save,
-        )
-        self._context._save_btn.pack(fill="x", pady=(0, 4))
-        self._context._busy_sensitive_widgets.append(self._context._save_btn)
-
-        metrics_load_row = ctk.CTkFrame(actions, fg_color="transparent")
-        metrics_load_row.pack(fill="x", pady=(0, 4))
-        self._context._load_last_btn = ctk.CTkButton(
-            metrics_load_row,
-            text="Load last",
-            width=90,
-            fg_color="gray40",
-            command=self._on_load_last,
-        )
-        self._context._load_last_btn.pack(side="left", expand=True, fill="x", padx=(0, 4))
-        self._context._clear_metrics_results_btn = ctk.CTkButton(
-            metrics_load_row,
-            text="Clear all results",
-            width=90,
-            fg_color="gray40",
-            command=self._on_clear_all_metrics_results,
-        )
-        self._context._clear_metrics_results_btn.pack(side="left", expand=True, fill="x")
-        self._context._busy_sensitive_widgets.extend(
-            [self._context._load_last_btn, self._context._clear_metrics_results_btn]
-        )
-
-        self._context._browse_btn = ctk.CTkButton(
-            actions,
-            text="Browse…",
-            fg_color="gray40",
-            command=self._on_browse_saved,
-        )
-        self._context._browse_btn.pack(fill="x", pady=(0, 4))
-        self._context._busy_sensitive_widgets.append(self._context._browse_btn)
+        (
+            self._context._save_btn,
+            self._context._load_last_btn,
+            self._context._clear_metrics_results_btn,
+            self._context._browse_btn,
+            self._context._clear_scan_btn,
+        ) = self._pack_qc_result_controls(actions)
 
         ctk.CTkLabel(
             panel,
@@ -367,8 +353,9 @@ class QcPanel:
         ctk.CTkLabel(
             panel,
             text=(
-                "Run library scan first (top bar). Metrics are computed from that "
-                "parsed scan without re-reading the database."
+                "Calculate metrics loads chromatograms when needed, then aggregates "
+                "library-wide QC values. Only one chromatogram cache is kept on disk "
+                "(switching libraries replaces the previous cache)."
             ),
             font=ctk.CTkFont(size=10),
             text_color="gray",
@@ -395,22 +382,10 @@ class QcPanel:
         (
             self._context._plots_save_btn,
             self._context._plots_load_btn,
+            self._context._plots_clear_metrics_results_btn,
             self._context._plots_browse_btn,
-        ) = self._pack_save_load_row(
-            actions,
-            save_command=self._on_save,
-            load_command=self._on_load_last,
-            browse_command=self._on_browse_saved,
-        )
-
-        self._context._export_plots_csv_btn = ctk.CTkButton(
-            actions,
-            text="Export plot data CSV…",
-            fg_color="gray40",
-            command=self._on_export_signal_csv,
-        )
-        self._context._export_plots_csv_btn.pack(fill="x", pady=(0, 4))
-        self._context._busy_sensitive_widgets.append(self._context._export_plots_csv_btn)
+            self._context._plots_clear_scan_btn,
+        ) = self._pack_qc_result_controls(actions)
 
         ctk.CTkLabel(
             panel,
@@ -512,35 +487,70 @@ class QcPanel:
             return False
         return all(ch in scan.signal_quality_by_channel for ch in channels)
 
-    def _confirm_library_scan(self, entry_count: int) -> bool:
-        overwrite_note = ""
-        if self._context._cached_scan is not None:
-            loaded = self._scan_entry_count(self._context._cached_scan)
-            overwrite_note = (
-                f"A library scan is already loaded ({loaded:,} entries parsed). "
-                "Running a new scan will replace it and discard metrics, plots, and "
-                "other results that depend on the current scan.\n\n"
-            )
-        index_note = (
-            "Index databases parse raw chromatogram text for each entry, so this step "
-            "is often the slowest part of a session.\n\n"
-            if self._context._index_db_mode
-            else ""
-        )
-        return self._context._confirm_long_operation(
-            f"This will scan {entry_count:,} library entries across the selected "
-            f"count channel(s).\n\n"
-            f"{overwrite_note}"
-            f"{index_note}"
-            "Large libraries can take several minutes. You can cancel while the scan "
-            "runs, but partial results will be discarded.\n\n"
-            "Continue?"
+    def _scan_covers_channels(self, channels: List[str]) -> bool:
+        """True when the in-memory chromatogram cache includes every selected channel."""
+        scan = self._context._cached_scan
+        if scan is None or not channels:
+            return False
+        return all(channel in scan.channel_names for channel in channels)
+
+    def _other_cache_replacement_note(self) -> str:
+        """Warn when loading will replace another database's session scan pickle."""
+        if self._context._db_path is None:
+            return ""
+        others = other_session_scan_paths(self._context._db_path)
+        if not others:
+            return ""
+        stems = [path.parent.name for path in others[:3]]
+        listed = ", ".join(stems)
+        extra = f" (+{len(others) - 3} more)" if len(others) > 3 else ""
+        return (
+            f"Only one chromatogram cache is kept at a time. Caching this library will "
+            f"delete the existing cache for {len(others):,} other database(s) "
+            f"({listed}{extra}).\n\n"
         )
 
-    def _confirm_metrics_computation(self, entry_count: int, metric_ids: List[str]) -> bool:
+    def _persist_session_scan(self, scan: LibraryScanData) -> None:
+        """Write the session scan pickle and notify if prior caches were removed."""
+        assert self._context._db_path is not None
+        removed = save_session_scan(scan, self._context._db_path)
+        if not removed:
+            return
+        stems = [path.parent.name for path in removed[:5]]
+        listed = "\n".join(f"• {stem}" for stem in stems)
+        extra = f"\n• …and {len(removed) - 5} more" if len(removed) > 5 else ""
+        messagebox.showinfo(
+            "Chromatogram cache",
+            "Cached chromatograms for this library.\n\n"
+            "Previous cache file(s) from other databases were removed so only one "
+            f"large cache is kept on disk:\n{listed}{extra}",
+            parent=self._context,
+        )
+
+    def _confirm_metrics_computation(
+        self,
+        entry_count: int,
+        metric_ids: List[str],
+        *,
+        needs_load: bool,
+    ) -> bool:
         signal_metrics = [mid for mid in metric_ids if mid in SIGNAL_QUALITY_METRIC_IDS]
         channels = self._get_selected_channels()
         qc_settings = self._peek_qc_signal_settings()
+        load_note = ""
+        if needs_load:
+            index_note = (
+                "Index databases parse raw chromatogram text for each entry, so the "
+                "first load is often the slowest step.\n\n"
+                if self._context._index_db_mode
+                else ""
+            )
+            load_note = (
+                f"Chromatograms for {entry_count:,} entries will be loaded first and "
+                "cached for later QC work.\n\n"
+                f"{self._other_cache_replacement_note()}"
+                f"{index_note}"
+            )
         if (
             signal_metrics
             and qc_settings is not None
@@ -548,7 +558,7 @@ class QcPanel:
         ):
             signal_note = (
                 "Signal metrics are selected, but per-entry peak analysis was already "
-                "computed for the current scan and QC picker settings — aggregation "
+                "computed for the current cache and QC picker settings — aggregation "
                 "should be relatively quick.\n\n"
             )
         elif signal_metrics:
@@ -558,21 +568,35 @@ class QcPanel:
             )
         else:
             signal_note = (
-                "Coverage-only metrics aggregate the existing scan and are usually faster "
+                "Coverage-only metrics aggregate chromatogram totals and are usually faster "
                 "than signal metrics.\n\n"
             )
         return self._context._confirm_long_operation(
-            f"Calculate {len(metric_ids)} metric(s) for {entry_count:,} scanned entries?\n\n"
+            f"Calculate {len(metric_ids)} metric(s) for {entry_count:,} entries?\n\n"
+            f"{load_note}"
             f"{signal_note}"
             "You can cancel while this runs; previously calculated metrics in this "
-            "session will be kept.\n\n"
+            "session will be kept unless chromatograms are reloaded.\n\n"
             "Continue?"
         )
 
-    def _confirm_plot_generation(self, entry_count: int, plot_ids: List[str]) -> bool:
+    def _confirm_plot_generation(
+        self,
+        entry_count: int,
+        plot_ids: List[str],
+        *,
+        needs_load: bool,
+    ) -> bool:
         signal_plots = self._selected_signal_plot_ids()
         channels = self._get_selected_channels()
         qc_settings = self._peek_qc_signal_settings()
+        load_note = ""
+        if needs_load:
+            load_note = (
+                f"Chromatograms for {entry_count:,} entries will be loaded first and "
+                "cached for later QC work.\n\n"
+                f"{self._other_cache_replacement_note()}"
+            )
         if (
             signal_plots
             and qc_settings is not None
@@ -589,13 +613,14 @@ class QcPanel:
             )
         else:
             signal_note = (
-                "Coverage plots use the existing scan only and are usually the quickest "
+                "Coverage plots use cached chromatogram totals and are usually the quickest "
                 "plots to generate.\n\n"
             )
         return self._context._confirm_long_operation(
-            f"Generate {len(plot_ids)} plot type(s) for {len(channels)} channel(s)?\n\n"
+            f"Generate {len(plot_ids)} plot(s) for {entry_count:,} entries?\n\n"
+            f"{load_note}"
             f"{signal_note}"
-            "You can cancel while this runs; plots already on screen will be kept.\n\n"
+            "You can cancel while this runs.\n\n"
             "Continue?"
         )
 
@@ -822,7 +847,6 @@ class QcPanel:
             "Build or load a database that contains at least one compound.",
         )
         card.grid(row=0, column=0, sticky="ew", pady=8)
-        self._context._scan_btn.configure(state="disabled")
         self._context._metrics_btn.configure(state="disabled")
         self._context._plots_btn.configure(state="disabled")
 
@@ -831,9 +855,8 @@ class QcPanel:
         card = self._make_info_card(
             self._context._metrics_frame,
             "Ready",
-            "Select count channels in the sidebar, then click Run library scan "
-            "in the top bar. After the scan completes, use Calculate metrics and/or "
-            "Generate plots from the same parsed scan.",
+            "Select count channels and metrics in the sidebar, then click Calculate metrics. "
+            "Chromatograms are loaded automatically when needed and cached for plots.",
         )
         card.grid(row=0, column=0, sticky="ew", pady=8)
         self._update_plots_summary([])
@@ -842,34 +865,15 @@ class QcPanel:
         self._clear_metrics_view()
         card = self._make_info_card(
             self._context._metrics_frame,
-            "Scan complete",
+            "Chromatograms cached",
             (
                 f"Parsed {scan.entries_used:,} of {scan.entries_attempted:,} entries "
                 f"({scan.entries_skipped:,} skipped). "
-                "Select metrics and click Calculate metrics, or select plots and "
-                "open the Visualizations tab."
+                "Select metrics and click Calculate metrics, or open Visualizations "
+                "and click Generate plots."
             ),
         )
         card.grid(row=0, column=0, sticky="ew", pady=8)
-
-    def _on_run_library_scan(self) -> None:
-        if self._context._is_busy():
-            return
-        channels = self._get_selected_channels()
-        if not channels:
-            messagebox.showinfo(
-                "Library Analysis",
-                "Select at least one count channel.",
-                parent=self._context,
-            )
-            return
-        if self._context._data_store is None or self._context._data_store.get_compound_count() == 0:
-            self._show_empty_library_message()
-            return
-        entry_count = self._context._data_store.get_compound_count()
-        if not self._confirm_library_scan(entry_count):
-            return
-        self._start_library_scan(channels)
 
     def _scan_entry_count(self, scan: LibraryScanData) -> int:
         return scan.entries_used or len(scan.entries)
@@ -901,7 +905,7 @@ class QcPanel:
         )
         self._context._session_state.activate_scan(scan, snapshot)
         if persist:
-            save_session_scan(scan, self._context._db_path)
+            self._persist_session_scan(scan)
         self._show_scan_ready_placeholder(scan)
         self._clear_plots_view()
         self._update_plots_summary([])
@@ -916,22 +920,23 @@ class QcPanel:
         if not has_memory and saved_count == 0:
             messagebox.showinfo(
                 "Library Analysis",
-                "No library scan is loaded or saved.",
+                "No cached chromatograms are loaded or saved.",
                 parent=self._context,
             )
             return
         saved_note = (
-            f"This deletes {saved_count:,} saved scan file(s) for all databases.\n\n"
+            f"This also deletes the saved cache file on disk "
+            f"({saved_count:,} file(s) under the session folder).\n\n"
             if saved_count
             else ""
         )
         if not messagebox.askyesno(
-            "Clear library scan",
-            "Remove all cached library scans?\n\n"
+            "Clear cached chromatograms",
+            "Remove cached chromatograms from this session?\n\n"
             f"{saved_note}"
-            "Use Export scan… first if you need to keep a scan between sessions.\n\n"
-            "Metrics, plots, and RT assignment results that depend on the scan "
-            "will no longer be available until you run or import a scan again.",
+            "Use this to free memory/disk or force a fresh reload from the database "
+            "for the current library. Metrics and plots that depend on the cache will "
+            "need to be recalculated.",
             parent=self._context,
             icon="warning",
         ):
@@ -944,119 +949,27 @@ class QcPanel:
         self._update_status_label()
         self._context._update_action_states()
         if deleted:
-            detail = f"Removed {deleted:,} saved scan file(s)."
+            detail = f"Removed {deleted:,} saved cache file(s)."
         elif has_memory:
-            detail = "Cleared the in-memory scan."
+            detail = "Cleared the in-memory chromatogram cache."
         else:
-            detail = "No saved scan files were found."
+            detail = "No saved cache files were found."
         messagebox.showinfo(
             "Library Analysis",
-            f"Library scans cleared.\n\n{detail}",
-            parent=self._context,
-        )
-
-    def _on_export_library_scan(self) -> None:
-        if (
-            self._context._is_busy()
-            or self._context._cached_scan is None
-            or self._context._db_path is None
-        ):
-            return
-        scan = self._context._cached_scan
-        default_name = suggested_scan_export_filename(self._context._db_path, scan)
-        dest = filedialog.asksaveasfilename(
-            parent=self._context,
-            title="Export library scan",
-            initialfile=default_name,
-            defaultextension=".pkl",
-            filetypes=[
-                ("LC-Seq library scan", "*.pkl"),
-                ("All files", "*.*"),
-            ],
-        )
-        if not dest:
-            return
-        try:
-            export_scan_pickle(scan, Path(dest))
-        except OSError as exc:
-            messagebox.showerror(
-                "Export library scan",
-                f"Could not save scan:\n{exc}",
-                parent=self._context,
-            )
-            return
-        messagebox.showinfo(
-            "Export library scan",
-            f"Scan exported to:\n{dest}",
-            parent=self._context,
-        )
-
-    def _on_import_library_scan(self) -> None:
-        if (
-            self._context._is_busy()
-            or self._context._db_path is None
-            or self._context._config is None
-        ):
-            return
-        source = filedialog.askopenfilename(
-            parent=self._context,
-            title="Import library scan",
-            filetypes=[
-                ("LC-Seq library scan", "*.pkl"),
-                ("All files", "*.*"),
-            ],
-        )
-        if not source:
-            return
-        try:
-            scan = load_scan_pickle(Path(source))
-        except (OSError, ValueError) as exc:
-            messagebox.showerror(
-                "Import library scan",
-                f"Could not read scan file:\n{exc}",
-                parent=self._context,
-            )
-            return
-        compound_count = (
-            self._context._data_store.get_compound_count()
-            if self._context._data_store is not None
-            else 0
-        )
-        report = validate_scan_for_database(
-            scan,
-            database_path=self._context._db_path,
-            config=self._context._config,
-            compound_count=compound_count,
-        )
-        if not report.ok:
-            messagebox.showerror(
-                "Import library scan",
-                "This scan cannot be used with the active library:\n\n"
-                + "\n".join(f"• {line}" for line in report.errors),
-                parent=self._context,
-            )
-            return
-        if report.warnings:
-            warning_text = "\n".join(f"• {line}" for line in report.warnings)
-            if not messagebox.askyesno(
-                "Import library scan",
-                "The scan loaded, but please review these warnings:\n\n"
-                f"{warning_text}\n\n"
-                "Import this scan anyway?",
-                parent=self._context,
-                icon="warning",
-            ):
-                return
-        self._apply_loaded_scan(scan)
-        messagebox.showinfo(
-            "Import library scan",
-            f"Imported scan with {self._scan_entry_count(scan):,} entries "
-            f"({', '.join(scan.channel_names) or 'no channels'}).",
+            f"Chromatogram cache cleared.\n\n{detail}",
             parent=self._context,
         )
 
     def _on_calculate_metrics(self) -> None:
-        if self._context._is_busy() or self._context._cached_scan is None:
+        if self._context._is_busy():
+            return
+        channels = self._get_selected_channels()
+        if not channels:
+            messagebox.showinfo(
+                "Library Analysis",
+                "Select at least one count channel.",
+                parent=self._context,
+            )
             return
         metric_ids = self._get_selected_metric_ids()
         if not metric_ids:
@@ -1068,68 +981,31 @@ class QcPanel:
             return
         if self._parse_fraction_count() is None or self._parse_qc_signal_settings() is None:
             return
-        entry_count = (
-            self._context._cached_scan.entries_used or self._context._cached_scan.entries_attempted
-        )
-        if not self._confirm_metrics_computation(entry_count, metric_ids):
+        if self._context._data_store is None or self._context._data_store.get_compound_count() == 0:
+            self._show_empty_library_message()
             return
-        self._start_metrics_computation(metric_ids)
-
-    def _start_library_scan(self, channels: List[str]) -> None:
-        assert self._context._db_path is not None and self._context._config is not None
-
-        self._context._show_loading_page(
-            "Running library scan",
-            "Parsing chromatograms from database entries…",
+        needs_load = not self._scan_covers_channels(channels)
+        entry_count = (
+            self._context._data_store.get_compound_count()
+            if needs_load
+            else (
+                self._context._cached_scan.entries_used
+                or self._context._cached_scan.entries_attempted
+            )
         )
-        self._context._update_action_states()
+        if not self._confirm_metrics_computation(
+            entry_count, metric_ids, needs_load=needs_load
+        ):
+            return
+        self._start_metrics_computation(metric_ids, reload_chromatograms=needs_load)
 
-        db_path = self._context._db_path
-        config = self._context._config
-        kind = "index" if self._context._index_db_mode else "full"
-        fraction_count = self._parse_fraction_count() or DEFAULT_FRACTION_COUNT
-        qc_settings = self._parse_qc_signal_settings() or SignalQualityComputeOptions()
-
-        def worker() -> None:
-            try:
-
-                def scan_progress(processed: int, total: int, status: str) -> None:
-                    fraction = (processed / total) if total > 0 else 0.0
-                    self._context._thread_loading_progress(
-                        fraction,
-                        status or "Parsing library entries…",
-                    )
-
-                scan = scan_library_for_path(
-                    db_path,
-                    config,
-                    channel_names=channels,
-                    progress_callback=scan_progress,
-                )
-                self._context._raise_if_cancelled()
-                snapshot = build_snapshot_from_scan(
-                    scan,
-                    database_path=db_path,
-                    database_kind=kind,
-                    channel_names=channels,
-                    metric_ids=[],
-                    plot_ids=[],
-                    plot_results=[],
-                    fraction_count=fraction_count,
-                    signal_quality=qc_settings,
-                )
-                self._context._bind_worker_callback(self._on_scan_ready, scan, snapshot)
-            except LibraryOperationCancelled:
-                raise
-            except Exception as exc:
-                logger.error("Library scan failed: %s", exc, exc_info=True)
-                self._context._bind_worker_callback(self._context._on_worker_error, str(exc))
-
-        self._context._start_worker(worker)
-
-    def _start_metrics_computation(self, metric_ids: List[str]) -> None:
-        assert self._context._db_path is not None and self._context._cached_scan is not None
-        scan = self._context._cached_scan
+    def _start_metrics_computation(
+        self,
+        metric_ids: List[str],
+        *,
+        reload_chromatograms: bool = False,
+    ) -> None:
+        assert self._context._db_path is not None and self._context._config is not None
         channels = self._get_selected_channels()
         if not channels:
             messagebox.showinfo(
@@ -1142,23 +1018,50 @@ class QcPanel:
         qc_settings = self._parse_qc_signal_settings()
         if fraction_count is None or qc_settings is None:
             return
+        if not reload_chromatograms and self._context._cached_scan is None:
+            return
 
-        self._context._show_loading_page(
-            "Calculating metrics",
-            "Aggregating library summary metrics…",
+        detail = (
+            "Loading chromatograms, then aggregating metrics…"
+            if reload_chromatograms
+            else "Aggregating library summary metrics…"
         )
+        self._context._show_loading_page("Calculating metrics", detail)
         self._context._update_action_states()
 
         db_path = self._context._db_path
+        config = self._context._config
         kind = "index" if self._context._index_db_mode else "full"
         plot_ids = self._get_selected_plot_ids()
         plot_results = list(self._context._plot_results)
+        existing_scan = None if reload_chromatograms else self._context._cached_scan
 
         def worker() -> None:
             try:
+                scan = existing_scan
+                if reload_chromatograms:
+
+                    def scan_progress(processed: int, total: int, status: str) -> None:
+                        fraction = 0.55 * ((processed / total) if total > 0 else 0.0)
+                        self._context._thread_loading_progress(
+                            fraction,
+                            status or "Loading chromatograms…",
+                        )
+
+                    scan = scan_library_for_path(
+                        db_path,
+                        config,
+                        channel_names=channels,
+                        progress_callback=scan_progress,
+                    )
+                    self._context._raise_if_cancelled()
+
+                assert scan is not None
 
                 def metrics_progress(processed: int, total: int, status: str) -> None:
-                    fraction = (processed / total) if total > 0 else 0.0
+                    base = 0.55 if reload_chromatograms else 0.0
+                    span = 0.43 if reload_chromatograms else 0.98
+                    fraction = base + span * ((processed / total) if total > 0 else 0.0)
                     self._context._thread_loading_progress(
                         fraction,
                         status or "Computing library metrics…",
@@ -1184,11 +1087,15 @@ class QcPanel:
                     entries_used=scan.entries_used,
                     entries_skipped=scan.entries_skipped,
                     metric_results=metric_results,
-                    plot_results=plot_results,
+                    plot_results=plot_results if not reload_chromatograms else [],
                     signal_quality_options=qc_settings,
                 )
                 self._context._raise_if_cancelled()
-                self._context._bind_worker_callback(self._on_metrics_ready, snapshot)
+                self._context._bind_worker_callback(
+                    self._on_metrics_ready,
+                    snapshot,
+                    scan if reload_chromatograms else None,
+                )
             except LibraryOperationCancelled:
                 raise
             except Exception as exc:
@@ -1197,42 +1104,11 @@ class QcPanel:
 
         self._context._start_worker(worker)
 
-    def _on_scan_ready(
+    def _on_metrics_ready(
         self,
-        scan: LibraryScanData,
         snapshot: LibraryComputationSnapshot,
+        loaded_scan: Optional[LibraryScanData] = None,
     ) -> None:
-        if not self._context._ui_is_active():
-            return
-        self._context._worker_thread = None
-        self._context._session_state.activate_scan(scan, snapshot)
-        if self._context._db_path is not None:
-            save_session_scan(scan, self._context._db_path)
-        self._context._update_loading_progress(
-            0.98,
-            (
-                f"Scan complete: {scan.entries_used:,} of {scan.entries_attempted:,} "
-                f"entries parsed ({scan.entries_skipped:,} skipped)."
-            ),
-        )
-
-        def finish() -> None:
-            if not self._context._ui_is_active():
-                return
-            try:
-                self._show_scan_ready_placeholder(scan)
-                self._clear_plots_view()
-                self._update_plots_summary([])
-                self._update_status_label()
-            except tk.TclError:
-                pass
-            finally:
-                self._context._hide_loading_page()
-                self._context._update_action_states()
-
-        self._context.after(30, finish)
-
-    def _on_metrics_ready(self, snapshot: LibraryComputationSnapshot) -> None:
         if not self._context._ui_is_active():
             return
         self._context._worker_thread = None
@@ -1242,8 +1118,15 @@ class QcPanel:
             if not self._context._ui_is_active():
                 return
             try:
-                self._context._current_snapshot = snapshot
-                self._context._current_snapshot_path = None
+                if loaded_scan is not None:
+                    self._context._session_state.activate_scan(loaded_scan, snapshot)
+                    if self._context._db_path is not None:
+                        self._persist_session_scan(loaded_scan)
+                    self._clear_plots_view()
+                    self._update_plots_summary([])
+                else:
+                    self._context._current_snapshot = snapshot
+                    self._context._current_snapshot_path = None
                 self._callbacks.capture_metrics(snapshot)
                 self._render_metrics()
                 self._update_status_label()
@@ -1257,11 +1140,7 @@ class QcPanel:
         self._context.after(30, finish)
 
     def _on_generate_plots(self) -> None:
-        if (
-            self._context._is_busy()
-            or self._context._cached_scan is None
-            or self._context._db_path is None
-        ):
+        if self._context._is_busy() or self._context._db_path is None:
             return
         plot_ids = self._get_selected_plot_ids()
         channels = self._get_selected_channels()
@@ -1275,26 +1154,63 @@ class QcPanel:
         qc_settings = self._parse_qc_signal_settings()
         if qc_settings is None:
             return
+        if self._context._data_store is None or self._context._data_store.get_compound_count() == 0:
+            self._show_empty_library_message()
+            return
+        needs_load = not self._scan_covers_channels(channels)
         entry_count = (
-            self._context._cached_scan.entries_used or self._context._cached_scan.entries_attempted
+            self._context._data_store.get_compound_count()
+            if needs_load
+            else (
+                self._context._cached_scan.entries_used
+                or self._context._cached_scan.entries_attempted
+            )
         )
-        if not self._confirm_plot_generation(entry_count, plot_ids):
+        if not self._confirm_plot_generation(
+            entry_count, plot_ids, needs_load=needs_load
+        ):
             return
 
-        self._context._show_loading_page(
-            "Generating plots",
-            "Rendering library visualizations…",
+        detail = (
+            "Loading chromatograms, then rendering visualizations…"
+            if needs_load
+            else "Rendering library visualizations…"
         )
+        self._context._show_loading_page("Generating plots", detail)
         self._context._update_action_states()
 
-        scan = self._context._cached_scan
-        plot_dir = session_plots_dir(self._context._db_path)
+        db_path = self._context._db_path
+        config = self._context._config
+        assert config is not None
+        plot_dir = session_plots_dir(db_path)
+        existing_scan = None if needs_load else self._context._cached_scan
 
         def worker() -> None:
             try:
+                scan = existing_scan
+                if needs_load:
+
+                    def scan_progress(processed: int, total: int, status: str) -> None:
+                        fraction = 0.55 * ((processed / total) if total > 0 else 0.0)
+                        self._context._thread_loading_progress(
+                            fraction,
+                            status or "Loading chromatograms…",
+                        )
+
+                    scan = scan_library_for_path(
+                        db_path,
+                        config,
+                        channel_names=channels,
+                        progress_callback=scan_progress,
+                    )
+                    self._context._raise_if_cancelled()
+
+                assert scan is not None
 
                 def plot_progress(processed: int, total: int, status: str) -> None:
-                    fraction = (processed / total) if total > 0 else 0.0
+                    base = 0.55 if needs_load else 0.0
+                    span = 0.43 if needs_load else 0.98
+                    fraction = base + span * ((processed / total) if total > 0 else 0.0)
                     self._context._thread_loading_progress(
                         fraction,
                         status or "Generating plots…",
@@ -1320,7 +1236,12 @@ class QcPanel:
                             old.unlink()
                     except OSError:
                         pass
-                self._context._bind_worker_callback(self._on_plots_ready, plots, plot_ids)
+                self._context._bind_worker_callback(
+                    self._on_plots_ready,
+                    plots,
+                    plot_ids,
+                    scan if needs_load else None,
+                )
             except LibraryOperationCancelled:
                 raise
             except Exception as exc:
@@ -1329,10 +1250,34 @@ class QcPanel:
 
         self._context._start_worker(worker)
 
-    def _on_plots_ready(self, plots: List[PlotResult], plot_ids: List[str]) -> None:
+    def _on_plots_ready(
+        self,
+        plots: List[PlotResult],
+        plot_ids: List[str],
+        loaded_scan: Optional[LibraryScanData] = None,
+    ) -> None:
         if not self._context._ui_is_active():
             return
         self._context._worker_thread = None
+        if loaded_scan is not None and self._context._db_path is not None:
+            kind = "index" if self._context._index_db_mode else "full"
+            channels = self._get_selected_channels()
+            fraction_count = self._parse_fraction_count() or DEFAULT_FRACTION_COUNT
+            qc_settings = self._peek_qc_signal_settings() or SignalQualityComputeOptions()
+            seed_snapshot = build_snapshot_from_scan(
+                loaded_scan,
+                database_path=self._context._db_path,
+                database_kind=kind,
+                channel_names=channels,
+                metric_ids=[],
+                plot_ids=plot_ids,
+                plot_results=plots,
+                fraction_count=fraction_count,
+                signal_quality=qc_settings,
+            )
+            self._context._session_state.activate_scan(loaded_scan, seed_snapshot)
+            self._persist_session_scan(loaded_scan)
+
         self._context._plot_results = plots
         if self._context._current_snapshot is not None:
             self._context._current_snapshot.selected_plots = list(plot_ids)
@@ -1437,7 +1382,7 @@ class QcPanel:
             f"Delete all {len(saved_paths):,} saved Library QC metrics result file(s)?\n\n"
             "This removes snapshot JSON files and their plot folders under "
             f"{get_library_data_dir()}.\n\n"
-            "This does not clear the in-memory library scan or unsaved metrics on screen.\n\n"
+            "This does not clear the in-memory chromatogram cache or unsaved metrics on screen.\n\n"
             "Continue?",
             parent=self._context,
             icon="warning",
@@ -1532,7 +1477,7 @@ class QcPanel:
         scan = self._context._cached_scan
         snapshot = self._context._current_snapshot
         if snapshot is None and scan is None:
-            self._context._status_label.configure(text="No scan loaded.")
+            self._context._status_label.configure(text="No chromatogram cache loaded.")
             return
 
         if snapshot is not None:
@@ -1551,7 +1496,9 @@ class QcPanel:
                 else str(self._context._current_snapshot_path)
             )
             scan_note = (
-                "scan in memory" if scan is not None else "metrics/plots only (rescan to refresh)"
+                "chromatograms cached"
+                if scan is not None
+                else "metrics/plots only (reload chromatograms to refresh)"
             )
             qc_opts = snapshot.signal_quality_options
             if qc_opts.peak_picking_algorithm == "old_school":
@@ -1579,7 +1526,7 @@ class QcPanel:
         channels = ", ".join(scan.channel_names) or "—"
         self._context._status_label.configure(
             text=(
-                f"Scan in memory  ·  Entries: {scan.entries_used:,} / "
+                f"Chromatograms cached  ·  Entries: {scan.entries_used:,} / "
                 f"{scan.entries_attempted:,} ({scan.entries_skipped:,} skipped)  ·  "
                 f"Channels: {channels}  ·  Metrics: not calculated  ·  Plots: not generated"
             )
@@ -1589,7 +1536,7 @@ class QcPanel:
         if self._context._cached_scan is None:
             messagebox.showinfo(
                 "Library Analysis",
-                "Run library scan first.",
+                "Load chromatograms first (Calculate metrics or Generate plots).",
                 parent=self._context,
             )
             return
@@ -1673,36 +1620,10 @@ class QcPanel:
         self._clear_metrics_view()
         snapshot = self._context._current_snapshot
         if snapshot is None:
-            self._update_metrics_summary_label(0)
             return
 
         row = 0
-        qc_opts = snapshot.signal_quality_options
-        if any(m.metric_id in SIGNAL_QUALITY_METRIC_IDS for m in snapshot.metric_results):
-            if qc_opts.peak_picking_algorithm == "old_school":
-                signal_note = (
-                    "Signal-quality metrics use old-school Gaussian peak picking "
-                    f"(time unit {qc_opts.time_unit}). Baseline μ and σ come from a "
-                    "σ-clipped median (iteratively drop points above mean+2σ)."
-                )
-            else:
-                filter_bits: List[str] = []
-                if qc_opts.min_prominence > 0:
-                    filter_bits.append(f"prominence ≥ {qc_opts.min_prominence:g}")
-                if qc_opts.min_pct_area > 0:
-                    filter_bits.append(f"% area ≥ {qc_opts.min_pct_area:g}")
-                filter_clause = (
-                    f" After detection, peaks must also pass {', '.join(filter_bits)}."
-                    if filter_bits
-                    else ""
-                )
-                signal_note = (
-                    "Signal-quality metrics (significant peaks): peak height, SNR, and dynamic "
-                    "range use the tallest peak with p-value < α from the modern peak picker."
-                    f"{filter_clause} "
-                    "Baseline μ and σ come from a σ-clipped median "
-                    f"(iteratively drop points above mean+2σ). α = {qc_opts.alpha:g}."
-                )
+        if snapshot.metric_results:
             banner = ctk.CTkFrame(
                 self._context._metrics_frame,
                 corner_radius=10,
@@ -1713,7 +1634,7 @@ class QcPanel:
             banner.grid(row=row, column=0, sticky="ew", pady=(4, 14), padx=2)
             ctk.CTkLabel(
                 banner,
-                text=signal_note,
+                text=self._format_qc_input_parameters(snapshot),
                 font=ctk.CTkFont(size=11),
                 anchor="w",
                 wraplength=760,
@@ -1721,8 +1642,6 @@ class QcPanel:
             ).pack(padx=14, pady=12, anchor="w")
             row += 1
 
-        if snapshot.metric_results:
-            self._update_metrics_summary_label(len(snapshot.metric_results))
             last_category: Optional[str] = None
             for metric in snapshot.metric_results:
                 definition = LIBRARY_METRIC_DEFINITIONS.get(metric.metric_id)
@@ -1750,28 +1669,39 @@ class QcPanel:
                     channels=metric.channels,
                 )
                 row += 1
-        else:
-            self._update_metrics_summary_label(0)
 
         if row == 0:
             card = self._make_info_card(
                 self._context._metrics_frame,
                 "No metrics",
-                "Run library scan, then click Calculate metrics.",
+                "Select metrics and click Calculate metrics.",
             )
             card.grid(row=0, column=0, sticky="ew", pady=8)
 
-    def _update_metrics_summary_label(self, metric_count: int) -> None:
-        if not hasattr(self, "_metrics_summary_label"):
-            return
-        if metric_count == 0:
-            text = "Summary metrics appear after Calculate metrics."
+    def _format_qc_input_parameters(self, snapshot: LibraryComputationSnapshot) -> str:
+        """Compact list of inputs used for the currently displayed QC metrics/plots."""
+        channels = ", ".join(snapshot.selected_channels) or "—"
+        qc_opts = snapshot.signal_quality_options
+        parts = [
+            f"Channels: {channels}",
+            f"Fraction count: {snapshot.fraction_count}",
+            f"Peak picker: {qc_opts.picker_label()}",
+            f"Time unit: {qc_opts.time_unit}",
+        ]
+        if qc_opts.peak_picking_algorithm == "old_school":
+            parts.extend(
+                [
+                    f"Min height factor: {qc_opts.gaussian_min_height_factor:g}",
+                    f"Gaussian fit width: {qc_opts.gaussian_fit_width:g}",
+                    f"Max Gaussian σ: {qc_opts.gaussian_stddev_threshold:g}",
+                    f"Minimum RT: {qc_opts.gaussian_minimum_rt:g}",
+                ]
+            )
         else:
-            text = f"{metric_count} metric(s) calculated — values by channel below."
-        try:
-            self._context._metrics_summary_label.configure(text=text)
-        except tk.TclError:
-            pass
+            parts.append(f"α: {qc_opts.alpha:g}")
+            parts.append(f"Min prominence: {qc_opts.min_prominence:g}")
+            parts.append(f"Min % area: {qc_opts.min_pct_area:g}")
+        return "Input parameters — " + " · ".join(parts)
 
     def _on_export_metrics_csv(self) -> None:
         snapshot = self._context._current_snapshot
@@ -1806,21 +1736,17 @@ class QcPanel:
             )
 
     def _update_plots_summary(self, plots: List[PlotResult]) -> None:
-        if not hasattr(self, "_plots_summary_label"):
+        """Refresh the visualizations parameter line under the export buttons."""
+        label = getattr(self._context, "_plots_params_label", None)
+        if label is None:
             return
-        available = sum(1 for p in plots if p.image_path is not None and p.image_path.is_file())
-        total = len(plots)
-        if total == 0:
-            text = "No plots generated yet. Run library scan, then Generate plots."
-        elif available == total:
-            text = f"{available} plot(s) ready — select one from the list to preview."
-        else:
-            text = (
-                f"{available} of {total} plot(s) available "
-                f"({total - available} missing or failed to render)."
-            )
+        text = ""
+        if plots:
+            snapshot = self._context._current_snapshot
+            if snapshot is not None:
+                text = self._format_qc_input_parameters(snapshot)
         try:
-            self._context._plots_summary_label.configure(text=text)
+            label.configure(text=text)
         except tk.TclError:
             pass
 
@@ -2004,20 +1930,6 @@ class QcPanel:
             messagebox.showinfo(
                 "Library Analysis",
                 f"Exported {exported} plot(s) to:\n{out_dir}",
-                parent=self._context,
-            )
-
-    def _on_open_plots_folder(self) -> None:
-        if self._context._db_path is None:
-            return
-        folder = session_plots_dir(self._context._db_path)
-        folder.mkdir(parents=True, exist_ok=True)
-        try:
-            os.startfile(str(folder.resolve()))  # type: ignore[attr-defined]
-        except OSError as exc:
-            messagebox.showerror(
-                "Library Analysis",
-                f"Could not open plots folder:\n{folder}\n\n{exc}",
                 parent=self._context,
             )
 

@@ -43,9 +43,6 @@ class ReportControllerCallbacks:
 class RtAssignmentCallbacks:
     """Pedigree, split-tree, and report actions used by RT assignment."""
 
-    save_pedigree: Callable[[], None]
-    load_last_pedigree: Callable[[], None]
-    browse_pedigree: Callable[[], None]
     run_pedigree: Callable[[], None]
     split_tree_color_mode: Callable[[], str]
     split_tree_pass_cutoff: Callable[[], float]
@@ -68,7 +65,6 @@ class PedigreePanelCallbacks:
     capture_visualization: Callable[[PedigreeAnalysisResult], None]
     update_split_tree_status: Callable[[], None]
     ensure_del_cycle_tree: Callable[[], None]
-    update_branch_choices: Callable[[DelCycleTreeData], None]
 
 
 @dataclass(frozen=True)

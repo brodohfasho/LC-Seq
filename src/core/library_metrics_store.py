@@ -109,11 +109,20 @@ def stamp_scan_provenance(scan: "LibraryScanData", database_path: Path) -> None:
         scan.scanned_at = datetime.now(timezone.utc)
 
 
-def save_session_scan(scan: "LibraryScanData", database_path: Path) -> None:
-    """Persist the parsed library scan for reuse within and across sessions."""
+def save_session_scan(scan: "LibraryScanData", database_path: Path) -> List[Path]:
+    """
+    Persist the parsed library scan for reuse within and across sessions.
+
+    Only one session scan pickle is retained: caches for other databases are
+    deleted before writing this one.
+
+    Returns:
+        Paths of other-database scan pickles that were removed.
+    """
     import pickle
 
     stamp_scan_provenance(scan, database_path)
+    removed = delete_other_session_scans(database_path)
     path = session_scan_path(database_path)
     try:
         with path.open("wb") as handle:
@@ -121,6 +130,7 @@ def save_session_scan(scan: "LibraryScanData", database_path: Path) -> None:
         logger.info("Saved session library scan to %s", path)
     except OSError as exc:
         logger.warning("Could not save session library scan: %s", exc)
+    return removed
 
 
 def delete_session_scan(database_path: Path) -> bool:
@@ -143,6 +153,30 @@ def list_session_scan_paths() -> List[Path]:
     if not session_root.is_dir():
         return []
     return sorted(path for path in session_root.glob("*/scan.pkl") if path.is_file())
+
+
+def other_session_scan_paths(database_path: Path) -> List[Path]:
+    """Session scan pickles for every database except ``database_path``."""
+    keep = session_scan_path(database_path).resolve()
+    return [path for path in list_session_scan_paths() if path.resolve() != keep]
+
+
+def delete_other_session_scans(database_path: Path) -> List[Path]:
+    """
+    Remove session scan pickles for every database except ``database_path``.
+
+    Returns:
+        Paths that were successfully deleted.
+    """
+    deleted: List[Path] = []
+    for path in other_session_scan_paths(database_path):
+        try:
+            path.unlink()
+            deleted.append(path)
+            logger.info("Deleted previous session library scan at %s", path)
+        except OSError as exc:
+            logger.warning("Could not delete session library scan at %s: %s", path, exc)
+    return deleted
 
 
 def any_session_scan_exists() -> bool:

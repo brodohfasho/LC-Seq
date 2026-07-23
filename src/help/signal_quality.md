@@ -6,7 +6,7 @@ Bulk chromatographic QC across the whole library (**Library QC metrics** / **vis
 
 1. Open **Library Analysis** (config + DB ready).
 2. Set picker / α / prominence / % area / fraction count on the **Library QC metrics** sidebar.
-3. **Run library scan**.
+3. Click **Calculate metrics** (chromatograms load automatically when needed).
 
 Modern or Old-school picking can be selected on the QC sidebar (same engines as Peak Analysis).
 

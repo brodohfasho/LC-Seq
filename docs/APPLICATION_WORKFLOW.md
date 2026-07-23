@@ -163,12 +163,13 @@ flowchart LR
 
 | Step | UI (top bar / tabs) | What happens | Dominant cost | Progress / cancel |
 |------|---------------------|--------------|---------------|-------------------|
-| **1 · Library scan** | **Run library scan** | For each compound: load from DB; index DB parses raw chromatogram text; store sorted time/count arrays per channel | **High** on index DBs (parse × N) | Background worker; cancel on progress ticks |
-| **2 · Calculate metrics** | **Calculate metrics** → Metrics tab | Coverage metrics: aggregate scan only. **Signal metrics:** per-entry peak pick × channels, then library means | **High** when signal metrics selected | Same; skips peak work if signal cache hit |
-| **3 · Generate plots** | **Generate plots** → Plots tab | Coverage plots: fast. Signal plots: ensure signal cache, render matplotlib PNGs to session folder | Signal plots: peak pick if not cached | Same |
-| **4 · Generate report** | **Generate report…** | PDF combining metrics, plots, optional pedigree/DEL sections | Depends on artifacts captured | Dialog-driven |
+| **1 · Load chromatograms** | Implicit in **Calculate metrics** / **Generate plots** (or restore session cache) | For each compound: load from DB; index DB parses raw chromatogram text; store sorted time/count arrays per channel | **High** on index DBs (parse × N) | Background worker; cancel on progress ticks |
+| **2 · Calculate metrics** | **Calculate metrics** → Metrics tab | Loads chromatograms if needed, then coverage/signal aggregates | **High** when signal metrics selected / first load | Same; skips peak work if signal cache hit |
+| **3 · Generate plots** | **Generate plots** → Plots tab | Loads chromatograms if needed; coverage plots fast; signal plots ensure peak cache | Signal plots: peak pick if not cached | Same |
+| **4 · Generate report** | **Generate report…** (top bar) | PDF combining metrics, plots, optional pedigree/DEL sections | Depends on artifacts captured | Dialog-driven |
 
-**Session cache:** `output/library_data/.session/{db_stem}/scan.pkl` — avoids re-parsing on reload.
+**Session cache:** `output/library_data/.session/{db_stem}/scan.pkl` — avoids re-parsing on reload. Only one library’s cache is kept; loading QC for another DB removes the previous pickle. Clear the current cache via **Clear cached chromatograms**.
+
 
 **Core modules:** `src/ui/library_data_window.py`, `src/core/library_metrics.py`, `src/core/library_signal_quality.py`, `src/core/library_plots.py`, `src/core/library_metrics_store.py`
 
@@ -176,7 +177,7 @@ flowchart LR
 
 ## 5. Library Analysis — RT assignment (pedigree vs direct pick)
 
-Both modes require **library scan** (or chromatograms loaded while building the split-tree from the DB). BB columns must be configured.
+Both modes read chromatograms from the database (or reuse the QC chromatogram cache when present). BB columns must be configured.
 
 **Paper Methods:** **Old-school** peak picking + **Direct pick** RT assignment. **Modern** picking and **Pedigree** mode were added after submission.
 
@@ -188,7 +189,6 @@ flowchart TB
 
   PED --> P1["Build chromatogram map from scan<br>pedigree_adapter"]
   P1 --> P2["Rust evaluate_library<br>null-truncation pedigree walk"]
-  P2 --> P3["Save pedigree snapshot"]
   P2 --> P4["Render pedigree tree file<br>Graphviz twopi or matplotlib fallback"]
   P2 --> DEL["Build split-tree<br>using pedigree RTs"]
 
@@ -207,7 +207,6 @@ flowchart TB
         │
         ▼
    RT assignment mode? ── Pedigree ──→ pedigree_adapter → Rust evaluate_library
-        │                                    ├→ save pedigree snapshot
         │                                    ├→ render pedigree tree file (Graphviz / matplotlib)
         │                                    └→ build split-tree (pedigree RTs)
         │
@@ -288,7 +287,7 @@ flowchart TB
 ## 9. Typical DEL library session (happy path)
 
 1. Main: Load spreadsheet → Configure (BB columns, null token, optional BB index) → Create **index** or **full** database  
-2. **Library Analysis:** Run library scan → calculate metrics (signal if needed) → generate plots  
+2. **Library Analysis:** Calculate metrics (loads chromatograms as needed) → generate plots  
 3. RT assignment: **Pedigree** mode → Run RT assignment  
 4. Review **Pedigree visualization** tab; export pedigree tree if needed  
 5. Review **Split-tree visualization** tab (tree colored by pass rate)  

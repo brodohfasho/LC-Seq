@@ -221,6 +221,11 @@ def test_export_reports_progress(tmp_path: Path) -> None:
     assert updates[0][0] == 0.0
     assert updates[-1][0] == 1.0
     assert any("grid" in status.lower() for _fraction, status in updates)
+    # Progress should be non-decreasing and visit the heavy mid-export phases.
+    fractions = [fraction for fraction, _status in updates]
+    assert fractions == sorted(fractions)
+    assert any(0.24 <= fraction <= 0.58 for fraction in fractions)
+    assert any("summar" in status.lower() for _fraction, status in updates)
 
 
 def test_no_grids_for_two_cycle_library(tmp_path: Path) -> None:

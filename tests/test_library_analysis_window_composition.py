@@ -39,7 +39,6 @@ def test_busy_state_disables_every_action() -> None:
         rt_can_run=True,
         has_rt_result=True,
         has_pedigree=True,
-        has_latest_pedigree=True,
         has_pedigree_tree=True,
         has_del_tree=True,
     )
@@ -60,13 +59,44 @@ def test_action_dependencies_are_independent() -> None:
         )
     )
 
-    assert state.scan
     assert state.generate_plots
     assert state.export_signal_csv
     assert state.export_report
     assert not state.calculate_metrics
     assert not state.save_snapshot
     assert not state.export_pedigree
+
+
+def test_calculate_metrics_does_not_require_scan_cache() -> None:
+    """Metrics can start a chromatogram load; cache is not a prerequisite."""
+    state = LibraryActionState.decide(
+        _inputs(
+            has_channels=True,
+            has_selected_metrics=True,
+        )
+    )
+
+    assert state.calculate_metrics
+    assert not state.clear_scan
+    assert not state.export_signal_csv
+
+
+def test_top_bar_has_only_green_generate_report() -> None:
+    """Library Analysis chrome exposes Generate report as the sole top-bar action."""
+    shell_source = (
+        Path(__file__).parents[1] / "src" / "ui" / "library_analysis" / "window_shell.py"
+    ).read_text(encoding="utf-8")
+    top_bar = shell_source.split("def _build_top_bar", maxsplit=1)[1].split(
+        "def _build_body_shell", maxsplit=1
+    )[0]
+
+    assert 'text="Generate report…"' in top_bar
+    assert 'fg_color="#238636"' in top_bar
+    assert 'hover_color="#2ea043"' in top_bar
+    assert "Run library scan" not in top_bar
+    assert "Export scan" not in top_bar
+    assert "Import scan" not in top_bar
+    assert "Clear" not in top_bar
 
 
 def test_window_and_composed_modules_import_without_cycle() -> None:
@@ -224,8 +254,8 @@ def test_qc_owns_save_load_controls_and_shell_builds_busy_overlay() -> None:
     qc_source = (module_dir / "qc_panel.py").read_text(encoding="utf-8")
     shell_source = (module_dir / "window_shell.py").read_text(encoding="utf-8")
 
-    assert "def _pack_save_load_row" in qc_source
-    assert "self._context._pack_save_load_row" not in qc_source
+    assert "def _pack_qc_result_controls" in qc_source
+    assert "self._context._pack_qc_result_controls" not in qc_source
     assert "BusyOverlay(" in shell_source
 
 
@@ -272,10 +302,13 @@ def test_splittree_sidebar_separates_data_and_display_controls() -> None:
     assert 'title="Split-tree"' in tab_method
     assert "subtitle=" not in tab_method
     assert 'text="Export tree PNG…"' in tab_method
-    assert 'text="Export all branches…"' in tab_method
+    assert 'text="Export BB1 branches PNGs…"' in tab_method
+    assert 'text="Export analysis bundle…"' in tab_method
+    assert 'fg_color="#0969da"' in tab_method
     assert 'fg_color="gray40"' in tab_method
     assert "def _on_export_splittree_png" in panel_source
     assert "def _on_export_splittree_branches" in panel_source
+    assert "command=self._on_export_del_cycle_csv" in tab_method
 
 
 def test_window_reveals_only_after_initial_widgets_are_built() -> None:

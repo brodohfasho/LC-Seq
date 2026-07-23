@@ -304,14 +304,26 @@ class SplitTreePanel:
 
         host._splittree_export_branches_btn = ctk.CTkButton(
             actions,
-            text="Export all branches…",
-            width=170,
+            text="Export BB1 branches PNGs…",
+            width=200,
             fg_color="gray40",
             state="disabled",
             command=self._on_export_splittree_branches,
         )
         host._splittree_export_branches_btn.pack(side="left", padx=(0, 6))
         host._busy_sensitive_widgets.append(host._splittree_export_branches_btn)
+
+        host._splittree_export_bundle_btn = ctk.CTkButton(
+            actions,
+            text="Export analysis bundle…",
+            width=170,
+            fg_color="#0969da",
+            hover_color="#1f6feb",
+            state="disabled",
+            command=self._on_export_del_cycle_csv,
+        )
+        host._splittree_export_bundle_btn.pack(side="left", padx=(0, 6))
+        host._busy_sensitive_widgets.append(host._splittree_export_bundle_btn)
 
         body = ctk.CTkFrame(tab, fg_color="transparent")
         body.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
@@ -457,6 +469,7 @@ class SplitTreePanel:
         color_by_rt: bool,
         color_mode: str,
         pass_pct_cutoff: float,
+        progress_callback=None,
     ) -> Tuple[object, str]:
         """Render the selected view and return its resolved branch."""
         view = (
@@ -474,6 +487,7 @@ class SplitTreePanel:
             color_by_rt=color_by_rt,
             color_mode=color_mode,
             pass_pct_cutoff=pass_pct_cutoff,
+            progress_callback=progress_callback,
         )
         return figure, selected
 
@@ -481,7 +495,7 @@ class SplitTreePanel:
         self,
         isoform: str,
         *,
-        show_loading: bool,
+        show_loading: bool = True,
     ) -> None:
         """Render from cached session RT data without repeating peak analysis."""
         host = self._context
@@ -494,9 +508,10 @@ class SplitTreePanel:
             detail = (
                 f"Filtering session RT assignment for isoform “{isoform}”…"
                 if filtered
-                else "Rendering split-tree from session RT assignment (no re-analysis)…"
+                else "Rendering split-tree from session RT assignment…"
             )
             host._show_loading_page("Generating split-tree", detail)
+            self._show_splittree_placeholder("Generating split-tree plot…")
         view_mode = host._splittree_view_mode_var.get()
         branch = host._pedigree_del_branch_var.get().strip()
         color_by_rt = bool(host._pedigree_del_color_rt_var.get())
@@ -509,14 +524,32 @@ class SplitTreePanel:
         def worker() -> None:
             try:
 
-                def progress(step: int, total: int, status: str) -> None:
-                    if show_loading:
-                        fraction = step / total if total > 0 else 0.0
-                        host._thread_loading_progress(
-                            min(0.95, fraction),
-                            status or "Building split-tree from session RT assignment…",
-                        )
+                def build_progress(step: int, total: int, status: str) -> None:
+                    if not show_loading:
+                        return
+                    fraction = step / total if total > 0 else 0.0
+                    host._thread_loading_progress(
+                        min(0.45, 0.02 + 0.43 * fraction),
+                        status or "Preparing split-tree data…",
+                    )
 
+                def render_progress(fraction: float, status: str) -> None:
+                    if not show_loading:
+                        return
+                    host._thread_loading_progress(
+                        min(0.98, 0.50 + 0.48 * fraction),
+                        status or "Rendering split-tree figure…",
+                    )
+
+                if show_loading:
+                    host._thread_loading_progress(
+                        0.02,
+                        (
+                            f"Filtering session RT assignment for isoform “{isoform}”…"
+                            if filtered
+                            else "Using session RT assignment…"
+                        ),
+                    )
                 data = (
                     build_del_cycle_tree_from_session_cache_for_path(
                         db_path,
@@ -524,11 +557,13 @@ class SplitTreePanel:
                         session_data,
                         isoform_label=isoform,
                         rt_threshold=threshold,
-                        progress_callback=progress if show_loading else None,
+                        progress_callback=build_progress if show_loading else None,
                     )
                     if filtered
                     else session_data
                 )
+                if show_loading:
+                    host._thread_loading_progress(0.48, "Rendering split-tree figure…")
                 figure, selected = self._resolve_splittree_figure(
                     data,
                     view_mode=view_mode,
@@ -536,7 +571,10 @@ class SplitTreePanel:
                     color_by_rt=color_by_rt,
                     color_mode=color_mode,
                     pass_pct_cutoff=cutoff,
+                    progress_callback=render_progress if show_loading else None,
                 )
+                if show_loading:
+                    host._thread_loading_progress(0.99, "Mounting split-tree plot…")
                 host._bind_worker_callback(
                     self._on_splittree_session_ready,
                     data,
@@ -557,7 +595,7 @@ class SplitTreePanel:
         isoform = self._splittree_isoform_label()
         if not self._can_reuse_session_del_cycle_tree(isoform):
             return False
-        self._render_splittree_from_cached_session(isoform, show_loading=False)
+        self._render_splittree_from_cached_session(isoform, show_loading=True)
         return True
 
     @staticmethod
@@ -1007,10 +1045,17 @@ class SplitTreePanel:
         def worker() -> None:
             try:
 
-                def progress(step: int, total: int, status: str) -> None:
+                def build_progress(step: int, total: int, status: str) -> None:
                     fraction = step / total if total > 0 else 0.0
                     host._thread_loading_progress(
-                        min(0.95, fraction), status or "Building split-tree…"
+                        min(0.55, 0.02 + 0.53 * fraction),
+                        status or "Building split-tree…",
+                    )
+
+                def render_progress(fraction: float, status: str) -> None:
+                    host._thread_loading_progress(
+                        min(0.98, 0.58 + 0.40 * fraction),
+                        status or "Rendering split-tree figure…",
                     )
 
                 data = build_del_cycle_tree_from_metadata_for_path(
@@ -1020,8 +1065,9 @@ class SplitTreePanel:
                     rt_threshold=float(settings.tolerance),
                     time_unit=settings.time_unit,
                     isoform_label=isoform,
-                    progress_callback=progress,
+                    progress_callback=build_progress,
                 )
+                host._thread_loading_progress(0.58, "Rendering split-tree figure…")
                 figure, selected = self._resolve_splittree_figure(
                     data,
                     view_mode=options[0],
@@ -1029,7 +1075,9 @@ class SplitTreePanel:
                     color_by_rt=options[2],
                     color_mode=options[3],
                     pass_pct_cutoff=options[4],
+                    progress_callback=render_progress,
                 )
+                host._thread_loading_progress(0.99, "Mounting split-tree plot…")
                 host._bind_worker_callback(
                     self._on_splittree_metadata_ready,
                     data,
@@ -1342,7 +1390,7 @@ class SplitTreePanel:
         data = self._active_splittree_data()
         if data is None:
             messagebox.showinfo(
-                "Export all branches",
+                "Export BB1 branches PNGs",
                 "Generate a split-tree plot first.",
                 parent=host,
             )
@@ -1350,7 +1398,7 @@ class SplitTreePanel:
         branches = self._sorted_bb1_branch_names(data)
         if not branches:
             messagebox.showinfo(
-                "Export all branches",
+                "Export BB1 branches PNGs",
                 "No BB1 branches are available to export.",
                 parent=host,
             )
@@ -1453,7 +1501,7 @@ class SplitTreePanel:
             host._hide_loading_page()
             host._update_action_states()
             messagebox.showinfo(
-                "Export all branches",
+                "Export BB1 branches PNGs",
                 f"Saved {written:,} PNG file(s) to:\n{out_dir}",
                 parent=host,
             )
@@ -1468,7 +1516,7 @@ class SplitTreePanel:
         host._worker_thread = None
         host._hide_loading_page()
         host._update_action_states()
-        messagebox.showerror("Export all branches", message, parent=host)
+        messagebox.showerror("Export BB1 branches PNGs", message, parent=host)
 
     def _on_export_del_cycle_csv(self) -> None:
         """Export the current DEL analysis bundle in a background operation."""
