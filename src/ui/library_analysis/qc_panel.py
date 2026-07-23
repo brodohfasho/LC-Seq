@@ -57,6 +57,14 @@ from src.models.analysis_settings import AnalysisSettings
 from src.ui.library_analysis.contexts import LibraryPanelContext, QcPanelCallbacks
 from src.ui.library_analysis.models import LibraryOperationCancelled
 from src.ui.library_analysis.task_coordinator import TaskCoordinator
+from src.ui.quality_filter_ui import (
+    QUALITY_BOTH_PICKERS_NOTE,
+    QUALITY_FILTERS_BOTH_PICKERS_TITLE,
+    QUALITY_MIN_PCT_AREA_LABEL,
+    QUALITY_MIN_PROMINENCE_LABEL,
+    QUALITY_PCT_AREA_TOOLTIP_BOTH,
+    QUALITY_PROMINENCE_TOOLTIP_BOTH,
+)
 from src.ui.widget_tooltip import attach_tooltip
 
 logger = logging.getLogger(__name__)
@@ -235,6 +243,9 @@ class QcPanel:
         params = ctk.CTkFrame(panel, fg_color="transparent")
         params.grid(row=row, column=0, sticky="ew", padx=8, pady=(10, 4))
         row += 1
+        self._context._qc_modern_widgets.clear()
+        self._context._qc_old_school_widgets.clear()
+        self._context._qc_quality_widgets.clear()
         ctk.CTkLabel(params, text="Fraction count", font=ctk.CTkFont(size=12, weight="bold")).pack(
             anchor="w"
         )
@@ -278,48 +289,15 @@ class QcPanel:
         qc_alpha_lbl = ctk.CTkLabel(qc_modern_col, text="Peak significance α")
         qc_alpha_lbl.pack(anchor="w", padx=6)
         qc_alpha_entry = ctk.CTkEntry(qc_modern_col, textvariable=self._context._qc_alpha_var)
-        qc_alpha_entry.pack(fill="x", padx=6, pady=(2, 4))
+        qc_alpha_entry.pack(fill="x", padx=6, pady=(2, 8))
         attach_tooltip(
             qc_alpha_entry,
-            "α for significant-peak metrics and signal plots. A local maximum counts as "
-            "significant only when both height and area p-values are below α/2. Lower α → "
-            "fewer significant peaks.",
+            "Modern detection only. A local maximum counts as significant only when "
+            "both height and area p-values are below α/2. Lower α → fewer significant peaks.",
         )
         self._context._busy_sensitive_widgets.append(qc_alpha_entry)
-        qc_prom_lbl = ctk.CTkLabel(qc_modern_col, text="Min prominence")
-        qc_prom_lbl.pack(anchor="w", padx=6)
-        qc_prom_entry = ctk.CTkEntry(
-            qc_modern_col, textvariable=self._context._qc_min_prominence_var
-        )
-        qc_prom_entry.pack(fill="x", padx=6, pady=(2, 4))
-        attach_tooltip(
-            qc_prom_entry,
-            "Drop detected peaks below this prominence before QC counting/ranking "
-            "(0 = off). Applies to significant-peaks-per-entry and other peak-list metrics.",
-        )
-        self._context._busy_sensitive_widgets.append(qc_prom_entry)
-        qc_pct_lbl = ctk.CTkLabel(qc_modern_col, text="Min % area")
-        qc_pct_lbl.pack(anchor="w", padx=6)
-        qc_pct_entry = ctk.CTkEntry(
-            qc_modern_col, textvariable=self._context._qc_min_pct_area_var
-        )
-        qc_pct_entry.pack(fill="x", padx=6, pady=(2, 8))
-        attach_tooltip(
-            qc_pct_entry,
-            "Drop detected peaks below this share of total detected peak area "
-            "(0 = off). Same post-filter as RT assignment.",
-        )
-        self._context._busy_sensitive_widgets.append(qc_pct_entry)
         self._context._qc_modern_widgets.extend(
-            [
-                qc_modern_hdr,
-                qc_alpha_lbl,
-                qc_alpha_entry,
-                qc_prom_lbl,
-                qc_prom_entry,
-                qc_pct_lbl,
-                qc_pct_entry,
-            ]
+            [qc_modern_hdr, qc_alpha_lbl, qc_alpha_entry]
         )
 
         qc_old_hdr = ctk.CTkLabel(
@@ -340,6 +318,43 @@ class QcPanel:
         _qc_old_field(qc_old_col, "Gaussian fit width", self._context._qc_gaussian_fit_width_var)
         _qc_old_field(qc_old_col, "Max Gaussian σ", self._context._qc_gaussian_stddev_var)
         _qc_old_field(qc_old_col, "Minimum RT", self._context._qc_gaussian_min_rt_var)
+
+        quality_frame = ctk.CTkFrame(params, fg_color=("gray85", "gray25"), corner_radius=6)
+        quality_frame.pack(fill="x", pady=(4, 4))
+        self._context._qc_quality_frame = quality_frame
+        qc_quality_hdr = ctk.CTkLabel(
+            quality_frame,
+            text=QUALITY_FILTERS_BOTH_PICKERS_TITLE,
+            font=ctk.CTkFont(size=10, weight="bold"),
+        )
+        qc_quality_hdr.pack(anchor="w", padx=6, pady=(6, 2))
+        ctk.CTkLabel(
+            quality_frame,
+            text=QUALITY_BOTH_PICKERS_NOTE,
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            wraplength=260,
+            justify="left",
+        ).pack(anchor="w", padx=6, pady=(0, 4))
+        qc_prom_lbl = ctk.CTkLabel(quality_frame, text=QUALITY_MIN_PROMINENCE_LABEL)
+        qc_prom_lbl.pack(anchor="w", padx=6)
+        qc_prom_entry = ctk.CTkEntry(
+            quality_frame, textvariable=self._context._qc_min_prominence_var
+        )
+        qc_prom_entry.pack(fill="x", padx=6, pady=(2, 4))
+        attach_tooltip(qc_prom_entry, QUALITY_PROMINENCE_TOOLTIP_BOTH)
+        self._context._busy_sensitive_widgets.append(qc_prom_entry)
+        qc_pct_lbl = ctk.CTkLabel(quality_frame, text=QUALITY_MIN_PCT_AREA_LABEL)
+        qc_pct_lbl.pack(anchor="w", padx=6)
+        qc_pct_entry = ctk.CTkEntry(
+            quality_frame, textvariable=self._context._qc_min_pct_area_var
+        )
+        qc_pct_entry.pack(fill="x", padx=6, pady=(2, 8))
+        attach_tooltip(qc_pct_entry, QUALITY_PCT_AREA_TOOLTIP_BOTH)
+        self._context._busy_sensitive_widgets.append(qc_pct_entry)
+        self._context._qc_quality_widgets.extend(
+            [qc_quality_hdr, qc_prom_lbl, qc_prom_entry, qc_pct_lbl, qc_pct_entry]
+        )
 
         ctk.CTkButton(
             params,

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import tkinter as tk
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
 from tkinter import messagebox
@@ -16,6 +16,7 @@ from src.core.data_store import DataStore
 from src.core.metadata_search import (
     append_results_text_filter,
     build_where_clause,
+    prioritize_search_fields,
     sanitize_sql_column,
     validate_conditions,
 )
@@ -137,6 +138,8 @@ class CompoundPickerDialog(ctk.CTkToplevel):
 class MetadataSearchDialog(ctk.CTkToplevel):
     """
     Query builder + Search; on success returns compound IDs (caller loads ``Compound`` rows).
+
+    Layout keeps the primary Search action in a sticky footer so it is always visible.
     """
 
     def __init__(
@@ -151,25 +154,69 @@ class MetadataSearchDialog(ctk.CTkToplevel):
         super().__init__(master)
         self._config = config
         self._data_store = data_store
-        self._searchable = list(searchable_metadata_columns)
+        self._searchable = prioritize_search_fields(
+            searchable_metadata_columns,
+            config.active_bb_position_columns(),
+        )
         self._on_done = on_done
+        self._value_suggestion_cache: Dict[str, Tuple[List[str], bool]] = {}
 
         self.title("Search compounds")
-        self.geometry("760x720")
-        self.minsize(560, 520)
+        self.geometry("780x640")
+        self.minsize(580, 480)
         self.transient(master)
         self.grab_set()
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
+        # --- Header ---
         title_row = ctk.CTkFrame(self, fg_color="transparent")
-        title_row.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
+        title_row.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 6))
         ctk.CTkLabel(
             title_row,
-            text="Metadata search (SQLite)",
-            font=ctk.CTkFont(size=15, weight="bold"),
+            text="Search compounds",
+            font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w")
+        ctk.CTkLabel(
+            title_row,
+            text=(
+                "1. Choose a metadata column  ·  2. Pick a value from the list "
+                "(or type to filter)  ·  3. Click Search."
+            ),
+            font=ctk.CTkFont(size=12),
+            text_color="gray70",
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
+        bb_cols = config.active_bb_position_columns()
+        hint_bits: List[str] = []
+        if bb_cols:
+            bb_hint = ", ".join(
+                f"BB{i + 1}={name}" for i, name in enumerate(bb_cols) if name
+            )
+            hint_bits.append(
+                f"Building-block columns are listed first ({bb_hint}). "
+                "Open the value dropdown to browse residues, or type to narrow the list."
+            )
+        else:
+            hint_bits.append(
+                "Value fields show distinct values from the database for the "
+                "selected column; you can still type a custom value."
+            )
+        hint_bits.append(
+            "Date comparisons use string order (prefer ISO YYYY-MM-DD)."
+        )
+        ctk.CTkLabel(
+            title_row,
+            text=" ".join(hint_bits),
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=720,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
+
         _, missing_cols = data_store.filter_metadata_columns_for_search(
             list(config.selected_metadata_columns or [])
         )
@@ -185,48 +232,113 @@ class MetadataSearchDialog(ctk.CTkToplevel):
                 ),
                 text_color="orange",
                 font=ctk.CTkFont(size=11),
-                wraplength=700,
+                wraplength=720,
                 justify="left",
             ).pack(anchor="w", pady=(6, 0))
 
-        body = ctk.CTkScrollableFrame(self, height=520)
-        body.grid(row=1, column=0, sticky="nsew", padx=8, pady=4)
+        # --- Body (conditions + optional narrow filter) ---
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.grid(row=1, column=0, sticky="nsew", padx=12, pady=4)
         body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        conditions_box = ctk.CTkFrame(body)
+        conditions_box.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+        conditions_box.grid_columnconfigure(0, weight=1)
+        conditions_box.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(
+            conditions_box,
+            text="Conditions",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
 
         self._query_panel = QueryBuilderPanel(
-            body,
+            conditions_box,
             metadata_fields=self._searchable,
-            on_search=self._run_search,
             on_clear=self._clear_panel,
+            value_suggestions=self._value_suggestions_for_field,
         )
-        self._query_panel.grid(row=0, column=0, sticky="ew", pady=4)
+        self._query_panel.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 8))
+
+        filter_box = ctk.CTkFrame(body)
+        filter_box.grid(row=1, column=0, sticky="ew")
+        filter_box.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            filter_box,
+            text="Narrow results further (optional)",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 0))
+        ctk.CTkLabel(
+            filter_box,
+            text="Applied together with the conditions above (compound ID or metadata text).",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+        ).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 2))
 
         self._result_filter_var = tk.StringVar(value="")
-        ctk.CTkLabel(body, text="Filter hits (optional)", font=ctk.CTkFont(size=12)).grid(
-            row=1, column=0, sticky="w", pady=(8, 0)
-        )
         ctk.CTkEntry(
-            body,
-            placeholder_text="Matches compound ID or any searchable metadata text…",
+            filter_box,
+            placeholder_text="e.g. part of a compound ID…",
             textvariable=self._result_filter_var,
-        ).grid(row=2, column=0, sticky="ew", pady=4)
+        ).grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
 
-        self._msg = ctk.CTkLabel(body, text="", font=ctk.CTkFont(size=11), text_color="gray")
-        self._msg.grid(row=3, column=0, sticky="w", pady=4)
-
-        btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.grid(row=2, column=0, padx=12, pady=(4, 12), sticky="ew")
-        ctk.CTkButton(
-            btn_row,
-            text="Load all compounds…",
-            width=160,
-            fg_color="#6c4a9c",
-            hover_color="#5a3d84",
-            command=self._on_load_all_clicked,
-        ).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(btn_row, text="Cancel", width=100, fg_color="gray40", command=self._cancel).pack(
-            side="right", padx=4
+        self._msg = ctk.CTkLabel(
+            body,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
         )
+        self._msg.grid(row=2, column=0, sticky="w", padx=4, pady=(4, 0))
+
+        # --- Sticky footer: Search is the only load path from this dialog ---
+        footer = ctk.CTkFrame(self, fg_color=("gray92", "gray17"))
+        footer.grid(row=2, column=0, sticky="ew", padx=0, pady=0)
+        footer.grid_columnconfigure(0, weight=1)
+
+        primary = ctk.CTkFrame(footer, fg_color="transparent")
+        primary.grid(row=0, column=0, sticky="e", padx=12, pady=10)
+        ctk.CTkButton(
+            primary,
+            text="Cancel",
+            width=100,
+            fg_color="gray40",
+            command=self._cancel,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            primary,
+            text="Search",
+            width=140,
+            height=36,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="#238636",
+            hover_color="#2ea043",
+            command=self._run_search,
+        ).pack(side="left")
+
+        self.bind("<Return>", lambda _e: self._run_search())
+        self.bind("<Escape>", lambda _e: self._cancel())
+
+    def _value_suggestions_for_field(self, field: str) -> Tuple[List[str], bool]:
+        """
+        Return cached distinct values for ``field`` (lazy-loaded from the database).
+        """
+        name = (field or "").strip()
+        if not name:
+            return [], False
+        cached = self._value_suggestion_cache.get(name)
+        if cached is not None:
+            return cached
+        try:
+            values, truncated = self._data_store.list_distinct_metadata_values(
+                name,
+                limit=1500,
+            )
+        except Exception as exc:
+            logger.warning("Could not load value suggestions for %s: %s", name, exc)
+            values, truncated = [], False
+        result = (list(values), bool(truncated))
+        self._value_suggestion_cache[name] = result
+        return result
 
     def _clear_panel(self) -> None:
         self._msg.configure(text="")
@@ -242,25 +354,6 @@ class MetadataSearchDialog(ctk.CTkToplevel):
         or_cols = ["compound_id", *meta_safe]
         return append_results_text_filter(where_sql, list(params), needle, or_cols)
 
-    def _on_load_all_clicked(self) -> None:
-        """
-        Offer to load every compound row from the database, with explicit UI warnings.
-        """
-        cap = _MAX_SEARCH_LOAD
-        warn = (
-            "This will load every compound row from the current database into the "
-            "chromatogram table (ignoring the query and the optional filter field).\n\n"
-            "• Large libraries can make the app slow or unresponsive while rows are added.\n"
-            f"• At most {cap} compounds are loaded in one step; if there are more, only "
-            f"the first {cap} are used (sorted by compound ID).\n"
-            "• Some rows may be skipped if chromatogram data cannot be loaded "
-            "(especially in index database mode).\n\n"
-            "Continue?"
-        )
-        if not messagebox.askokcancel("Load all compounds", warn, parent=self):
-            return
-        self._execute_search_load("1 = 1", [], context_title="Load all compounds")
-
     def _execute_search_load(
         self,
         where_sql: str,
@@ -271,7 +364,15 @@ class MetadataSearchDialog(ctk.CTkToplevel):
         """
         Count matches, warn on large result sets, then close and return compound IDs.
         """
-        total = self._data_store.count_compounds_where(where_sql, params)
+        try:
+            total = self._data_store.count_compounds_where(where_sql, params)
+        except Exception as exc:
+            messagebox.showerror(
+                context_title,
+                f"Search query failed:\n{exc}",
+                parent=self,
+            )
+            return
         if total == 0:
             self._msg.configure(text="No matches.", text_color="orange")
             return
@@ -282,10 +383,25 @@ class MetadataSearchDialog(ctk.CTkToplevel):
                 "will be loaded into the table. Narrow your search if needed.",
                 parent=self,
             )
-        self._msg.configure(text=f"Loading {min(total, _MAX_SEARCH_LOAD)} of {total}…", text_color="gray")
+        self._msg.configure(
+            text=f"Loading {min(total, _MAX_SEARCH_LOAD)} of {total}…",
+            text_color="gray",
+        )
         self.update_idletasks()
 
-        ids = self._data_store.list_compound_ids_where(where_sql, params)[:_MAX_SEARCH_LOAD]
+        try:
+            ids = self._data_store.list_compound_ids_where(
+                where_sql,
+                params,
+                limit=_MAX_SEARCH_LOAD,
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                context_title,
+                f"Search query failed:\n{exc}",
+                parent=self,
+            )
+            return
         self.grab_release()
         self.destroy()
         self._on_done(ids)

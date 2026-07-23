@@ -30,6 +30,9 @@ _NUMERIC_OPS: frozenset[str] = frozenset({">", "<", ">=", "<="})
 _TEXT_OPS: frozenset[str] = frozenset(
     {"contains", "starts with", "ends with", "=", "!="}
 )
+_TEXT_MATCH_OPS: frozenset[str] = frozenset(
+    {"contains", "starts with", "ends with"}
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,15 @@ def escape_like_pattern(value: str) -> str:
     )
 
 
+def escape_glob_pattern(value: str) -> str:
+    """Escape ``*``, ``?``, and ``[`` for SQLite GLOB (case-sensitive matching)."""
+    return (
+        value.replace("[", "[[]")
+        .replace("*", "[*]")
+        .replace("?", "[?]")
+    )
+
+
 def validate_conditions(
     conditions: Sequence[QueryCondition],
     allowed_fields: Sequence[str],
@@ -95,17 +107,81 @@ def validate_conditions(
         if cond.field_type not in ("auto", "text", "numeric", "date"):
             errors.append(f"Condition {i}: invalid field type {cond.field_type!r}.")
 
+        value = "" if cond.value is None else str(cond.value)
+        if not value.strip():
+            errors.append(
+                f"Condition {i}: enter a non-empty value "
+                f"(empty text matches can return the entire library)."
+            )
+
         eff_type = _effective_field_type(cond)
-        if eff_type == "numeric" and op in _TEXT_OPS and op not in ("=", "!="):
+        if eff_type == "text" and op in _NUMERIC_OPS:
+            errors.append(
+                f"Condition {i}: operator {op!r} is not supported for text fields."
+            )
+        if eff_type == "numeric" and op in _TEXT_MATCH_OPS:
             errors.append(
                 f"Condition {i}: operator {op!r} is not supported for numeric fields."
             )
-        if eff_type in ("numeric", "date") and op in ("contains", "starts with", "ends with"):
+        if eff_type == "date" and op in _TEXT_MATCH_OPS:
             errors.append(
                 f"Condition {i}: text-style operator {op!r} is only for text fields."
             )
+        if eff_type == "numeric":
+            try:
+                float(value.strip())
+            except ValueError:
+                errors.append(
+                    f"Condition {i}: enter a numeric value for operator {op!r}."
+                )
 
     return errors
+
+
+def filter_value_suggestions(
+    all_values: Sequence[str],
+    needle: str,
+    *,
+    max_show: int = 400,
+) -> List[str]:
+    """
+    Filter cached distinct values for the search value combobox.
+
+    Empty needle returns the first ``max_show`` values (browse mode). Non-empty
+    needle keeps case-insensitive substring matches so typing ``DV`` surfaces ``DVal``.
+    """
+    cap = max(0, int(max_show))
+    values = [str(v) for v in all_values if str(v).strip()]
+    n = (needle or "").strip().lower()
+    if not n:
+        return values[:cap]
+    matched = [v for v in values if n in v.lower()]
+    return matched[:cap]
+
+
+def prioritize_search_fields(
+    searchable_fields: Sequence[str],
+    bb_position_columns: Sequence[str] | None = None,
+) -> List[str]:
+    """
+    Put configured BB1..BB4 position columns first in the search field list.
+
+    Search still filters by raw metadata column values; this only improves discoverability
+    so “position 1” maps clearly to the BB1 name column.
+    """
+    present = [str(name) for name in searchable_fields if str(name).strip()]
+    seen = set()
+    ordered: List[str] = []
+    for name in bb_position_columns or []:
+        text = str(name or "").strip()
+        if text and text in present and text not in seen:
+            ordered.append(text)
+            seen.add(text)
+    for name in present:
+        if name not in seen:
+            ordered.append(name)
+            seen.add(name)
+    return ordered
 
 
 def default_combiners(n_conditions: int) -> List[Combiner]:
@@ -126,10 +202,18 @@ def _effective_field_type(cond: QueryCondition) -> Literal["text", "numeric", "d
 
 
 def _numeric_expr(safe_col: str) -> str:
-    """SQLite expression treating blank / non-numeric as NULL."""
+    """
+    SQLite expression casting blank / non-numeric cells to NULL.
+
+    SQLite ``CAST('abc' AS REAL)`` yields ``0.0``, so we reject cells that are not
+    plausibly numeric before casting.
+    """
+    trimmed = f"TRIM({safe_col})"
     return (
-        f"CASE WHEN TRIM({safe_col}) IS NULL OR TRIM({safe_col}) = '' "
-        f"THEN NULL ELSE CAST(TRIM({safe_col}) AS REAL) END"
+        f"CASE WHEN {trimmed} IS NULL OR {trimmed} = '' THEN NULL "
+        f"WHEN {trimmed} GLOB '*[^0-9eE.+-]*' THEN NULL "
+        f"WHEN {trimmed} NOT GLOB '*[0-9]*' THEN NULL "
+        f"ELSE CAST({trimmed} AS REAL) END"
     )
 
 
@@ -139,7 +223,6 @@ def _build_single_condition(cond: QueryCondition) -> Tuple[str, List[Any]]:
     op = (cond.operator or "").strip()
     eff = _effective_field_type(cond)
     raw_val = cond.value if cond.value is not None else ""
-    params: List[Any] = []
 
     if eff == "numeric":
         expr = _numeric_expr(safe)
@@ -156,52 +239,83 @@ def _build_single_condition(cond: QueryCondition) -> Tuple[str, List[Any]]:
         raise ValueError(f"Unsupported numeric operator {op!r}")
 
     if eff == "date":
+        # Lexicographic compare on trimmed strings — reliable for ISO YYYY-MM-DD.
         lhs = f"TRIM({safe})"
         rhs = str(raw_val).strip()
         if op == "=":
             return f"({lhs} = ?)", [rhs]
         if op == "!=":
-            return f"({lhs} IS NOT NULL AND TRIM({lhs}) != '' AND {lhs} != ?)", [rhs]
+            return (
+                f"({lhs} IS NOT NULL AND {lhs} != '' AND {lhs} != ?)",
+                [rhs],
+            )
         if op in (">", "<", ">=", "<="):
             return f"({lhs} {op} ?)", [rhs]
         raise ValueError(f"Unsupported date operator {op!r}")
 
-    # Text branch
-    esc = escape_like_pattern(str(raw_val))
+    # Text branch — require a real needle so LIKE never becomes '%%' / '%'.
+    text_value = str(raw_val).strip()
+    if not text_value:
+        raise ValueError(f"Empty value is not allowed for field {cond.field!r}.")
 
-    if op == "contains":
-        pat = f"%{esc}%"
-        if cond.case_sensitive:
-            return f"({safe} LIKE ? ESCAPE '\\')", [pat]
-        return f"(LOWER({safe}) LIKE ? ESCAPE '\\')", [pat.lower()]
-
-    if op == "starts with":
-        pat = f"{esc}%"
-        if cond.case_sensitive:
-            return f"({safe} LIKE ? ESCAPE '\\')", [pat]
-        return f"(LOWER({safe}) LIKE ? ESCAPE '\\')", [pat.lower()]
-
-    if op == "ends with":
-        pat = f"%{esc}"
-        if cond.case_sensitive:
-            return f"({safe} LIKE ? ESCAPE '\\')", [pat]
-        return f"(LOWER({safe}) LIKE ? ESCAPE '\\')", [pat.lower()]
+    if op in _TEXT_MATCH_OPS:
+        return _build_text_match(safe, op, text_value, cond.case_sensitive)
 
     if op == "=":
-        p = str(raw_val)
         if cond.case_sensitive:
-            return f"((? IS NULL AND {safe} IS NULL) OR ({safe} = ?))", [p, p]
-        return f"((? IS NULL AND {safe} IS NULL) OR (LOWER({safe}) = ?))", [p, p.lower()]
+            return f"(TRIM({safe}) = ?)", [text_value]
+        return f"(LOWER(TRIM({safe})) = ?)", [text_value.lower()]
 
     if op == "!=":
-        p = str(raw_val)
         if cond.case_sensitive:
-            inner = f"((? IS NULL AND {safe} IS NULL) OR ({safe} = ?))"
-            return f"(NOT ({inner}))", [p, p]
-        inner = f"((? IS NULL AND {safe} IS NULL) OR (LOWER({safe}) = ?))"
-        return f"(NOT ({inner}))", [p, p.lower()]
+            return (
+                f"(TRIM({safe}) IS NOT NULL AND TRIM({safe}) != '' "
+                f"AND TRIM({safe}) != ?)",
+                [text_value],
+            )
+        return (
+            f"(TRIM({safe}) IS NOT NULL AND TRIM({safe}) != '' "
+            f"AND LOWER(TRIM({safe})) != ?)",
+            [text_value.lower()],
+        )
 
     raise ValueError(f"Unsupported text operator {op!r}")
+
+
+def _build_text_match(
+    safe: str,
+    op: str,
+    text_value: str,
+    case_sensitive: bool,
+) -> Tuple[str, List[Any]]:
+    """
+    Build contains / starts with / ends with SQL.
+
+    Case-insensitive path uses LIKE + LOWER. Case-sensitive path uses GLOB because
+    SQLite LIKE is ASCII case-insensitive by default unless a connection pragma is set.
+    """
+    if case_sensitive:
+        esc = escape_glob_pattern(text_value)
+        if op == "contains":
+            pat = f"*{esc}*"
+        elif op == "starts with":
+            pat = f"{esc}*"
+        elif op == "ends with":
+            pat = f"*{esc}"
+        else:
+            raise ValueError(f"Unsupported text match operator {op!r}")
+        return f"(TRIM({safe}) GLOB ?)", [pat]
+
+    esc = escape_like_pattern(text_value)
+    if op == "contains":
+        pat = f"%{esc}%"
+    elif op == "starts with":
+        pat = f"{esc}%"
+    elif op == "ends with":
+        pat = f"%{esc}"
+    else:
+        raise ValueError(f"Unsupported text match operator {op!r}")
+    return f"(LOWER(TRIM({safe})) LIKE ? ESCAPE '\\')", [pat.lower()]
 
 
 def build_where_clause(

@@ -32,7 +32,11 @@ from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.base_window import BaseWindow
 from src.ui.busy_overlay import BusyOverlay
 from src.ui.chromatogram_dialogs import CompoundPickerDialog, MetadataSearchDialog
-from src.ui.peak_analysis_panel import PeakAnalysisPanel, _PEAK_PANEL_WIDTH
+from src.ui.peak_analysis_panel import (
+    PeakAnalysisPanel,
+    _PEAK_PANEL_DEFAULT_FRACTION,
+    _PEAK_PANEL_MIN_WIDTH,
+)
 from src.ui.ui_messages import show_error, show_info, show_warning
 from src.ui.widget_tooltip import attach_tooltip
 from src.models.peak_result import PeakAnalysisBatchResult
@@ -535,7 +539,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._main_paned.add(self._left_host, minsize=480, stretch="always")
 
         self._peak_panel_slot = ctk.CTkFrame(self._main_paned, fg_color="transparent")
-        self._main_paned.add(self._peak_panel_slot, minsize=_PEAK_PANEL_WIDTH, stretch="always")
+        self._main_paned.add(self._peak_panel_slot, minsize=_PEAK_PANEL_MIN_WIDTH, stretch="always")
 
         self._busy_overlay = BusyOverlay(
             self,
@@ -543,13 +547,19 @@ class ChromatogramVisualizerWindow(BaseWindow):
         )
 
     def _set_initial_paned_position(self) -> None:
-        """Give the peak analysis pane its default width after the window is laid out."""
+        """Give the peak analysis pane ~35% width after the window is laid out."""
         if self._main_paned is None or not self.winfo_exists():
             return
         try:
             total = self._main_paned.winfo_width()
-            if total > _PEAK_PANEL_WIDTH + 200:
-                self._main_paned.sash_place(0, total - _PEAK_PANEL_WIDTH, 0)
+            if total > _PEAK_PANEL_MIN_WIDTH + 200:
+                right = max(
+                    _PEAK_PANEL_MIN_WIDTH,
+                    int(round(total * _PEAK_PANEL_DEFAULT_FRACTION)),
+                )
+                # Leave a usable left pane for the chromatogram + table.
+                right = min(right, total - 400)
+                self._main_paned.sash_place(0, total - right, 0)
         except tk.TclError:
             pass
 
@@ -811,30 +821,50 @@ class ChromatogramVisualizerWindow(BaseWindow):
     def _on_metadata_search_done(self, ids: Optional[List[str]]) -> None:
         if not ids or self._data_store is None:
             return
+        meta_cols = list(self._searchable_metadata_columns)
         loaded: List[Compound] = []
+        skipped = 0
         for cid in ids:
-            c = self._data_store.get_compound(cid)
+            c = self._data_store.get_compound(cid, metadata_columns=meta_cols)
             if c is None:
+                skipped += 1
                 continue
             h = self._hydrate_index_compound(c)
-            if h is not None:
-                loaded.append(h)
+            if h is None:
+                skipped += 1
+                continue
+            loaded.append(h)
         if not loaded:
-            messagebox.showerror("Search", "No compounds could be loaded for this query.", parent=self)
+            messagebox.showerror(
+                "Search",
+                "No compounds could be loaded for this query.",
+                parent=self,
+            )
             return
         self._append_compounds_to_table(loaded, replace=True)
+        if skipped:
+            messagebox.showwarning(
+                "Search",
+                f"Loaded {len(loaded)} compound(s); skipped {skipped} "
+                "(missing row or chromatogram data could not be parsed).",
+                parent=self,
+            )
 
     def _load_compounds_for_keys(self, keys: List[str]) -> List[Compound]:
         out: List[Compound] = []
         assert self._data_store is not None
+        meta_cols = list(self._searchable_metadata_columns)
         for key in keys:
             if self._uses_variants:
-                for c in self._data_store.get_compounds_for_primary(key):
+                for c in self._data_store.get_compounds_for_primary(
+                    key,
+                    metadata_columns=meta_cols,
+                ):
                     h = self._hydrate_index_compound(c)
                     if h is not None:
                         out.append(h)
             else:
-                c = self._data_store.get_compound(key)
+                c = self._data_store.get_compound(key, metadata_columns=meta_cols)
                 h = self._hydrate_index_compound(c)
                 if h is not None:
                     out.append(h)

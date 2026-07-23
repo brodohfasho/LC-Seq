@@ -34,6 +34,14 @@ from src.models.compound import Compound
 from src.models.peak_result import PeakAnalysisBatchResult, PeakAnalysisResult
 from src.models.pedigree_result import LineageAnalysisResult, LineageBatchResult
 from src.models.spreadsheet_config import SpreadsheetConfig
+from src.ui.quality_filter_ui import (
+    QUALITY_BOTH_PICKERS_NOTE,
+    QUALITY_FILTERS_BOTH_PICKERS_TITLE,
+    QUALITY_MIN_PCT_AREA_LABEL,
+    QUALITY_MIN_PROMINENCE_LABEL,
+    QUALITY_PCT_AREA_TOOLTIP_BOTH,
+    QUALITY_PROMINENCE_TOOLTIP_BOTH,
+)
 from src.ui.widget_tooltip import attach_tooltip
 
 logger = logging.getLogger(__name__)
@@ -53,7 +61,11 @@ _UNFOCUSED_PEAK_ALPHA = 0.15
 _INTENDED_PRODUCT_TAG = "intended_product"
 _INTENDED_PRODUCT_BG = "#1a5c32"
 _INTENDED_PRODUCT_FG = "#aff7b8"
-_PEAK_PANEL_WIDTH = 320
+# Default right-pane share of the chromatogram window; minsize prevents collapse.
+_PEAK_PANEL_DEFAULT_FRACTION = 0.35
+_PEAK_PANEL_MIN_WIDTH = 280
+# Back-compat alias used by the visualizer shell.
+_PEAK_PANEL_WIDTH = _PEAK_PANEL_MIN_WIDTH
 
 
 def _blend_hex(fg: str, bg: str, ratio: float) -> str:
@@ -116,7 +128,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._table_columns = self._build_table_columns()
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(4, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         backend = get_peak_picker_backend().info()
         top_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -286,32 +298,42 @@ class PeakAnalysisPanel(ctk.CTkFrame):
 
         ctk.CTkLabel(
             settings,
-            text="Quality filters (both modes)",
+            text=QUALITY_FILTERS_BOTH_PICKERS_TITLE,
             font=ctk.CTkFont(size=11, weight="bold"),
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 2))
+        ctk.CTkLabel(
+            settings,
+            text=QUALITY_BOTH_PICKERS_NOTE,
+            font=ctk.CTkFont(size=10),
+            text_color="gray",
+            wraplength=280,
+            justify="left",
+        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 2))
 
-        ctk.CTkLabel(settings, text="Min prominence:").grid(row=6, column=0, sticky="w", pady=2)
+        ctk.CTkLabel(settings, text=f"{QUALITY_MIN_PROMINENCE_LABEL}:").grid(
+            row=7, column=0, sticky="w", pady=2
+        )
         self._min_prominence_entry = ctk.CTkEntry(settings, width=100)
         self._min_prominence_entry.insert(0, str(DEFAULT_MIN_PROMINENCE))
-        self._min_prominence_entry.grid(row=6, column=1, sticky="w", padx=(6, 0), pady=2)
-        attach_tooltip(
-            self._min_prominence_entry,
-            "Minimum peak prominence (counts). Set 0 to disable.",
-        )
+        self._min_prominence_entry.grid(row=7, column=1, sticky="w", padx=(6, 0), pady=2)
+        attach_tooltip(self._min_prominence_entry, QUALITY_PROMINENCE_TOOLTIP_BOTH)
 
-        ctk.CTkLabel(settings, text="Min % area:").grid(row=7, column=0, sticky="w", pady=2)
+        ctk.CTkLabel(settings, text=f"{QUALITY_MIN_PCT_AREA_LABEL}:").grid(
+            row=8, column=0, sticky="w", pady=2
+        )
         self._min_pct_area_entry = ctk.CTkEntry(settings, width=100)
         self._min_pct_area_entry.insert(0, str(DEFAULT_MIN_PCT_AREA))
-        self._min_pct_area_entry.grid(row=7, column=1, sticky="w", padx=(6, 0), pady=2)
-        attach_tooltip(
-            self._min_pct_area_entry,
-            "Minimum percent of total detected peak area. Set 0 to disable.",
-        )
+        self._min_pct_area_entry.grid(row=8, column=1, sticky="w", padx=(6, 0), pady=2)
+        attach_tooltip(self._min_pct_area_entry, QUALITY_PCT_AREA_TOOLTIP_BOTH)
 
         self._sync_picker_option_states()
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.grid(row=2, column=0, sticky="ew", padx=8, pady=4)
+        for col in range(4):
+            actions.grid_columnconfigure(col, weight=1, uniform="peak_actions")
+
+        btn_pad = {"padx": (0, 4), "pady": (0, 4), "sticky": "ew"}
 
         self._pick_btn = ctk.CTkButton(
             actions,
@@ -319,7 +341,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             fg_color="#238636",
             command=self._on_pick_peaks,
         )
-        self._pick_btn.pack(side="left", padx=(0, 6))
+        self._pick_btn.grid(row=0, column=0, **btn_pad)
         attach_tooltip(
             self._pick_btn,
             "Detect peaks on every selected table row (overlaid traces) "
@@ -331,7 +353,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             text="Show baseline",
             command=self._on_show_baseline,
         )
-        self._baseline_btn.pack(side="left", padx=(0, 6))
+        self._baseline_btn.grid(row=0, column=1, **btn_pad)
         attach_tooltip(
             self._baseline_btn,
             "Show or hide per-trace baseline levels for all selected compounds.",
@@ -342,7 +364,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             text="Show integration",
             command=self._on_show_integration,
         )
-        self._integration_btn.pack(side="left", padx=(0, 6))
+        self._integration_btn.grid(row=0, column=2, **btn_pad)
         attach_tooltip(
             self._integration_btn,
             "Show or hide shaded integration windows (valley-to-valley) on the plot.",
@@ -353,11 +375,43 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             text="Show legend",
             command=self._on_show_legend,
         )
-        self._legend_btn.pack(side="left", padx=(0, 6))
+        self._legend_btn.grid(row=0, column=3, **btn_pad)
         attach_tooltip(
             self._legend_btn,
-            "Show or hide the chromatogram trace legend (off by default during peak analysis).",
+            "Show or hide the chromatogram trace legend "
+            "(off by default during peak analysis).",
         )
+
+        self._export_csv_btn = ctk.CTkButton(
+            actions,
+            text="Export CSV…",
+            command=self._on_export_csv,
+        )
+        self._export_csv_btn.grid(row=1, column=0, **btn_pad)
+
+        self._export_plot_btn = ctk.CTkButton(
+            actions,
+            text="Export plot…",
+            command=self._on_export_plot,
+        )
+        self._export_plot_btn.grid(row=1, column=1, **btn_pad)
+
+        self._lineage_btn = ctk.CTkButton(
+            actions,
+            text="Analyze lineage",
+            fg_color="#1F6FEB",
+            command=self._on_lineage_clicked,
+        )
+        self._lineage_btn.grid(row=1, column=2, **btn_pad)
+
+        self._view_lineage_btn = ctk.CTkButton(
+            actions,
+            text="View lineage",
+            fg_color="#238636",
+            state="disabled",
+            command=self._on_view_lineage_clicked,
+        )
+        self._view_lineage_btn.grid(row=1, column=3, **btn_pad)
 
         self._clear_btn = ctk.CTkButton(
             actions,
@@ -365,33 +419,8 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             fg_color="gray40",
             command=self._on_clear,
         )
-        self._clear_btn.pack(side="left", padx=(0, 6))
+        self._clear_btn.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(2, 0))
 
-        export_row = ctk.CTkFrame(self, fg_color="transparent")
-        export_row.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 4))
-        ctk.CTkButton(export_row, text="Export CSV…", width=72, command=self._on_export_csv).pack(
-            side="left", padx=(0, 4)
-        )
-        ctk.CTkButton(export_row, text="Export plot…", width=72, command=self._on_export_plot).pack(
-            side="left", padx=(0, 4)
-        )
-        self._lineage_btn = ctk.CTkButton(
-            export_row,
-            text="Analyze lineage",
-            width=72,
-            fg_color="#1F6FEB",
-            command=self._on_lineage_clicked,
-        )
-        self._lineage_btn.pack(side="left", padx=(0, 4))
-        self._view_lineage_btn = ctk.CTkButton(
-            export_row,
-            text="View lineage",
-            width=72,
-            fg_color="#238636",
-            state="disabled",
-            command=self._on_view_lineage_clicked,
-        )
-        self._view_lineage_btn.pack(side="left")
         if not pedigree_configured:
             self._lineage_btn.configure(state="disabled")
             self._view_lineage_btn.configure(state="disabled")
@@ -405,7 +434,8 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         else:
             attach_tooltip(
                 self._lineage_btn,
-                "Run lineage for all plotted compounds (up to 50). Updates suspected peak IDs when peaks are picked.",
+                "Run lineage for all plotted compounds (up to 50). "
+                "Updates suspected peak IDs when peaks are picked.",
             )
             attach_tooltip(
                 self._view_lineage_btn,
@@ -423,10 +453,10 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             wraplength=280,
             justify="left",
         )
-        self._status.grid(row=5, column=0, sticky="ew", padx=8, pady=(4, 8))
+        self._status.grid(row=4, column=0, sticky="ew", padx=8, pady=(4, 8))
 
         table_wrap = ctk.CTkFrame(self)
-        table_wrap.grid(row=4, column=0, sticky="nsew", padx=8, pady=4)
+        table_wrap.grid(row=3, column=0, sticky="nsew", padx=8, pady=4)
         table_wrap.grid_rowconfigure(0, weight=1)
         table_wrap.grid_columnconfigure(0, weight=1)
 

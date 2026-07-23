@@ -125,8 +125,10 @@ class LibraryDataWindow(BaseWindow):
         self._qc_gaussian_min_rt_var = tk.StringVar(value="600")
         self._qc_modern_widgets: List[ctk.CTkBaseClass] = []
         self._qc_old_school_widgets: List[ctk.CTkBaseClass] = []
+        self._qc_quality_widgets: List[ctk.CTkBaseClass] = []
         self._qc_modern_col: Optional[ctk.CTkFrame] = None
         self._qc_old_col: Optional[ctk.CTkFrame] = None
+        self._qc_quality_frame: Optional[ctk.CTkFrame] = None
         self._pedigree_frame: Optional[ctk.CTkFrame] = None
         self._pedigree_summary_label: Optional[ctk.CTkLabel] = None
         self._pedigree_status_label: Optional[ctk.CTkLabel] = None
@@ -150,8 +152,11 @@ class LibraryDataWindow(BaseWindow):
         self._pedigree_gaussian_min_rt_var = tk.StringVar(value="600")
         self._pedigree_modern_widgets: List[ctk.CTkBaseClass] = []
         self._pedigree_old_school_widgets: List[ctk.CTkBaseClass] = []
+        self._pedigree_quality_widgets: List[ctk.CTkBaseClass] = []
         self._pedigree_modern_col: Optional[ctk.CTkFrame] = None
         self._pedigree_old_col: Optional[ctk.CTkFrame] = None
+        self._pedigree_quality_frame: Optional[ctk.CTkFrame] = None
+        self._pedigree_quality_note: Optional[ctk.CTkLabel] = None
         self._pedigree_variant_choices: List[str] = ["All"]
         self._pedigree_include_failed_var = tk.BooleanVar(value=True)
         self._pedigree_show_rt_var = tk.BooleanVar(value=True)
@@ -559,6 +564,15 @@ class LibraryDataWindow(BaseWindow):
             except (tk.TclError, AttributeError):
                 pass
         self._splittree_panel._sync_metadata_control_states()
+        # Busy enable/disable is blanket; restore mode-aware picker/quality states.
+        try:
+            self._rt_assignment_panel._sync_rt_parameter_widgets()
+        except Exception:
+            pass
+        try:
+            self._qc_panel._sync_qc_picker_widgets()
+        except Exception:
+            pass
 
     def _show_loading_page(self, title: str, detail: str = "") -> None:
         self._busy_operation = title
@@ -778,6 +792,15 @@ class LibraryDataWindow(BaseWindow):
                     )
         except tk.TclError:
             pass
+        if not busy:
+            try:
+                self._rt_assignment_panel._sync_rt_parameter_widgets()
+            except Exception:
+                pass
+            try:
+                self._qc_panel._sync_qc_picker_widgets()
+            except Exception:
+                pass
 
     def _on_worker_error(self, message: str) -> None:
         if not self._ui_is_active():

@@ -821,29 +821,40 @@ class DataStore:
                 out[str(compound.compound_id)] = compound
         return out
 
-    def get_compound(self, compound_id: str) -> Optional[Compound]:
+    def get_compound(
+        self,
+        compound_id: str,
+        *,
+        metadata_columns: Optional[Sequence[str]] = None,
+    ) -> Optional[Compound]:
         """
         Get a compound by ID.
-        
+
         Args:
             compound_id: Compound ID to retrieve
-            
+            metadata_columns: Optional logical metadata headers to merge from SQL columns
+                when ``metadata_json`` is missing keys.
+
         Returns:
             Compound instance if found, None otherwise
         """
         try:
             cursor = self.conn.cursor()
-            
+
             # Get compound metadata
             cursor.execute("SELECT * FROM compounds WHERE compound_id = ?", (compound_id,))
             row = cursor.fetchone()
-            
+
             if not row:
                 return None
 
             data_points = self._load_data_points(compound_id)
-            return self._compound_from_row(row, data_points=data_points)
-            
+            return self._compound_from_row(
+                row,
+                data_points=data_points,
+                metadata_columns=metadata_columns,
+            )
+
         except Exception as e:
             logger.error(f"Error getting compound {compound_id}: {e}", exc_info=True)
             return None
@@ -878,12 +889,18 @@ class DataStore:
             logger.error("Error listing primary compound IDs: %s", e, exc_info=True)
             return []
 
-    def get_compounds_for_primary(self, primary_compound_id: str) -> List[Compound]:
+    def get_compounds_for_primary(
+        self,
+        primary_compound_id: str,
+        *,
+        metadata_columns: Optional[Sequence[str]] = None,
+    ) -> List[Compound]:
         """
         Load all stored rows that share the same primary compound ID (e.g. linear + cyclized).
 
         Args:
             primary_compound_id: Value from ``primary_compound_id`` / compound list.
+            metadata_columns: Optional logical metadata headers to merge from SQL columns.
 
         Returns:
             Compounds ordered by variant label then storage id.
@@ -901,7 +918,7 @@ class DataStore:
             ids = [r[0] for r in cursor.fetchall()]
             out: List[Compound] = []
             for cid in ids:
-                loaded = self.get_compound(cid)
+                loaded = self.get_compound(cid, metadata_columns=metadata_columns)
                 if loaded is not None:
                     out.append(loaded)
             return out
@@ -959,6 +976,73 @@ class DataStore:
                     seen_safe_missing.add(safe)
         return present, missing
 
+    def list_distinct_metadata_values(
+        self,
+        logical_column: str,
+        *,
+        limit: int = 1500,
+    ) -> Tuple[List[str], bool]:
+        """
+        Return sorted distinct non-empty values for one metadata column.
+
+        Used by the search UI to offer pick-list / autocomplete suggestions so users
+        do not need to type exact residue or metadata strings from memory.
+
+        Args:
+            logical_column: Spreadsheet header name (sanitized to the physical column).
+            limit: Maximum values to return (extra row fetch detects truncation).
+
+        Returns:
+            ``(values, truncated)`` — ``truncated`` is True when more than ``limit``
+            distinct values exist.
+
+        Raises:
+            sqlite3.Error: If the query cannot be executed.
+            ValueError: If the column is not present on ``compounds``.
+        """
+        name = str(logical_column or "").strip()
+        if not name:
+            return [], False
+        if limit <= 0:
+            return [], False
+
+        safe = self._sanitize_column_name(name)
+        physical = self.list_compounds_physical_columns()
+        if safe not in physical:
+            raise ValueError(f"Metadata column {name!r} is not in this database.")
+
+        try:
+            cursor = self.conn.cursor()
+            # Fetch limit+1 to detect truncation without a separate COUNT(DISTINCT).
+            cursor.execute(
+                f"""
+                SELECT DISTINCT TRIM({safe}) AS v
+                FROM compounds
+                WHERE {safe} IS NOT NULL AND TRIM({safe}) != ''
+                ORDER BY v COLLATE NOCASE
+                LIMIT ?
+                """,
+                (int(limit) + 1,),
+            )
+            values: List[str] = []
+            for row in cursor.fetchall():
+                raw = row["v"]
+                if raw is None:
+                    continue
+                text = str(raw).strip()
+                if text:
+                    values.append(text)
+            truncated = len(values) > limit
+            return values[:limit], truncated
+        except Exception as e:
+            logger.error(
+                "Error listing distinct values for %s: %s",
+                name,
+                e,
+                exc_info=True,
+            )
+            raise
+
     def count_compounds_where(self, where_sql: str, params: Sequence[Any]) -> int:
         """
         Count compound rows matching a parameterized WHERE fragment (no ``WHERE`` keyword).
@@ -968,7 +1052,10 @@ class DataStore:
             params: Bound parameters for the fragment.
 
         Returns:
-            Match count, or 0 on error.
+            Match count.
+
+        Raises:
+            sqlite3.Error: If the query cannot be executed.
         """
         try:
             cursor = self.conn.cursor()
@@ -980,7 +1067,7 @@ class DataStore:
             return int(row["c"]) if row else 0
         except Exception as e:
             logger.error("Error counting compounds: %s", e, exc_info=True)
-            return 0
+            raise
 
     def search_compounds_page(
         self,
@@ -1041,22 +1128,39 @@ class DataStore:
             logger.error("Error in paginated search: %s", e, exc_info=True)
             return [], total
 
-    def list_compound_ids_where(self, where_sql: str, params: Sequence[Any]) -> List[str]:
+    def list_compound_ids_where(
+        self,
+        where_sql: str,
+        params: Sequence[Any],
+        *,
+        limit: Optional[int] = None,
+    ) -> List[str]:
         """
-        Return all ``compound_id`` values matching the WHERE fragment (no LIMIT).
+        Return ``compound_id`` values matching the WHERE fragment.
 
-        Used for "select all results" in the search UI; may be heavy on huge databases.
+        Args:
+            where_sql: Parameterized boolean SQL (no ``WHERE`` keyword).
+            params: Bound parameters for ``where_sql``.
+            limit: Optional maximum number of IDs (ordered by ``compound_id``).
+
+        Raises:
+            sqlite3.Error: If the query cannot be executed.
         """
         try:
             cursor = self.conn.cursor()
-            cursor.execute(
-                f"SELECT compound_id FROM compounds WHERE ({where_sql}) ORDER BY compound_id",
-                tuple(params),
+            query = (
+                f"SELECT compound_id FROM compounds WHERE ({where_sql}) "
+                "ORDER BY compound_id"
             )
+            bind: List[Any] = list(params)
+            if limit is not None:
+                query += " LIMIT ?"
+                bind.append(int(limit))
+            cursor.execute(query, tuple(bind))
             return [str(r["compound_id"]) for r in cursor.fetchall() if r["compound_id"]]
         except Exception as e:
             logger.error("Error listing compound ids: %s", e, exc_info=True)
-            return []
+            raise
 
     def search_compounds(
         self,

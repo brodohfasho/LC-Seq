@@ -7,19 +7,27 @@ from __future__ import annotations
 
 import copy
 import tkinter as tk
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import customtkinter as ctk
 
-from src.core.metadata_search import Combiner, QueryCondition
+from src.core.metadata_search import Combiner, QueryCondition, filter_value_suggestions
 
-_TEXT_OPS = ["=", "!=", "contains", "starts with", "ends with", ">", "<", ">=", "<="]
+_TEXT_OPS = ["=", "!=", "contains", "starts with", "ends with"]
 _NUM_OPS = ["=", "!=", ">", "<", ">=", "<="]
+_AUTO_OPS = list(dict.fromkeys(_TEXT_OPS + _NUM_OPS))
+_COMBO_SHOW = 400
 
 
 class QueryBuilderPanel(ctk.CTkFrame):
     """
     Dynamic conditions with AND/OR connectors, field/operator/type controls, and actions.
+
+    The primary Search action lives on the parent dialog footer so it is always visible;
+    this panel only manages conditions (add / clear).
+
+    When ``value_suggestions`` is provided, the value control becomes an editable
+    combobox populated from distinct database values for the selected column.
     """
 
     def __init__(
@@ -27,21 +35,24 @@ class QueryBuilderPanel(ctk.CTkFrame):
         master: Any,
         *,
         metadata_fields: List[str],
-        on_search: Callable[[], None],
         on_clear: Callable[[], None],
+        value_suggestions: Optional[Callable[[str], Tuple[List[str], bool]]] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(master, **kwargs)
         self._fields = list(metadata_fields)
-        self._on_search = on_search
         self._on_clear = on_clear
+        self._value_suggestions = value_suggestions
 
         self._rows: List[Dict[str, Any]] = []
         self._combiners: List[str] = []
+        self._live_row_vars: List[Dict[str, Any]] = []
 
-        self._rows_frame = ctk.CTkScrollableFrame(self, height=200)
-        self._rows_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        self._rows_frame = ctk.CTkScrollableFrame(self, height=220)
+        self._rows_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
         self._summary = ctk.CTkLabel(
             self,
@@ -54,21 +65,20 @@ class QueryBuilderPanel(ctk.CTkFrame):
         self._summary.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.grid(row=2, column=0, sticky="ew", padx=4, pady=4)
-        ctk.CTkButton(btn_row, text="+ Add condition", width=120, command=self._add_condition).pack(
-            side="left", padx=4
-        )
+        btn_row.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 4))
         ctk.CTkButton(
             btn_row,
-            text="Search",
-            width=100,
-            fg_color="#238636",
-            hover_color="#2ea043",
-            command=self._on_search,
+            text="+ Add condition",
+            width=130,
+            command=self._add_condition,
         ).pack(side="left", padx=4)
-        ctk.CTkButton(btn_row, text="Clear", width=80, fg_color="gray40", command=self._clear_all).pack(
-            side="left", padx=4
-        )
+        ctk.CTkButton(
+            btn_row,
+            text="Clear conditions",
+            width=130,
+            fg_color="gray40",
+            command=self._clear_all,
+        ).pack(side="left", padx=4)
 
         if self._fields:
             self._rows.append(self._default_row_dict())
@@ -76,6 +86,7 @@ class QueryBuilderPanel(ctk.CTkFrame):
 
     def set_metadata_fields(self, fields: List[str]) -> None:
         """Refresh when configuration changes."""
+        self._flush_live_row_state()
         self._fields = list(fields)
         for row in self._rows:
             if row["field"] not in self._fields and self._fields:
@@ -99,15 +110,29 @@ class QueryBuilderPanel(ctk.CTkFrame):
             return list(_NUM_OPS)
         if ft == "text":
             return list(_TEXT_OPS)
-        return list(dict.fromkeys(_TEXT_OPS + _NUM_OPS))
+        return list(_AUTO_OPS)
+
+    def _load_suggestions(self, field: str) -> Tuple[List[str], bool]:
+        if self._value_suggestions is None:
+            return [], False
+        name = (field or "").strip()
+        if not name or name == "(no columns)":
+            return [], False
+        try:
+            values, truncated = self._value_suggestions(name)
+            return list(values), bool(truncated)
+        except Exception:
+            return [], False
 
     def _add_condition(self) -> None:
+        self._flush_live_row_state()
         self._rows.append(self._default_row_dict())
         if len(self._rows) >= 2 and len(self._combiners) < len(self._rows) - 1:
             self._combiners.append("AND")
         self._render()
 
     def _remove_condition(self, index: int) -> None:
+        self._flush_live_row_state()
         n = len(self._rows)
         if index < 0 or index >= n:
             return
@@ -128,12 +153,33 @@ class QueryBuilderPanel(ctk.CTkFrame):
     def _clear_all(self) -> None:
         self._rows = []
         self._combiners = []
+        self._live_row_vars = []
         if self._fields:
             self._rows.append(self._default_row_dict())
         self._render()
         self._on_clear()
 
+    def _flush_live_row_state(self) -> None:
+        """Copy live Entry / OptionMenu vars into ``_rows`` before reading conditions."""
+        for index, live in enumerate(self._live_row_vars):
+            if index >= len(self._rows):
+                break
+            self._rows[index]["field"] = live["field"].get()
+            self._rows[index]["field_type"] = live["field_type"].get()
+            self._rows[index]["operator"] = live["operator"].get()
+            self._rows[index]["value"] = live["value"].get()
+            self._rows[index]["case_sensitive"] = bool(live["case_sensitive"].get())
+        if self._live_row_vars and len(self._rows) > 1:
+            combiner_vars = [
+                live.get("combiner")
+                for live in self._live_row_vars[1:]
+                if live.get("combiner") is not None
+            ]
+            if combiner_vars:
+                self._sync_combiners_from_vars(combiner_vars)
+
     def get_conditions(self) -> List[QueryCondition]:
+        self._flush_live_row_state()
         out: List[QueryCondition] = []
         for row in self._rows:
             field = (row.get("field") or "").strip()
@@ -163,9 +209,28 @@ class QueryBuilderPanel(ctk.CTkFrame):
     def _sync_combiners_from_vars(self, vars_list: List[tk.StringVar]) -> None:
         self._combiners = [v.get() if v.get() in ("AND", "OR") else "AND" for v in vars_list]
 
+    def _apply_value_combo_values(
+        self,
+        value_combo: ctk.CTkComboBox,
+        vvar: tk.StringVar,
+        all_values: Sequence[str],
+        *,
+        needle: Optional[str] = None,
+    ) -> None:
+        """Update combobox dropdown options without clobbering typed text."""
+        text = vvar.get() if needle is None else needle
+        filtered = filter_value_suggestions(all_values, text or "", max_show=_COMBO_SHOW)
+        if not filtered:
+            filtered = [text] if (text or "").strip() else [""]
+        current = vvar.get()
+        value_combo.configure(values=filtered)
+        if vvar.get() != current:
+            vvar.set(current)
+
     def _render(self) -> None:
         for w in self._rows_frame.winfo_children():
             w.destroy()
+        self._live_row_vars = []
 
         if not self._fields:
             ctk.CTkLabel(
@@ -180,6 +245,7 @@ class QueryBuilderPanel(ctk.CTkFrame):
         field_vals = self._fields
         combiner_vars: List[tk.StringVar] = []
         for i, row in enumerate(self._rows):
+            live: Dict[str, Any] = {}
             if i > 0:
                 cvar = tk.StringVar(
                     value=self._combiners[i - 1]
@@ -187,6 +253,7 @@ class QueryBuilderPanel(ctk.CTkFrame):
                     else "AND"
                 )
                 combiner_vars.append(cvar)
+                live["combiner"] = cvar
 
                 def _on_comb_change(_v: str, vars_list: List[tk.StringVar] = combiner_vars) -> None:
                     self._sync_combiners_from_vars(vars_list)
@@ -213,6 +280,20 @@ class QueryBuilderPanel(ctk.CTkFrame):
             vvar = tk.StringVar(value=str(row.get("value", "")))
             case_var = tk.IntVar(value=1 if row.get("case_sensitive") else 0)
 
+            suggestions, truncated = self._load_suggestions(row["field"])
+            live.update(
+                {
+                    "field": fvar,
+                    "field_type": tvar,
+                    "operator": opvar,
+                    "value": vvar,
+                    "case_sensitive": case_var,
+                    "all_suggestions": suggestions,
+                    "suggestions_truncated": truncated,
+                }
+            )
+            self._live_row_vars.append(live)
+
             def _save(
                 idx: int,
                 fv: tk.StringVar,
@@ -230,18 +311,39 @@ class QueryBuilderPanel(ctk.CTkFrame):
                     self._sync_combiners_from_vars(combiner_vars)
                 self._update_summary_only()
 
+            def _on_field_change(
+                _choice: str,
+                idx: int = i,
+                fv: tk.StringVar = fvar,
+                tv: tk.StringVar = tvar,
+                ov: tk.StringVar = opvar,
+                vv: tk.StringVar = vvar,
+                cv: tk.IntVar = case_var,
+                live_ref: Dict[str, Any] = live,
+            ) -> None:
+                _save(idx, fv, tv, ov, vv, cv)
+                new_field = fv.get()
+                new_vals, new_trunc = self._load_suggestions(new_field)
+                live_ref["all_suggestions"] = new_vals
+                live_ref["suggestions_truncated"] = new_trunc
+                vv.set("")
+                self._rows[idx]["value"] = ""
+                value_combo = live_ref.get("value_combo")
+                if value_combo is not None:
+                    self._apply_value_combo_values(value_combo, vv, new_vals, needle="")
+                self._update_summary_only()
+
             fcombo = ctk.CTkComboBox(
                 fr,
                 values=field_vals,
                 variable=fvar,
                 width=160,
-                command=lambda _c, idx=i, fv=fvar, tv=tvar, ov=opvar, vv=vvar, cv=case_var: _save(
-                    idx, fv, tv, ov, vv, cv
-                ),
+                command=_on_field_change,
             )
             fcombo.grid(row=0, column=0, padx=2, sticky="w")
 
             def _on_type_change(_v: str, idx: int = i, tv: tk.StringVar = tvar) -> None:
+                self._flush_live_row_state()
                 self._rows[idx]["field_type"] = tv.get()
                 self._fix_operator_for_row(idx)
                 self._render()
@@ -269,24 +371,58 @@ class QueryBuilderPanel(ctk.CTkFrame):
             )
             op_menu.grid(row=0, column=2, padx=2, sticky="w")
 
-            ent = ctk.CTkEntry(fr, textvariable=vvar, placeholder_text="Value", width=160)
-            ent.grid(row=0, column=3, padx=2, sticky="ew")
-            ent.bind(
-                "<KeyRelease>",
-                lambda _e, idx=i, fv=fvar, tv=tvar, ov=opvar, vv=vvar, cv=case_var: _save(
+            initial_values = filter_value_suggestions(
+                suggestions,
+                vvar.get(),
+                max_show=_COMBO_SHOW,
+            )
+            if not initial_values:
+                initial_values = [vvar.get()] if vvar.get().strip() else [""]
+
+            value_combo = ctk.CTkComboBox(
+                fr,
+                values=initial_values,
+                variable=vvar,
+                width=200,
+                command=lambda _c, idx=i, fv=fvar, tv=tvar, ov=opvar, vv=vvar, cv=case_var: _save(
                     idx, fv, tv, ov, vv, cv
                 ),
             )
+            value_combo.grid(row=0, column=3, padx=2, sticky="ew")
+            live["value_combo"] = value_combo
 
-            ctk.CTkCheckBox(
-                fr,
-                text="Aa",
-                variable=case_var,
-                width=36,
-                command=lambda idx=i, fv=fvar, tv=tvar, ov=opvar, vv=vvar, cv=case_var: _save(
-                    idx, fv, tv, ov, vv, cv
-                ),
-            ).grid(row=0, column=4, padx=2)
+            def _on_value_typed(
+                _event: Optional[tk.Event] = None,
+                idx: int = i,
+                fv: tk.StringVar = fvar,
+                tv: tk.StringVar = tvar,
+                ov: tk.StringVar = opvar,
+                vv: tk.StringVar = vvar,
+                cv: tk.IntVar = case_var,
+                live_ref: Dict[str, Any] = live,
+                combo: ctk.CTkComboBox = value_combo,
+            ) -> None:
+                _save(idx, fv, tv, ov, vv, cv)
+                all_vals = live_ref.get("all_suggestions") or []
+                self._apply_value_combo_values(combo, vv, all_vals)
+
+            value_combo.bind("<KeyRelease>", _on_value_typed)
+            value_combo.bind("<FocusOut>", _on_value_typed)
+
+            # Case-sensitive applies to text operators only (auto/text field types).
+            if tvar.get() in ("auto", "text"):
+                ctk.CTkCheckBox(
+                    fr,
+                    text="Aa",
+                    variable=case_var,
+                    width=36,
+                    command=lambda idx=i, fv=fvar, tv=tvar, ov=opvar, vv=vvar, cv=case_var: _save(
+                        idx, fv, tv, ov, vv, cv
+                    ),
+                ).grid(row=0, column=4, padx=2)
+            else:
+                case_var.set(0)
+                row["case_sensitive"] = False
 
             ctk.CTkButton(
                 fr,
@@ -310,7 +446,9 @@ class QueryBuilderPanel(ctk.CTkFrame):
         conds = self.get_conditions()
         combs = self.get_combiners()
         if not conds:
-            self._summary.configure(text="No active conditions (pick a field and value).")
+            self._summary.configure(
+                text="No active conditions — pick a column, then choose or type a value."
+            )
             return
         parts: List[str] = []
         for i, c in enumerate(conds):
@@ -318,4 +456,13 @@ class QueryBuilderPanel(ctk.CTkFrame):
                 parts.append(combs[i - 1])
             cs = " [Aa]" if c.case_sensitive else ""
             parts.append(f"{c.field} {c.operator} {c.value!r}{cs}")
-        self._summary.configure(text=" ".join(parts))
+
+        hint = ""
+        if self._live_row_vars:
+            live0 = self._live_row_vars[0]
+            n_sug = len(live0.get("all_suggestions") or [])
+            if live0.get("suggestions_truncated"):
+                hint = f"  ·  {n_sug}+ distinct values (type to filter the list)"
+            elif n_sug:
+                hint = f"  ·  {n_sug} distinct value(s) available in the value list"
+        self._summary.configure(text=" ".join(parts) + hint)
