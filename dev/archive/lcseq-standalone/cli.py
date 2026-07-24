@@ -1,4 +1,4 @@
-# docs/archive/lcseq-standalone/cli.py
+# dev/archive/lcseq-standalone/cli.py
 """LC-Seq command-line interface (archived standalone tooling).
 
 Wires `parse_xlsx → evaluate_library → render_pruned_tree` end-to-end.

@@ -300,6 +300,6 @@ flowchart TB
 ## Related docs
 
 - [README.md](../README.md) — install and quick start  
-- [docs/CONFIGURATION.md](CONFIGURATION.md) — spreadsheet and preset formats  
-- [docs/LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md) — Rust engine integration  
+- [dev/CONFIGURATION.md](CONFIGURATION.md) — spreadsheet and preset formats  
+- [dev/LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md) — Rust engine integration  
 - In-app help: `src/help/*.md` (library analysis, peak picking, pedigree, lineage, export bundle glossary, glossary)

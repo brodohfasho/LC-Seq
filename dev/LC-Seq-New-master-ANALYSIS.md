@@ -56,7 +56,7 @@ flowchart TB
 2. **Data adapter:** `pedigree_adapter.py` maps SQLite compounds + `SpreadsheetConfig` BB columns into the dict/tuple shape Rust expects (N→C position tuples as keys).
 3. **Wrappers:** `lcseq_backend.py` and `pedigree_backend.py` convert native results into app models and handle Python fallback when the extension is missing or fails parity check.
 
-See [docs/DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) for build steps and troubleshooting.
+See [dev/DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) for build steps and troubleshooting.
 
 ---
 
@@ -85,7 +85,7 @@ The Windows release zip (`dist/LC-Seq/`) contains only the PyInstaller bundle. I
 
 ### Archived — not used by the main app
 
-Moved to [docs/archive/lcseq-standalone/](archive/lcseq-standalone/):
+Moved to [dev/archive/lcseq-standalone/](archive/lcseq-standalone/):
 
 | Former path | Why archived |
 |-------------|--------------|
@@ -93,7 +93,7 @@ Moved to [docs/archive/lcseq-standalone/](archive/lcseq-standalone/):
 | `python/lcseq/cli.py` | Standalone CLI pipeline |
 | `python/lcseq/debug.py` | Archived matplotlib debug plots |
 | `python/lcseq/lcseq.pdb` | Debug symbol artifact |
-| Standalone `README.md`, `uv.lock` | Historical standalone workflow (see `docs/archive/`) |
+| Standalone `README.md`, `uv.lock` | Historical standalone workflow (see `dev/archive/`) |
 
 ---
 
@@ -230,7 +230,7 @@ cargo test
 ### Release packaging
 
 - End-user zip: `scripts/build_windows.ps1` → `scripts/package_release.ps1` (PyInstaller output only).
-- Dev docs (`docs/archive/`, `docs/AGENT_INSTRUCTIONS.md`, this file) stay in the git repo, not the release zip.
+- Dev docs (`dev/archive/`, `dev/AGENT_INSTRUCTIONS.md`, this file) stay in the git repo, not the release zip.
 
 ---
 
@@ -253,6 +253,6 @@ cargo test
 ## Related docs
 
 - [DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) — maturin build, parity check, Graphviz
-- [docs/archive/lcseq-standalone/](archive/lcseq-standalone/) — archived xlsx loader + CLI
-- [docs/archive/INTEGRATION_PLAN_LCSEQ_ANALYSIS.md](archive/INTEGRATION_PLAN_LCSEQ_ANALYSIS.md) — historical phase plan (mostly complete)
+- [dev/archive/lcseq-standalone/](archive/lcseq-standalone/) — archived xlsx loader + CLI
+- [dev/archive/INTEGRATION_PLAN_LCSEQ_ANALYSIS.md](archive/INTEGRATION_PLAN_LCSEQ_ANALYSIS.md) — historical phase plan (mostly complete)
 - In-app: `src/help/pedigree_analysis.md`, `src/help/lineage_analysis.md`, `src/help/peak_picking.md`

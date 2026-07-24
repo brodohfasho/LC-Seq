@@ -1341,7 +1341,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 self,
                 "Prepare lineage",
                 "The Rust lcseq extension is required for lineage analysis.",
-                what_to_do="See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
+                what_to_do="See dev/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
             )
             return
         if self._peak_panel is None:
@@ -1458,7 +1458,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 self,
                 "Lineage analysis",
                 "The Rust lcseq extension is required for lineage analysis.",
-                what_to_do="See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
+                what_to_do="See dev/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
             )
             return
         if self._peak_panel is None:

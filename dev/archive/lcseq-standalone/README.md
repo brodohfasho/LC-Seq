@@ -1,4 +1,4 @@
-# docs/archive/lcseq-standalone
+# dev/archive/lcseq-standalone
 
 **Standalone** LC-Seq tooling from before integration into the main CustomTkinter app. Not used by the GUI at runtime.
 
@@ -16,7 +16,7 @@
 Requires a built `lcseq` extension (`maturin develop` in `LC-Seq-New-master/`) and Graphviz on PATH for tree output:
 
 ```powershell
-cd docs/archive/lcseq-standalone
+cd dev/archive/lcseq-standalone
 ..\..\..\venv\Scripts\python.exe cli.py run path\to\master.xlsx --bbs Val Phe Leu --out tree --unit minutes --tolerance 0.5
 ```
 

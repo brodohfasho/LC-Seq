@@ -15,7 +15,7 @@ Rust core + Python bindings for pedigree null-truncation analysis. This folder i
 
 ## Build (developers)
 
-From the **repo root** venv — see [docs/DEVELOPER_SETUP.md](../docs/DEVELOPER_SETUP.md):
+From the **repo root** venv — see [dev/DEVELOPER_SETUP.md](../dev/DEVELOPER_SETUP.md):
 
 ```powershell
 cd LC-Seq-New-master
@@ -27,12 +27,12 @@ Verify: `..\venv\Scripts\python.exe -c "import lcseq; print(lcseq.find_peaks)"`
 ## Archived standalone tooling
 
 Earlier standalone LDEL xlsx loader, CLI, and matplotlib debug plots live in
-[docs/archive/lcseq-standalone/](../docs/archive/lcseq-standalone/). The main app uses
+[dev/archive/lcseq-standalone/](../dev/archive/lcseq-standalone/). The main app uses
 SQLite + `src/core/pedigree_adapter.py` instead of `parse_xlsx`.
 
 ## Integration reference
 
-See [docs/LC-Seq-New-master-ANALYSIS.md](../docs/LC-Seq-New-master-ANALYSIS.md) for the
+See [dev/LC-Seq-New-master-ANALYSIS.md](../dev/LC-Seq-New-master-ANALYSIS.md) for the
 full API surface, LC-Seq wrapper map, and what requires Rust vs Python fallback.
 
 ## License

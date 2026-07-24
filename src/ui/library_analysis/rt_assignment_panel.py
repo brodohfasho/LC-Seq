@@ -286,7 +286,7 @@ class RtAssignmentPanel:
         if not pedigree_ready:
             tip = "Map BB1..BBn columns in Configure Spreadsheet and build the Rust lcseq extension to enable pedigree analysis."
             if not pedigree_backend_available():
-                tip = "The Rust lcseq extension is required. See docs/DEVELOPER_SETUP.md."
+                tip = "The Rust lcseq extension is required. See dev/DEVELOPER_SETUP.md."
             attach_tooltip(self._context._rt_assignment_run_btn, tip)
         else:
             attach_tooltip(

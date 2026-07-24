@@ -26,7 +26,7 @@ Guidelines for AI agents working on the LC-Seq chromatographic data analysis app
 - Prefer the user’s stated scope over speculative features
 
 ### Product context
-- Prefer [APPLICATION_WORKFLOW.md](APPLICATION_WORKFLOW.md), [ROADMAP.md](ROADMAP.md), in-app help under `src/help/`, and [release_checklist.md](../release_checklist.md) over archived phase plans
+- Prefer [APPLICATION_WORKFLOW.md](APPLICATION_WORKFLOW.md), [ROADMAP.md](ROADMAP.md), in-app help under `src/help/`, and [release_checklist.md](release_checklist.md) over archived phase plans
 - Historical plans live under [archive/](archive/) — do not treat them as current requirements
 
 ### Version control

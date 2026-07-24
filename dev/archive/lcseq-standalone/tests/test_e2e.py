@@ -1,4 +1,4 @@
-# docs/archive/lcseq-standalone/tests/test_e2e.py
+# dev/archive/lcseq-standalone/tests/test_e2e.py
 """End-to-end test of the archived LC-Seq CLI on the real xlsx.
 
 Exercises the full pipeline: parse_xlsx → evaluate_library → render_pruned_tree.

@@ -35,4 +35,4 @@ Paper Methods used **Old-school** peak picking with **Direct pick** RT assignmen
 | [INSTALL.md](INSTALL.md) | Users — Windows zip |
 | [APPLICATION_WORKFLOW.md](APPLICATION_WORKFLOW.md) | Developers — data flow |
 | [DEVELOPER_SETUP.md](DEVELOPER_SETUP.md) | Developers — Rust engine |
-| [release_checklist.md](../release_checklist.md) | Maintainers — pre-tag QA |
+| [release_checklist.md](release_checklist.md) | Maintainers — pre-tag QA |

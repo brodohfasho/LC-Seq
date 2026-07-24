@@ -79,7 +79,7 @@ If maturin reports `The process cannot access the file because it is being used 
 
 ## Folder layout
 
-The active crate contains Rust source, `python/lcseq/render.py`, and tests. Earlier standalone xlsx/CLI tooling is archived under `docs/archive/lcseq-standalone/`. See [LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md) for the API map.
+The active crate contains Rust source, `python/lcseq/render.py`, and tests. Earlier standalone xlsx/CLI tooling is archived under `dev/archive/lcseq-standalone/`. See [LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md) for the API map.
 
 ## Feature split: what still requires Rust
 

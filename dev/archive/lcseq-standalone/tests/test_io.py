@@ -1,4 +1,4 @@
-# docs/archive/lcseq-standalone/tests/test_io.py
+# dev/archive/lcseq-standalone/tests/test_io.py
 """Tests for archived ``lcseq_io.parse_xlsx``.
 
 Includes one slow test that parses the full ~100MB master xlsx — gated behind a `slow`

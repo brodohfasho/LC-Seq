@@ -135,7 +135,7 @@ def show_graphviz_missing_warning(parent, *, for_export: bool = False) -> bool:
         graphviz_missing_banner(),
         what_to_do=(
             "Install Graphviz and ensure ``dot`` is on PATH "
-            "(see docs/DEVELOPER_SETUP.md). LC-Seq will keep using the "
+            "(see dev/DEVELOPER_SETUP.md). LC-Seq will keep using the "
             "matplotlib tier-ring preview until then."
         ),
     )

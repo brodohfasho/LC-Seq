@@ -119,7 +119,7 @@ class PythonLcseqBackend:
         return BackendInfo(
             name="Python fallback",
             is_native=False,
-            detail="Install Rust + maturin for the production engine (see docs/DEVELOPER_SETUP.md)",
+            detail="Install Rust + maturin for the production engine (see dev/DEVELOPER_SETUP.md)",
         )
 
     def find_peaks(
@@ -147,7 +147,7 @@ def select_direct_pick_product_rt(
 
     Legacy notebooks fit Gaussians to all significant peaks, then assign the
     cyclized product as the **latest** retention time among accepted fits
-    (``best_mean`` loop in ``docs/archive/notebooks/CalculateRTs.ipynb``).
+    (``best_mean`` loop in ``dev/archive/notebooks/CalculateRTs.ipynb``).
 
     Shared post-detection quality filters (min prominence / min % area) are
     applied first, matching Chromatogram Visualizer, Library QC, and Pedigree.
@@ -280,7 +280,7 @@ def get_peak_picker_backend() -> PeakPickerBackend:
             logger.warning(
                 "lcseq extension is installed but failed peak-picker parity check; "
                 "using Python fallback. Rebuild LC-Seq-New-master with maturin "
-                "(close the app first) — see docs/DEVELOPER_SETUP.md."
+                "(close the app first) — see dev/DEVELOPER_SETUP.md."
             )
         else:
             logger.warning("lcseq Rust extension not found; using Python fallback")

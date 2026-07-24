@@ -10,7 +10,7 @@ Desktop application for loading chromatographic data from spreadsheets, building
 
 **Recommended for most users:** download **`LC-Seq-v2.0.0-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases), extract the whole `LC-Seq` folder, and run `LC-Seq.exe`. No Python or Rust install required — pedigree and lineage analysis are included in the zip.
 
-Step-by-step instructions: **[docs/INSTALL.md](docs/INSTALL.md)**.
+Step-by-step instructions: **[dev/INSTALL.md](dev/INSTALL.md)**.
 
 ---
 
@@ -27,7 +27,7 @@ python -m src.main
 
 (Or `python src/main.py` from the repo root.)
 
-**Pedigree and lineage analysis** require the Rust `lcseq` extension — see **[docs/DEVELOPER_SETUP.md](docs/DEVELOPER_SETUP.md)** (`maturin develop` in `LC-Seq-New-master/`). Peak picking works with a Python fallback when Rust is not built.
+**Pedigree and lineage analysis** require the Rust `lcseq` extension — see **[dev/DEVELOPER_SETUP.md](dev/DEVELOPER_SETUP.md)** (`maturin develop` in `LC-Seq-New-master/`). Peak picking works with a Python fallback when Rust is not built.
 
 On Linux/macOS, use `source venv/bin/activate` instead of `venv\Scripts\activate`.
 
@@ -97,7 +97,9 @@ Delimiter and column mapping are data-specific—use **Configure Spreadsheet** p
 
 ## Future development
 
-Planned and in-progress work is tracked in [docs/ROADMAP.md](docs/ROADMAP.md).
+Planned and in-progress work is tracked in [dev/ROADMAP.md](dev/ROADMAP.md).
+
+Maintainer docs (build, release, engine setup, etc.) live under **[dev/](dev/README.md)**.
 
 ---
 
@@ -117,7 +119,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Building the executable (maintainers)
 
-See [docs/BUILD.md](docs/BUILD.md) and [docs/RELEASE.md](docs/RELEASE.md). Package a release zip with `.\scripts\package_release.ps1` after `.\scripts\build_windows.ps1`.
+See [dev/BUILD.md](dev/BUILD.md) and [dev/RELEASE.md](dev/RELEASE.md). Package a release zip with `.\scripts\package_release.ps1` after `.\scripts\build_windows.ps1`.
 
 ## Development (optional)
 
@@ -125,4 +127,4 @@ See [docs/BUILD.md](docs/BUILD.md) and [docs/RELEASE.md](docs/RELEASE.md). Packa
 pytest tests/
 ```
 
-See [docs/DEVELOPER_SETUP.md](docs/DEVELOPER_SETUP.md) for the Rust engine. Config formats: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Changelog: [CHANGELOG.md](CHANGELOG.md).
+Maintainer docs (Rust engine, config formats, release process): **[dev/](dev/README.md)**. Changelog: [CHANGELOG.md](CHANGELOG.md).

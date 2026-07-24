@@ -3,7 +3,7 @@
 Pure-Python peak picker mirroring LC-Seq-New-master ``peaks/`` (baseline, picker, significance).
 
 Used when the Rust ``lcseq`` extension is not built. Install Rust + maturin for the
-production engine (see docs/DEVELOPER_SETUP.md).
+production engine (see dev/DEVELOPER_SETUP.md).
 """
 
 from __future__ import annotations

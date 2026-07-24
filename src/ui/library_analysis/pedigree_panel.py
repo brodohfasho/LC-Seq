@@ -340,7 +340,7 @@ class PedigreePanel:
         if not pedigree_backend_available():
             messagebox.showerror(
                 "Pedigree",
-                "The Rust lcseq extension is required.\n\nSee docs/DEVELOPER_SETUP.md.",
+                "The Rust lcseq extension is required.\n\nSee dev/DEVELOPER_SETUP.md.",
                 parent=self._context,
             )
             return
@@ -556,7 +556,7 @@ class PedigreePanel:
                 if graphviz_available()
                 else (
                     "Install Graphviz for the preferred layout "
-                    "(see docs/DEVELOPER_SETUP.md). Without it, LC-Seq uses "
+                    "(see dev/DEVELOPER_SETUP.md). Without it, LC-Seq uses "
                     "a matplotlib tier-ring preview."
                 )
             ),
@@ -747,6 +747,6 @@ class PedigreePanel:
                 what_to_do=(
                     None
                     if graphviz_available()
-                    else "Install Graphviz for the preferred layout (see docs/DEVELOPER_SETUP.md), or export again with the matplotlib fallback."
+                    else "Install Graphviz for the preferred layout (see dev/DEVELOPER_SETUP.md), or export again with the matplotlib fallback."
                 ),
             )

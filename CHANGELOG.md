@@ -54,15 +54,15 @@ LC-Seq is **not code-signed**. On first launch, Windows Defender SmartScreen may
 2. Double-click `LC-Seq.exe`.
 3. If SmartScreen blocks the app: **More info** → **Run anyway**.
 
-Some third-party antivirus tools may flag PyInstaller bundles or the bundled Rust extension (`lcseq._native`). If quarantined, restore the file and allowlist the extracted `LC-Seq` folder. The project is open source; build steps are in [docs/BUILD.md](docs/BUILD.md).
+Some third-party antivirus tools may flag PyInstaller bundles or the bundled Rust extension (`lcseq._native`). If quarantined, restore the file and allowlist the extracted `LC-Seq` folder. The project is open source; build steps are in [dev/BUILD.md](dev/BUILD.md).
 
 No Rust or Python install is required for the release zip.
 
 ### Documentation
 
-- [docs/LC-Seq-New-master-ANALYSIS.md](docs/LC-Seq-New-master-ANALYSIS.md) — Rust engine integration guide
+- [dev/LC-Seq-New-master-ANALYSIS.md](dev/LC-Seq-New-master-ANALYSIS.md) — Rust engine integration guide
 - Updated in-app help under `src/help/`
-- [docs/INSTALL.md](docs/INSTALL.md), [docs/BUILD.md](docs/BUILD.md), [docs/RELEASE.md](docs/RELEASE.md)
+- [dev/INSTALL.md](dev/INSTALL.md), [dev/BUILD.md](dev/BUILD.md), [dev/RELEASE.md](dev/RELEASE.md)
 
 ### Known limitations
 
@@ -94,7 +94,7 @@ First public release (companion to publication).
 ### Documentation
 
 - README (workflow, data formats, contact)
-- [docs/INSTALL.md](docs/INSTALL.md), [docs/BUILD.md](docs/BUILD.md), [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+- [dev/INSTALL.md](dev/INSTALL.md), [dev/BUILD.md](dev/BUILD.md), [dev/CONFIGURATION.md](dev/CONFIGURATION.md)
 
 ### Known limitations
 

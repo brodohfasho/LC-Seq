@@ -12,7 +12,7 @@ Companion soft release for the *Journal of Medicinal Chemistry* paper. Use this 
 - [x] Confirm known limitations in `CHANGELOG.md` are honest (Windows-first, unsigned exe, optional Graphviz, large-library runtime/disk)
 - [x] Confirm `main` on GitHub matches the release commit you intend to tag
 - [ ] Create annotated tag `v2.0.0` and GitHub Release; upload `LC-Seq-v2.0.0-windows.zip` *(you — browser, after zip is built)*
-- [ ] Paste SmartScreen / antivirus guidance into the GitHub Release body (see `docs/RELEASE.md`) *(you — with the release)*
+- [ ] Paste SmartScreen / antivirus guidance into the GitHub Release body (see `dev/RELEASE.md`) *(you — with the release)*
 
 ### Automated quality gates
 - [x] `pytest tests/` is fully green on the release commit *(228 passed after Graphviz API fix)*
@@ -49,9 +49,9 @@ Use a real DEL library spreadsheet representative of the paper workflow:
 
 ### Docs must match the shipped product
 - [x] `README.md` install link points at the v2.0.0 zip and describes the full DEL workflow
-- [x] `docs/INSTALL.md` covers first-run, SmartScreen, Graphviz optional note, and Library Analysis path
-- [x] `docs/CONFIGURATION.md` covers BB columns, null token, cycle count, and BB index CSV
-- [x] `docs/RELEASE.md` smoke list includes pedigree, split-tree, and export bundle (not only basic visualizer)
+- [x] `dev/INSTALL.md` covers first-run, SmartScreen, Graphviz optional note, and Library Analysis path
+- [x] `dev/CONFIGURATION.md` covers BB columns, null token, cycle count, and BB index CSV
+- [x] `dev/RELEASE.md` smoke list includes pedigree, split-tree, and export bundle (not only basic visualizer)
 - [x] In-app Help topics open and render for peak picking, pedigree, lineage, split-tree / export bundle, and glossary
 
 ---
@@ -67,7 +67,7 @@ Use a real DEL library spreadsheet representative of the paper workflow:
 - [x] Add a short “reproducing paper analyses” note (settings that matter: null token, cycle count, picker mode, pass cutoffs) *(in-app help + README / CHANGELOG / workflow)*
 - [x] Document session folder layout and approximate disk use for large libraries (`output/library_data/`) *(INSTALL.md first-run table)*
 - [x] Document moving `.session` folders between machines (what travels, what doesn’t) *(INSTALL.md)*
-- [x] Trim or archive completed roadmap phases so `docs/ROADMAP.md` reflects post-2.0 priorities only
+- [x] Trim or archive completed roadmap phases so `dev/ROADMAP.md` reflects post-2.0 priorities only
 - [x] Maintain a concise architecture / data-flow page (spreadsheet → DB → scan → pedigree → split-tree → exports) *(APPLICATION_WORKFLOW.md)*
 ### Interface & maintainability (non-blocking)
 - [x] Split `library_data_window.py` into tab/panel modules for easier review and future fixes

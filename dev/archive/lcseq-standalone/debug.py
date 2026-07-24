@@ -1,4 +1,4 @@
-# docs/archive/lcseq-standalone/debug.py
+# dev/archive/lcseq-standalone/debug.py
 """Debug visualization for one equivalence class.
 
 All algorithm-relevant values (per-rep initial earliest / most-significant /

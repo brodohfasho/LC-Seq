@@ -1,6 +1,6 @@
 # scripts/build_windows.ps1
 # Build LC-Seq Windows executable with PyInstaller.
-# Compiles and bundles the Rust lcseq extension — end users do not need Rust installed.
+# Compiles and bundles the Rust lcseq extension - end users do not need Rust installed.
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -56,7 +56,7 @@ if (Test-Path $OutDir) {
     New-Item -ItemType Directory -Force -Path $DbDir | Out-Null
     Write-Host ""
     Write-Host "Build complete: $OutDir\LC-Seq.exe"
-    Write-Host "lcseq (Rust) is bundled — release zip users do not need Rust or Python."
+    Write-Host "lcseq (Rust) is bundled - release zip users do not need Rust or Python."
     Write-Host "Create a desktop shortcut to LC-Seq.exe to launch with one click."
 } else {
     Write-Error "Expected output folder not found: $OutDir"

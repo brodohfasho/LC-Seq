@@ -197,7 +197,7 @@ def graphviz_missing_banner() -> str:
     return (
         "Graphviz not found — showing matplotlib tier-ring preview. "
         "Install Graphviz for higher-quality pedigree tree layout "
-        "(see docs/DEVELOPER_SETUP.md)."
+        "(see dev/DEVELOPER_SETUP.md)."
     )
 
 
@@ -207,7 +207,7 @@ def graphviz_missing_export_prompt() -> str:
         "Graphviz is not installed. Export will use the matplotlib tier-ring "
         "layout instead of the native Graphviz pedigree tree.\n\n"
         "Install Graphviz and ensure ``dot`` is on PATH for the preferred layout "
-        "(see docs/DEVELOPER_SETUP.md).\n\n"
+        "(see dev/DEVELOPER_SETUP.md).\n\n"
         "Continue with the matplotlib export?"
     )
 

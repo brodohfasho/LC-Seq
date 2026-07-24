@@ -139,7 +139,7 @@ class NativePedigreeBackend:
             if settings is not None and settings.uses_old_school_peak_picker:
                 raise AnalysisEngineError(
                     "Old-school pedigree peak picking requires a rebuilt lcseq extension. "
-                    "See docs/DEVELOPER_SETUP.md (maturin develop in LC-Seq-New-master)."
+                    "See dev/DEVELOPER_SETUP.md (maturin develop in LC-Seq-New-master)."
                 ) from exc
             native = lcseq.evaluate_library(
                 bbs_per_position=bbs_per_position,
@@ -189,7 +189,7 @@ class NativePedigreeBackend:
             if settings is not None and settings.uses_old_school_peak_picker:
                 raise AnalysisEngineError(
                     "Old-school lineage peak picking requires a rebuilt lcseq extension. "
-                    "See docs/DEVELOPER_SETUP.md."
+                    "See dev/DEVELOPER_SETUP.md."
                 ) from exc
             return lcseq.diagnose_class(
                 payload,
@@ -213,7 +213,7 @@ def get_pedigree_backend() -> PedigreeBackend:
     if not is_native_backend_available():
         raise AnalysisEngineError(
             "Lineage and pedigree analysis require the Rust lcseq extension. "
-            "See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master with maturin."
+            "See dev/DEVELOPER_SETUP.md to build LC-Seq-New-master with maturin."
         )
     _cached_pedigree_backend = NativePedigreeBackend()
     logger.info("Using Rust lcseq pedigree engine")

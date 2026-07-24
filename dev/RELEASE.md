@@ -23,7 +23,7 @@ Output: `release\LC-Seq-vX.Y.Z-windows.zip`
 ## 3. Source tree readiness
 
 - [ ] No secrets in git (`config/settings.json` and `config/configs/` are gitignored)
-- [ ] Dev-only docs (`docs/AGENT_INSTRUCTIONS.md`, `docs/archive/`, `docs/LC-Seq-New-master-ANALYSIS.md`) stay in the git repo — the release zip contains only `dist/LC-Seq/`
+- [ ] Dev-only docs under `dev/` stay in the git repo — the release zip contains only `dist/LC-Seq/`
 - [ ] `CHANGELOG.md` updated for this version
 - [ ] README and [INSTALL.md](INSTALL.md) accurate (UI labels: Library Analysis, Pedigree / Direct pick, Split-tree)
 - [ ] Commit and push to `main`
@@ -56,11 +56,11 @@ Paper Methods used **Old-school** peak picking with **Direct pick** RT assignmen
 ### Windows install notes
 
 - Extract the full zip; keep `LC-Seq.exe` and `_internal/` together.
-- **SmartScreen:** Unsigned app — if you see “Windows protected your PC”, choose **More info** → **Run anyway**.
+- **SmartScreen:** Unsigned app — if you see "Windows protected your PC", choose **More info** → **Run anyway**.
 - **Antivirus:** Some tools flag PyInstaller apps; restore/quarantine exceptions for the extracted folder if needed.
 - Optional: [Graphviz](https://graphviz.org/download/) for higher-quality pedigree figures.
 
-See [INSTALL.md](docs/INSTALL.md) and the full [CHANGELOG](CHANGELOG.md).
+See [INSTALL.md](dev/INSTALL.md) and the full [CHANGELOG](CHANGELOG.md).
 ```
 
 After the first test download (step 5), adjust wording if your machine shows different prompt text.
@@ -76,7 +76,7 @@ On a machine **without** the dev repo:
 - [ ] Confirm Peak Analysis engine label shows `lcseq (Rust)`
 - [ ] Note any SmartScreen or antivirus prompts; tweak this template if wording differs
 
-Also see [release_checklist.md](../release_checklist.md) for the full pre-tag QA list.
+Also see [release_checklist.md](release_checklist.md) for the full pre-tag QA list.
 
 ## Release asset layout
 
@@ -102,7 +102,7 @@ Users should unzip the whole `LC-Seq` folder, not only the `.exe`.
 | Tests | `tests/`, `LC-Seq-New-master/python/tests/`, `LC-Seq-New-master/tests/` |
 | Dev scripts | `scripts/assess_peak_picker_compound.py`, `scripts/full_fraction_nonzero_coverage.py`, `LC-Seq-New-master/scripts/extract_real_fixture.py` |
 | Build scripts | `scripts/build_windows.ps1`, `scripts/package_release.ps1`, `lc_seq.spec` |
-| Dev docs | `docs/archive/`, `docs/AGENT_INSTRUCTIONS.md`, `docs/LC-Seq-New-master-ANALYSIS.md`, `release_checklist.md` |
+| Dev docs | `dev/` (maintainer notes, archive, release checklist) |
 | User data patterns | `output/library_data/`, `output/pedigree_analysis/`, `config/configs/` (created locally beside the exe) |
 
 PyInstaller bundles only imported runtime dependencies (CustomTkinter, matplotlib, **lcseq** + `_native.pyd`). It does not copy the full repository.

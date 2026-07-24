@@ -2,7 +2,7 @@
 """
 Per-entry and library-wide chromatographic signal quality (significant peaks).
 
-Formal definitions: docs/LIBRARY_SIGNAL_QUALITY.md
+Formal definitions: dev/LIBRARY_SIGNAL_QUALITY.md
 """
 
 from __future__ import annotations
@@ -316,7 +316,7 @@ def export_per_entry_signal_csv(
         f"min_prominence={options.min_prominence:g}; "
         f"min_pct_area={options.min_pct_area:g}; "
         f"time_unit={options.time_unit}; "
-        "definitions=docs/LIBRARY_SIGNAL_QUALITY.md"
+        "definitions=dev/LIBRARY_SIGNAL_QUALITY.md"
     )
     with out.open("w", encoding=CSV_EXPORT_ENCODING, newline="") as fh:
         fh.write(f"# {meta}\n")
