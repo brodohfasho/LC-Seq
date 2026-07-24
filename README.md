@@ -1,6 +1,8 @@
 # LC-Seq
 
-Desktop application for loading chromatographic data from spreadsheets, building a searchable SQLite database, and analyzing DNA-encoded library (DEL) cyclic-peptide screens — from single-compound plots through pedigree null-truncation analysis and split-tree export bundles.
+![Split-tree visualization](assets/split_tree.png)
+
+Python and rust-based program for analyzing LC-seq chromatographic data from DNA-encoded libraries.
 
 **Platform:** Windows (primary). Python 3.10+ recommended for development (Rust extension).
 
@@ -8,7 +10,7 @@ Desktop application for loading chromatographic data from spreadsheets, building
 
 ## Install (Windows executable)
 
-**Recommended for most users:** download **`LC-Seq-v2.0.0-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases), extract the whole `LC-Seq` folder, and run `LC-Seq.exe`. No Python or Rust install required — pedigree and lineage analysis are included in the zip.
+**Recommended for most users:** download **`LC-Seq-v2.0.1-windows.zip`** from [GitHub Releases](https://github.com/brodohfasho/LC-Seq/releases), extract the whole `LC-Seq` folder, and run `LC-Seq.exe`. No Python or Rust install required — pedigree and lineage analysis are included in the zip.
 
 Step-by-step instructions: **[dev/INSTALL.md](dev/INSTALL.md)**.
 
@@ -33,13 +35,14 @@ On Linux/macOS, use `source venv/bin/activate` instead of `venv\Scripts\activate
 
 ---
 
-## What it does
+## LC-Seq Chromatographic Data Analyusis for DNA-Encoded Libraries
+This program will process and analyze chromatographic data collected from LC-Seq experiments. Users must provide a spreadsheet where each row refers to a compound and chromatographic data is delimited (e.g. time;count, etc.) and contained in a single cell.
 
-LC-Seq is built for large compound-by-compound chromatogram tables (e.g. DEL library screens). You point the app at a spreadsheet, define how each row’s chromatogram string is parsed (including building-block columns for DEL libraries), materialize a local database, then search, plot, and run library-wide analyses without re-reading the whole sheet each time.
+After spreadsheet configuration and database construction, the application contains two primary modules:
 
-**v2.0** adds pedigree null-truncation analysis, per-class lineage diagnostics, combinatorial split-tree visualization, and a multi-file analysis export bundle (CSVs, audit metadata, Excel saturation grids, optional PDF report).
+1. Chromatogram Visualizer: Visualize LC-seq chromatograms for each library member. Smart search functions and ID-based lookup supported. Contains peak picking, integrations, and full null-truncation lineage analysis and product ID. Primarily useful for analyzing specific compounds (top hits from affinity selections) or compound series (e.g. compare RT differences for related macrocyclic peptide scaffolds).
 
-The accompanying paper used **Old-school** peak picking with **Direct pick** RT assignment; **Modern** picking and **Pedigree** mode are later improvements (see in-app help).
+2. Library Analysis: Calculate and visualize CQ metrics to assess signal-to-noise and library spread across fractions. Calculate retention times for individual library members through null-informed Pedigree analysis. Visualize per-cycle trends in synthesis via split-tree visualization. Export data package including RT assignments and more.
 
 ---
 
@@ -74,7 +77,7 @@ The status line on the main window reflects load/configure/database state.
 | **Formats** | `.csv`, `.xlsx`, `.xls` |
 | **Layout** | One row per compound (or per variant if you configure a variant column). |
 | **Compound ID** | Single column with a unique identifier per row (or per primary+variant pair). |
-| **Chromatogram data** | One column containing encoded time/count series as text, split by delimiters you define in Configure (order matters). |
+| **Chromatogram data** | One column containing encoded time/count series as text, split by delimiters you define in Configure Spreadsheet. |
 | **Metadata** | Optional additional columns; choose which to index for search. |
 | **DEL pedigree** | BB1…BBn columns (coupling order), null token, and cycle count in Configure Spreadsheet. |
 | **BB index (optional)** | UTF-8 or Excel CSV mapping building-block names to display indices. |
@@ -95,19 +98,9 @@ Delimiter and column mapping are data-specific—use **Configure Spreadsheet** p
 
 ---
 
-## Future development
-
-Planned and in-progress work is tracked in [dev/ROADMAP.md](dev/ROADMAP.md).
-
-Maintainer docs (build, release, engine setup, etc.) live under **[dev/](dev/README.md)**.
-
----
-
 ## Contact
 
 **Grant Koch** grantkoch2319@gmail.com — questions, bugs, or feature requests:
-
-- Open a [GitHub Issue](https://github.com/brodohfasho/LC-Seq/issues) on this repository (preferred).
 
 ---
 
@@ -116,15 +109,3 @@ Maintainer docs (build, release, engine setup, etc.) live under **[dev/](dev/REA
 MIT — see [LICENSE](LICENSE).
 
 ---
-
-## Building the executable (maintainers)
-
-See [dev/BUILD.md](dev/BUILD.md) and [dev/RELEASE.md](dev/RELEASE.md). Package a release zip with `.\scripts\package_release.ps1` after `.\scripts\build_windows.ps1`.
-
-## Development (optional)
-
-```bash
-pytest tests/
-```
-
-Maintainer docs (Rust engine, config formats, release process): **[dev/](dev/README.md)**. Changelog: [CHANGELOG.md](CHANGELOG.md).

@@ -48,16 +48,41 @@ python -m PyInstaller lc_seq.spec --noconfirm
 $OutDir = Join-Path $Root "dist\LC-Seq"
 $ExampleConfig = Join-Path $Root "config\default_config.json.example"
 $TargetConfigDir = Join-Path $OutDir "config"
+$Exe = Join-Path $OutDir "LC-Seq.exe"
 
-if (Test-Path $OutDir) {
-    New-Item -ItemType Directory -Force -Path $TargetConfigDir | Out-Null
-    Copy-Item -Force $ExampleConfig (Join-Path $TargetConfigDir "default_config.json.example")
-    $DbDir = Join-Path $OutDir "output\databases"
-    New-Item -ItemType Directory -Force -Path $DbDir | Out-Null
-    Write-Host ""
-    Write-Host "Build complete: $OutDir\LC-Seq.exe"
-    Write-Host "lcseq (Rust) is bundled - release zip users do not need Rust or Python."
-    Write-Host "Create a desktop shortcut to LC-Seq.exe to launch with one click."
-} else {
+if (-not (Test-Path $OutDir)) {
     Write-Error "Expected output folder not found: $OutDir"
 }
+
+New-Item -ItemType Directory -Force -Path $TargetConfigDir | Out-Null
+Copy-Item -Force $ExampleConfig (Join-Path $TargetConfigDir "default_config.json.example")
+$DbDir = Join-Path $OutDir "output\databases"
+New-Item -ItemType Directory -Force -Path $DbDir | Out-Null
+
+Write-Host ""
+Write-Host "Verifying frozen imports (scipy, networkx, openpyxl, lcseq)..."
+$SmokeFile = Join-Path $OutDir "smoke_imports.txt"
+if (Test-Path $SmokeFile) {
+    Remove-Item -Force $SmokeFile
+}
+# Windowed exes often do not surface exit codes reliably; rely on the status file
+# written next to LC-Seq.exe. Start-Process -Wait keeps argv intact on Windows.
+$proc = Start-Process -FilePath $Exe -ArgumentList "--smoke-imports" -WorkingDirectory $OutDir -PassThru -Wait
+if (-not (Test-Path $SmokeFile)) {
+    Write-Error @"
+Frozen smoke test did not write smoke_imports.txt next to LC-Seq.exe.
+Exit code from process: $($proc.ExitCode)
+Re-run manually:  cd dist\LC-Seq; .\LC-Seq.exe --smoke-imports
+"@
+}
+Get-Content $SmokeFile | ForEach-Object { Write-Host $_ }
+$smokeFailed = Select-String -Path $SmokeFile -Pattern "^FAIL" -Quiet
+Remove-Item -Force $SmokeFile -ErrorAction SilentlyContinue
+if ($smokeFailed) {
+    Write-Error "Frozen import smoke test failed (see FAIL lines above)."
+}
+
+Write-Host ""
+Write-Host "Build complete: $Exe"
+Write-Host "lcseq (Rust) is bundled - release zip users do not need Rust or Python."
+Write-Host "Create a desktop shortcut to LC-Seq.exe to launch with one click."

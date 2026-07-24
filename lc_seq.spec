@@ -18,44 +18,66 @@ hiddenimports = [
     "sqlite3",
     "customtkinter",
     "darkdetect",
+    "networkx",
+    "reportlab",
+    "scipy",
+    "scipy.stats",
+    "scipy.optimize",
+    "scipy.signal",
 ]
 
-try:
-    import customtkinter
 
-    ctk_datas, ctk_binaries, ctk_hiddenimports = collect_all("customtkinter")
-    datas += ctk_datas
-    binaries += ctk_binaries
-    hiddenimports += ctk_hiddenimports
+def _collect_package(name: str) -> None:
+    """Force-include a package's data, binaries, and submodules."""
+    pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(name)
+    datas.extend(pkg_datas)
+    binaries.extend(pkg_binaries)
+    hiddenimports.extend(pkg_hiddenimports)
+
+
+try:
+    import customtkinter  # noqa: F401
+
+    _collect_package("customtkinter")
 except ImportError as exc:
     raise SystemExit(
         "customtkinter is not installed in this Python environment. "
         "Activate your venv and run: pip install -r requirements.txt"
     ) from exc
 
-mpl_datas, mpl_binaries, mpl_hiddenimports = collect_all("matplotlib")
-datas += mpl_datas
-binaries += mpl_binaries
-hiddenimports += mpl_hiddenimports
+_collect_package("matplotlib")
+
+# Runtime scientific / export deps. collect_all avoids missing pure-Python modules
+# (scipy.stats, networkx, openpyxl) that Analysis may only partially discover.
+for _pkg in ("scipy", "networkx", "openpyxl", "reportlab", "xlrd"):
+    try:
+        __import__(_pkg)
+    except ImportError as exc:
+        raise SystemExit(
+            f"{_pkg} is not installed in this Python environment. "
+            "Activate your venv and run: pip install -r requirements.txt"
+        ) from exc
+    _collect_package(_pkg)
 
 try:
     import lcseq  # noqa: F401
 
-    lcseq_datas, lcseq_binaries, lcseq_hiddenimports = collect_all("lcseq")
-    datas += lcseq_datas
-    binaries += lcseq_binaries
-    hiddenimports += lcseq_hiddenimports
+    _collect_package("lcseq")
     hiddenimports += ["lcseq", "lcseq._native", "lcseq.render"]
 except ImportError as exc:
     raise SystemExit(
         "lcseq extension is not installed in this venv. "
         "Run .\\scripts\\build_windows.ps1 (builds via maturin) or "
-        "maturin develop --release in LC-Seq-New-master — see docs/BUILD.md."
+        "maturin develop --release in LC-Seq-New-master — see dev/BUILD.md."
     ) from exc
 
 help_dir = project_root / "src" / "help"
 if help_dir.is_dir():
-    datas += [(str(help_dir / name), "src/help") for name in help_dir.iterdir() if name.is_file()]
+    datas += [
+        (str(help_dir / name), "src/help")
+        for name in help_dir.iterdir()
+        if name.is_file()
+    ]
 
 a = Analysis(
     [str(project_root / "src" / "main.py")],
@@ -84,6 +106,7 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# UPX frequently corrupts scipy/numpy/binary extensions on Windows — leave off.
 exe = EXE(
     pyz,
     a.scripts,
@@ -93,7 +116,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -108,7 +131,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="LC-Seq",
 )

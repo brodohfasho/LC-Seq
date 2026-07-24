@@ -2,6 +2,19 @@
 
 All notable releases of LC-Seq are documented here.
 
+## [2.0.1] - 2026-07-24
+
+Patch release: fix Windows packaging so Direct pick (Modern), split-tree visualization, and analysis-bundle export work in the frozen app.
+
+### Fixes
+- PyInstaller now force-collects **scipy**, **networkx**, **openpyxl**, **reportlab**, and **xlrd**
+- Disable **UPX** (it was breaking scientific binary extensions in the release zip)
+- Prefer the bundled Rust `lcseq` engine when the Python/scipy parity probe cannot run
+- Post-build `--smoke-imports` check fails the Windows build if critical frozen imports are missing
+
+### Docs
+- README hero image (`assets/split_tree.png`); maintainer docs remain under `dev/`
+
 ## [2.0.0] - 2026-07-05
 
 Major release: Library Analysis, pedigree and lineage workflows, split-tree visualization, and export bundle — built on the Rust `lcseq` analysis engine with Python fallbacks where noted.
@@ -102,5 +115,6 @@ First public release (companion to publication).
 - Executable uses its own data directory (see INSTALL.md)
 - Very large spreadsheets: prefer index databases; full DB builds can take time and disk space
 
+[2.0.1]: https://github.com/brodohfasho/LC-Seq/releases/tag/v2.0.1
 [2.0.0]: https://github.com/brodohfasho/LC-Seq/releases/tag/v2.0.0
 [1.0.0]: https://github.com/brodohfasho/LC-Seq/releases/tag/v1.0.0

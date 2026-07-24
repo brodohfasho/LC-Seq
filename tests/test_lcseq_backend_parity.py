@@ -48,3 +48,20 @@ def test_rolling_baseline_probe_python_reference_picks_late_peak():
     intensity[86] = 40.0
     peaks = py_find_peaks(rt, intensity, 0.001)
     assert any(abs(p.rt - 85.0) < 1e-6 for p in peaks)
+
+
+@pytest.mark.skipif(
+    not is_native_backend_available(),
+    reason="lcseq native extension not installed",
+)
+def test_parity_skips_when_python_fallback_deps_missing(monkeypatch):
+    """Frozen builds must still select Rust if scipy is broken/absent."""
+
+    def _boom(*_args, **_kwargs):
+        raise ImportError("scipy is required for the Python analysis fallback")
+
+    monkeypatch.setattr(lcseq_backend, "py_find_peaks", _boom)
+    lcseq_backend._cached_backend = None
+    assert _native_peak_picker_matches_python() is True
+    backend = get_peak_picker_backend()
+    assert backend.info().is_native is True

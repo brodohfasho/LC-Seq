@@ -90,6 +90,7 @@ Creates `release\LC-Seq-v2.0.0-windows.zip` (version from `src/__init__.py`). Up
 
 ## Troubleshooting
 
-- **Missing DLL / import errors:** Rebuild on the same Windows architecture (64-bit) as the target machine; ensure `pip install -r requirements.txt` succeeded before building.
+- **Missing DLL / import errors:** Rebuild on the same Windows architecture (64-bit) as the target machine; ensure `pip install -r requirements.txt` succeeded before building. The spec uses `collect_all` for scipy, networkx, openpyxl, and related packages, and **disables UPX** (UPX often breaks scientific binary extensions).
 - **Blank window / matplotlib:** Rebuild after upgrading PyInstaller; the spec collects `customtkinter` and `matplotlib` data files automatically.
+- **Post-build check:** `build_windows.ps1` runs `LC-Seq.exe --smoke-imports` and fails if scipy / networkx / openpyxl / lcseq cannot import inside the frozen app.
 - **Logs:** `logs\lc_seq.log` next to the executable (after first run with file logging enabled).

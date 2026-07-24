@@ -229,7 +229,19 @@ def _native_peak_picker_matches_python() -> bool:
     except ImportError:
         return False
 
-    py_raw = py_find_peaks(_PARITY_PROBE_RT, _PARITY_PROBE_INTENSITY, _PARITY_PROBE_ALPHA)
+    try:
+        py_raw = py_find_peaks(
+            _PARITY_PROBE_RT, _PARITY_PROBE_INTENSITY, _PARITY_PROBE_ALPHA
+        )
+    except ImportError as exc:
+        # Packaged builds must still use Rust when scipy (Python fallback) is absent
+        # or broken. Prefer the native engine over failing the whole analysis.
+        logger.warning(
+            "Skipping lcseq/Python peak-picker parity check (%s); using Rust engine.",
+            exc,
+        )
+        return True
+
     native = native_find_peaks(
         np.asarray(_PARITY_PROBE_RT, dtype=np.float64),
         np.asarray(_PARITY_PROBE_INTENSITY, dtype=np.float64),
