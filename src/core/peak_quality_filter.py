@@ -2,6 +2,9 @@
 """
 Quality filtering for detected peaks (prominence, % area).
 
+These cutoffs apply only after **modern** (NB/Poisson) detection. Old-school
+Gaussian picking uses its own height / σ / minimum-RT gates instead.
+
 Statistical detection returns all significant peaks in ``all_peaks``; this module
 produces the displayed/finalized subset in ``peaks``. After lineage analysis, peaks
 that match a null-truncation assignment can be rescued even when they fail quality
@@ -22,11 +25,19 @@ def is_null_truncation_label(suspected_peak_id: Optional[str]) -> bool:
     return bool(suspected_peak_id and suspected_peak_id.startswith("null truncation"))
 
 
+def quality_filters_apply(settings: AnalysisSettings) -> bool:
+    """True when min prominence / min % area are active for this picker."""
+    return settings.uses_modern_peak_picker
+
+
 def passes_quality_thresholds(peak: PickedPeak, settings: AnalysisSettings) -> bool:
     """Return True when a peak meets user prominence and % area cutoffs."""
-    if settings.min_prominence > 0 and peak.prominence < settings.min_prominence:
+    if not quality_filters_apply(settings):
+        return True
+    min_prominence, min_pct_area = settings.effective_quality_params()
+    if min_prominence > 0 and peak.prominence < min_prominence:
         return False
-    if settings.min_pct_area > 0 and peak.pct_area < settings.min_pct_area:
+    if min_pct_area > 0 and peak.pct_area < min_pct_area:
         return False
     return True
 
@@ -41,8 +52,11 @@ def finalize_peaks(
     Build the displayed peak list from the full detected set.
 
     Peaks pass when they meet quality thresholds, or (optionally) when lineage
-    analysis assigned them to a null truncation within tolerance.
+    analysis assigned them to a null truncation within tolerance. Old-school
+    runs skip prominence / % area filtering entirely.
     """
+    if not quality_filters_apply(settings):
+        return list(all_peaks)
     finalized: List[PickedPeak] = []
     for peak in all_peaks:
         if passes_quality_thresholds(peak, settings):
@@ -80,8 +94,11 @@ def filter_detected_peaks(
     peaks: List[PickedPeak],
     settings: AnalysisSettings,
 ) -> List[PickedPeak]:
-    """Apply prominence and % area filters to statistically detected peaks."""
-    if settings.min_prominence <= 0 and settings.min_pct_area <= 0:
+    """Apply prominence and % area filters (modern picker only)."""
+    if not quality_filters_apply(settings):
+        return peaks
+    min_prominence, min_pct_area = settings.effective_quality_params()
+    if min_prominence <= 0 and min_pct_area <= 0:
         return peaks
     annotate_pct_area(peaks)
     return [p for p in peaks if passes_quality_thresholds(p, settings)]

@@ -186,14 +186,15 @@ class LineageSessionCache:
 
         backend = get_pedigree_backend()
         bbs_per_position = infer_bbs_per_position(filtered, config)
+        min_prominence, min_pct_area = settings.effective_quality_params()
         records = backend.evaluate_library(
             bbs_per_position,
             config.null_token,
             chromatogram_map,
             settings.tolerance,
             settings.alpha,
-            min_prominence=settings.min_prominence,
-            min_pct_area=settings.min_pct_area,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
             settings=settings,
         )
         records_by_id: Dict[str, PedigreeNodeRecord] = {r.id: r for r in records}

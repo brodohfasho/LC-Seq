@@ -223,7 +223,7 @@ flowchart TB
 | Mode | UI | What happens | Engine |
 |------|-----|--------------|--------|
 | **Pedigree RT assignment** | RT assignment sidebar → mode **Pedigree** → **Run RT assignment** | Full-library null-truncation analysis; pass/fail per pedigree node; chosen RT per class/compound | **Rust** `evaluate_library` (`pedigree_service`) |
-| **Direct pick RT assignment** | Mode **Direct pick** → **Run RT assignment** | Each full compound: peak pick on its chromatogram; product RT = latest accepted peak | `find_peaks_for_settings` (Rust or Python) + `select_direct_pick_product_rt` |
+| **Direct pick RT assignment** | Mode **Direct pick** → **Run RT assignment** | Each full compound: peak pick on its chromatogram; with modern picking apply min prominence / min % area; product RT = latest accepted peak | `find_peaks_for_settings` (Rust or Python) + `select_direct_pick_product_rt` |
 | **Split-tree build** | Runs as part of RT assignment (both modes) | Combinatorial split-tree from assignments; null-RT verification; pass-rate coloring inputs | Python `del_cycle_tree/service.py` |
 
 **After pedigree run:** Pedigree CSV export, tier slider on **Pedigree visualization** tab, tree PNG/SVG/PDF export, and the split-tree can consume pedigree RTs.
@@ -302,4 +302,4 @@ flowchart TB
 - [README.md](../README.md) — install and quick start  
 - [docs/CONFIGURATION.md](CONFIGURATION.md) — spreadsheet and preset formats  
 - [docs/LC-Seq-New-master-ANALYSIS.md](LC-Seq-New-master-ANALYSIS.md) — Rust engine integration  
-- In-app help: `src/help/*.md` (pedigree, lineage, DEL bundle glossary, signal quality)
+- In-app help: `src/help/*.md` (library analysis, peak picking, pedigree, lineage, export bundle glossary, glossary)

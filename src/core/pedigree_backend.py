@@ -123,6 +123,7 @@ class NativePedigreeBackend:
         picker_kwargs: Dict[str, Any] = {}
         if settings is not None:
             picker_kwargs = picker_kwargs_from_settings(settings)
+            min_prominence, min_pct_area = settings.effective_quality_params()
         try:
             native = lcseq.evaluate_library(
                 bbs_per_position=bbs_per_position,
@@ -172,6 +173,7 @@ class NativePedigreeBackend:
         picker_kwargs: Dict[str, Any] = {}
         if settings is not None:
             picker_kwargs = picker_kwargs_from_settings(settings)
+            min_prominence, min_pct_area = settings.effective_quality_params()
         try:
             return lcseq.diagnose_class(
                 payload,

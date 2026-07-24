@@ -147,14 +147,15 @@ def run_pedigree_analysis_from_scan(
     # while it runs rather than jumping to near-complete.
     emit(0.50, "Running pedigree evaluation…")
     bbs_per_position = infer_bbs_per_position_from_map(chromatogram_map, config)
+    min_prominence, min_pct_area = settings.effective_quality_params()
     records = backend.evaluate_library(
         bbs_per_position,
         config.null_token,
         chromatogram_map,
         settings.tolerance,
         settings.alpha,
-        min_prominence=settings.min_prominence,
-        min_pct_area=settings.min_pct_area,
+        min_prominence=min_prominence,
+        min_pct_area=min_pct_area,
         settings=settings,
     )
     emit(0.72, "Summarizing pedigree tiers…")
@@ -267,14 +268,15 @@ def run_pedigree_analysis(
     # while it runs rather than jumping to near-complete.
     emit(0.55, "Running pedigree evaluation…")
     bbs_per_position = infer_bbs_per_position(filtered, config)
+    min_prominence, min_pct_area = settings.effective_quality_params()
     records = backend.evaluate_library(
         bbs_per_position,
         config.null_token,
         chromatogram_map,
         settings.tolerance,
         settings.alpha,
-        min_prominence=settings.min_prominence,
-        min_pct_area=settings.min_pct_area,
+        min_prominence=min_prominence,
+        min_pct_area=min_pct_area,
         settings=settings,
     )
     emit(0.78, "Summarizing pedigree tiers…")

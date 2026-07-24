@@ -26,34 +26,39 @@ class HelpTopic:
 HELP_TOPICS: Tuple[HelpTopic, ...] = (
     HelpTopic(
         "library_analysis",
-        "Library Analysis overview",
+        "Library Analysis Module",
         "library_analysis.md",
-        ("del_library_setup", "signal_quality", "pedigree_analysis", "del_cycle_bundle_glossary"),
+        ("del_library_setup", "pedigree_analysis", "del_cycle_bundle_glossary", "peak_picking"),
     ),
     HelpTopic(
         "del_library_setup",
-        "DEL library setup",
+        "Spreadsheet Configuration and Database Build",
         "del_library_setup.md",
-        ("null_truncates", "library_analysis", "pedigree_analysis"),
+        ("library_analysis", "pedigree_analysis", "glossary"),
     ),
     HelpTopic(
-        "null_truncates",
-        "Null truncates & BB columns",
-        "null_truncates.md",
-        ("del_library_setup", "lineage_analysis", "pedigree_analysis"),
+        "peak_picking",
+        "Peak picking",
+        "peak_picking.md",
+        ("glossary", "library_analysis", "lineage_analysis"),
     ),
-    HelpTopic("peak_picking", "Peak picking", "peak_picking.md", ("glossary", "library_analysis")),
     HelpTopic(
         "lineage_analysis",
-        "Lineage analysis",
+        "Lineage analysis (Chromatogram Visualizer)",
         "lineage_analysis.md",
-        ("null_truncates", "pedigree_analysis", "peak_picking"),
+        ("pedigree_analysis", "peak_picking", "glossary"),
     ),
     HelpTopic(
         "pedigree_analysis",
         "Library pedigree analysis",
         "pedigree_analysis.md",
-        ("null_truncates", "lineage_analysis", "pedigree_split_tree", "del_cycle_bundle_glossary", "library_analysis"),
+        (
+            "lineage_analysis",
+            "pedigree_split_tree",
+            "del_cycle_bundle_glossary",
+            "library_analysis",
+            "del_library_setup",
+        ),
     ),
     HelpTopic(
         "pedigree_split_tree",
@@ -67,13 +72,7 @@ HELP_TOPICS: Tuple[HelpTopic, ...] = (
         "del_cycle_bundle_glossary.md",
         ("pedigree_analysis", "library_analysis", "pedigree_split_tree"),
     ),
-    HelpTopic(
-        "signal_quality",
-        "Library signal quality",
-        "signal_quality.md",
-        ("peak_picking", "library_analysis", "glossary"),
-    ),
-    HelpTopic("glossary", "Glossary", "glossary.md", ()),
+    HelpTopic("glossary", "Glossary", "glossary.md", ("peak_picking", "library_analysis")),
 )
 
 _TOPIC_BY_ID: Dict[str, HelpTopic] = {t.topic_id: t for t in HELP_TOPICS}

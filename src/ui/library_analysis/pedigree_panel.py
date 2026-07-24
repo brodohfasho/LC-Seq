@@ -184,7 +184,9 @@ class PedigreePanel:
         ]
         if result.settings.uses_modern_peak_picker:
             parts[0] += f" · α={result.settings.alpha:g}"
-        if result.settings.min_prominence > 0 or result.settings.min_pct_area > 0:
+        if result.settings.uses_modern_peak_picker and (
+            result.settings.min_prominence > 0 or result.settings.min_pct_area > 0
+        ):
             parts.append(
                 f"quality: prom≥{result.settings.min_prominence:g}, %area≥{result.settings.min_pct_area:g}"
             )

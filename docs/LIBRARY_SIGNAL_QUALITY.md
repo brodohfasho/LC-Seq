@@ -7,8 +7,8 @@ All signal-quality metrics share:
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
 | **α (alpha)** | `0.001` | Significance threshold for *significant* peaks. A local maximum is kept only if `p-value < α`, where p-value is the minimum of height and area tail tests under the baseline noise model (same engine as Chromatogram Visualizer → Peak Analysis). **Lower α → fewer significant peaks.** |
-| **Min prominence** | `5` | After detection, drop peaks below this prominence (`0` = off). Same post-filter as **Pedigree** RT assignment and Chromatogram Visualizer (not used by **Direct pick** RT assignment). Applies for both Modern and Old-school picking. |
-| **Min % area** | `3` | After detection, drop peaks below this share of total detected peak area (`0` = off). Same applicability as min prominence. |
+| **Min prominence** | `5` | After **modern** detection, drop peaks below this prominence (`0` = off). Same modern-only post-filter for Chromatogram Visualizer, Library QC, and RT assignment (Pedigree and Direct pick). **Not applied with old-school picking.** |
+| **Min % area** | `3` | After **modern** detection, drop peaks below this share of total detected peak area (`0` = off). Same applicability as min prominence. |
 | **Baseline** | σ-clipped median | Same algorithm as peak picking: iterative removal of points above `mean + 2σ`, then median → **μ**; sample σ of kept points → **σ**. |
 | **Minimum points** | 3 | Entries with fewer than 3 time points are skipped for signal metrics. |
 
@@ -37,7 +37,7 @@ Peak picking algorithm (**Modern** or **Old-school**) is chosen on the Library Q
 ### Significant peaks (α- and quality-filter-dependent)
 
 1. Run the full peak picker with the configured **α** (Modern) or Old-school parameters.
-2. Apply shared **min prominence** / **min % area** filters (same as Pedigree RT assignment and Chromatogram Visualizer; not used by Direct pick RT assignment).
+2. Apply shared **min prominence** / **min % area** filters when using **modern** picking (same as Chromatogram Visualizer and RT assignment). Old-school skips these filters.
 3. **Significant peak count** = number of peaks remaining.
 4. **Has significant peak** = count ≥ 1.
 5. **Max significant prominence** = max prominence among significant peaks (0 if none).
@@ -87,4 +87,4 @@ For each metric below, LC-Seq computes **mean**, **sample standard deviation**, 
 - **Library report PDF** — metrics, plots, and optional pedigree / split-tree sections.
 - **`product_prominence.csv`** — prominence at pedigree-chosen product RTs after **Pedigree** RT assignment (inside **Export analysis bundle…**).
 
-See in-app help (**Library signal quality**, **Peak picking**, **Export analysis bundle glossary**).
+See in-app help (**Peak picking**, **Export analysis bundle glossary**) and this document for metric definitions.

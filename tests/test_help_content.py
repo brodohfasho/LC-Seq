@@ -47,6 +47,19 @@ def test_related_topics_footer() -> None:
         assert related.title in body
 
 
+def test_related_topic_ids_resolve() -> None:
+    for topic in HELP_TOPICS:
+        for related_id in topic.related:
+            assert get_help_topic(related_id) is not None, (
+                f"{topic.topic_id} related to missing id {related_id}"
+            )
+
+
+def test_removed_help_topics_are_gone() -> None:
+    assert get_help_topic("null_truncates") is None
+    assert get_help_topic("signal_quality") is None
+
+
 def test_unknown_topic_returns_message() -> None:
     assert get_help_topic("not_a_topic") is None
     assert "Unknown help topic" in load_help_text("not_a_topic")

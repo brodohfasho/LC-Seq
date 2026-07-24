@@ -347,8 +347,10 @@ class ReportController:
             if rt_assignment is not None
             else self._callbacks.peek_pedigree_settings()
         )
-        rt_min_prominence = rt_settings.min_prominence if rt_settings is not None else 0.0
-        rt_min_pct_area = rt_settings.min_pct_area if rt_settings is not None else 0.0
+        rt_min_prominence = 0.0
+        rt_min_pct_area = 0.0
+        if rt_settings is not None:
+            rt_min_prominence, rt_min_pct_area = rt_settings.effective_quality_params()
         rt_alpha = rt_settings.alpha if rt_settings is not None else DEFAULT_SIGNAL_QUALITY_ALPHA
         rt_picker = self._callbacks.picker_label()
         if rt_assignment is not None and rt_assignment.peak_picking_algorithm:
@@ -361,6 +363,12 @@ class ReportController:
             rt_picker = (
                 "old-school Gaussian" if rt_settings.uses_old_school_peak_picker else "modern NB"
             )
+
+        qc_min_prominence = qc_opts.min_prominence
+        qc_min_pct_area = qc_opts.min_pct_area
+        if qc_opts.peak_picking_algorithm == "old_school":
+            qc_min_prominence = 0.0
+            qc_min_pct_area = 0.0
 
         return LibraryReportAuditTrail(
             generated_at=datetime.now(timezone.utc),
@@ -375,8 +383,8 @@ class ReportController:
             ),
             qc_peak_picking_algorithm=qc_opts.peak_picking_algorithm,
             qc_signal_quality_alpha=qc_opts.alpha,
-            qc_min_prominence=qc_opts.min_prominence,
-            qc_min_pct_area=qc_opts.min_pct_area,
+            qc_min_prominence=qc_min_prominence,
+            qc_min_pct_area=qc_min_pct_area,
             qc_time_unit=qc_opts.time_unit,
             qc_gaussian_min_height_factor=qc_opts.gaussian_min_height_factor,
             qc_gaussian_fit_width=qc_opts.gaussian_fit_width,

@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 _SINGLETON: Optional["HelpWindow"] = None
 
+_SIDEBAR_WIDTH = 280
+_SIDEBAR_LABEL_PAD_X = 10
+_SIDEBAR_ROW_PAD_X = 8
+# Inner scrollable width minus row/label pads and a little room for the scrollbar.
+_SIDEBAR_WRAPLENGTH = _SIDEBAR_WIDTH - (2 * _SIDEBAR_ROW_PAD_X) - (2 * _SIDEBAR_LABEL_PAD_X) - 18
+
+_TOPIC_FG_IDLE = "transparent"
+_TOPIC_FG_HOVER = ("#d6e2f2", "#2a2f36")
+_TOPIC_FG_ACTIVE = ("#cfe0f5", "#274563")
+_TOPIC_TEXT = ("gray10", "gray90")
+
 
 class HelpWindow(BaseWindow):
     """Scrollable help viewer with topic sidebar."""
@@ -39,7 +50,8 @@ class HelpWindow(BaseWindow):
             width=self._WIDTH,
             height=self._HEIGHT,
         )
-        self._topic_buttons: dict[str, ctk.CTkButton] = {}
+        self._topic_rows: dict[str, ctk.CTkFrame] = {}
+        self._topic_labels: dict[str, ctk.CTkLabel] = {}
         self._active_topic = initial_topic
         self.minsize(820, 560)
 
@@ -59,7 +71,7 @@ class HelpWindow(BaseWindow):
         sidebar = ctk.CTkScrollableFrame(
             self,
             label_text="Help topics",
-            width=248,
+            width=_SIDEBAR_WIDTH,
             corner_radius=0,
             fg_color=("#eef2f8", "#1a1d21"),
         )
@@ -67,19 +79,42 @@ class HelpWindow(BaseWindow):
         sidebar.grid_columnconfigure(0, weight=1)
 
         for topic in list_help_topics():
-            btn = ctk.CTkButton(
+            row = ctk.CTkFrame(
                 sidebar,
+                fg_color=_TOPIC_FG_IDLE,
+                corner_radius=8,
+                cursor="hand2",
+            )
+            row.pack(fill="x", padx=_SIDEBAR_ROW_PAD_X, pady=2)
+
+            label = ctk.CTkLabel(
+                row,
                 text=topic.title,
                 anchor="w",
-                height=34,
-                corner_radius=8,
-                fg_color="transparent",
-                text_color=("gray10", "gray90"),
-                hover_color=("#d6e2f2", "#2a2f36"),
-                command=lambda tid=topic.topic_id: self._show_topic(tid),
+                justify="left",
+                wraplength=_SIDEBAR_WRAPLENGTH,
+                font=ctk.CTkFont(size=13),
+                text_color=_TOPIC_TEXT,
+                cursor="hand2",
             )
-            btn.pack(fill="x", padx=8, pady=2)
-            self._topic_buttons[topic.topic_id] = btn
+            label.pack(fill="x", padx=_SIDEBAR_LABEL_PAD_X, pady=8)
+
+            tid = topic.topic_id
+            for widget in (row, label):
+                widget.bind("<Button-1>", lambda _e, t=tid: self._show_topic(t))
+                widget.bind("<Enter>", lambda _e, t=tid: self._on_topic_hover(t, True))
+                widget.bind("<Leave>", lambda _e, t=tid: self._on_topic_hover(t, False))
+
+            self._topic_rows[tid] = row
+            self._topic_labels[tid] = label
+
+    def _on_topic_hover(self, topic_id: str, entering: bool) -> None:
+        if topic_id == self._active_topic:
+            return
+        row = self._topic_rows.get(topic_id)
+        if row is None:
+            return
+        row.configure(fg_color=_TOPIC_FG_HOVER if entering else _TOPIC_FG_IDLE)
 
     def _build_content(self) -> None:
         outer = ctk.CTkFrame(self, corner_radius=0, fg_color=("#ffffff", "#151719"))
@@ -105,6 +140,8 @@ class HelpWindow(BaseWindow):
             font=ctk.CTkFont(size=26, weight="bold"),
             text_color=("#1f4e79", "#6cb6ff"),
             anchor="w",
+            justify="left",
+            wraplength=self._CONTENT_MAX_WIDTH,
         )
         self._title_label.grid(row=0, column=0, sticky="ew")
 
@@ -134,6 +171,7 @@ class HelpWindow(BaseWindow):
         col_width = min(available, self._CONTENT_MAX_WIDTH)
         self._text.configure(width=col_width)
         self._accent_rule.configure(width=col_width)
+        self._title_label.configure(wraplength=col_width)
 
     def _show_topic(self, topic_id: str) -> None:
         topic = get_help_topic(topic_id)
@@ -144,11 +182,11 @@ class HelpWindow(BaseWindow):
         render_markdown_to_textbox(self._text, format_help_with_related(topic_id))
         self._text.see("1.0")
 
-        for tid, btn in self._topic_buttons.items():
+        for tid, row in self._topic_rows.items():
             if tid == topic_id:
-                btn.configure(fg_color=("#cfe0f5", "#274563"))
+                row.configure(fg_color=_TOPIC_FG_ACTIVE)
             else:
-                btn.configure(fg_color="transparent")
+                row.configure(fg_color=_TOPIC_FG_IDLE)
 
     def _raise_to_front(self) -> None:
         """Keep the help viewer above its parent window (Windows z-order)."""

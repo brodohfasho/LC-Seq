@@ -10,6 +10,7 @@ from typing import List, Optional, Protocol, Sequence, Tuple
 from src.core.peak_picker_gaussian import find_peaks_gaussian
 from src.core.peak_picker_python import estimate_baseline as py_estimate_baseline
 from src.core.peak_picker_python import find_peaks as py_find_peaks
+from src.core.peak_quality_filter import filter_detected_peaks
 from src.core.time_display import convert_time_series
 from src.models.analysis_settings import AnalysisSettings, TimeUnit
 from src.models.peak_result import BaselineEstimate, PickedPeak
@@ -147,17 +148,24 @@ def select_direct_pick_product_rt(
     Legacy notebooks fit Gaussians to all significant peaks, then assign the
     cyclized product as the **latest** retention time among accepted fits
     (``best_mean`` loop in ``docs/archive/notebooks/CalculateRTs.ipynb``).
+
+    Shared post-detection quality filters (min prominence / min % area) are
+    applied first, matching Chromatogram Visualizer, Library QC, and Pedigree.
     """
     if not peaks:
         return None
 
-    candidates: Sequence[PickedPeak] = peaks
+    filtered = filter_detected_peaks(list(peaks), settings)
+    if not filtered:
+        return None
+
+    candidates: Sequence[PickedPeak] = filtered
     if settings.uses_old_school_peak_picker:
         factor, _, _, minimum_rt = settings.gaussian_picker_params()
         height_cutoff = trace_max_intensity * factor
         candidates = [
             p
-            for p in peaks
+            for p in filtered
             if p.rt >= minimum_rt and p.intensity >= height_cutoff
         ]
 

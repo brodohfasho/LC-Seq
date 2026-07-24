@@ -2,9 +2,7 @@
 
 **α (alpha)** — Significance cutoff for **Modern** peak picking. Lower = stricter. Height and area tests both use α/2.
 
-**Direct pick mode** — RT assignment that peak-picks each product RT without a full pedigree walk (**paper Methods**; typically with Old-school picking).
-
-**Equivalence class** — Truncates that share the same non-null BB sequence (padding-invariant).
+**Direct pick mode** — RT assignment that peak-picks each product RT without a full pedigree walk - simply takes the most-retained, significant peak.
 
 **Index database** — SQLite file storing raw chromatogram text; parsed on demand.
 
@@ -14,7 +12,7 @@
 
 **Minimum RT** — Old-school picker cutoff: ignore signal below this RT. **Not** the null RT threshold.
 
-**Modern peak picking** — NB/Poisson significance on local maxima (default). Parameters: α, min prominence, min % area. Added after the accompanying paper.
+**Modern peak picking** — NB/Poisson significance on local maxima (default). Parameters: α, min prominence, min % area.
 
 **Null RT threshold** — Max allowed RT difference vs truncation references for verification / parent exclusion. Set on **Library Analysis → RT assignment**.
 
@@ -22,7 +20,7 @@
 
 **Old-school peak picking** — Height gate + Gaussian centroid fit (**paper Methods**). Parameters: min height factor, fit width, max σ, minimum RT.
 
-**Pedigree mode** — RT assignment via full-library null-truncation walk (Rust `evaluate_library`). Post-paper improvement.
+**Pedigree mode** — RT assignment via full-library null-truncation walk (Rust `evaluate_library`).
 
 **Pedigree visualization** — Radial / tier-ring figure of the null-truncation pedigree.
 

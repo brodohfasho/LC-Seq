@@ -27,7 +27,7 @@ from src.core.pedigree_adapter import (
     members_of_class,
     truncate_positions_from_metadata,
 )
-from src.core.lineage_cache import LineageSessionCache
+from src.core.lineage_cache import LineageSessionCache, CachedPedigreeEvaluation
 from src.core.pedigree_backend import get_pedigree_backend
 from src.models.analysis_settings import AnalysisSettings
 from src.models.compound import Compound
@@ -185,14 +185,15 @@ def analyze_lineage(
             )
         emit(2, "Running pedigree evaluation…")
         bbs_per_position = infer_bbs_per_position(filtered, config)
+        min_prominence, min_pct_area = settings.effective_quality_params()
         records = backend.evaluate_library(
             bbs_per_position,
             config.null_token,
             chromatogram_map,
             settings.tolerance,
             settings.alpha,
-            min_prominence=settings.min_prominence,
-            min_pct_area=settings.min_pct_area,
+            min_prominence=min_prominence,
+            min_pct_area=min_pct_area,
             settings=settings,
         )
         records_by_id = {r.id: r for r in records}
@@ -272,6 +273,38 @@ def analyze_lineage_for_path(
             index_database=store.is_index_database(),
             progress_callback=progress_callback,
             session_cache=session_cache,
+        )
+    finally:
+        store.close()
+
+
+def prepare_lineage_session_for_path(
+    db_path: Path,
+    config: SpreadsheetConfig,
+    settings: AnalysisSettings,
+    *,
+    session_cache: LineageSessionCache,
+    progress_callback: Optional[ProgressCallback] = None,
+) -> CachedPedigreeEvaluation:
+    """
+    Warm the lineage session cache (library load + full pedigree evaluation).
+
+    Thread-safe: opens the database in the calling thread. Subsequent
+    ``analyze_lineage*`` calls reuse ``session_cache`` when settings match.
+    """
+    store = DataStore(db_path=db_path, use_memory=False)
+    try:
+        compounds = session_cache.get_or_load_compounds(
+            store,
+            config,
+            index_database=store.is_index_database(),
+            progress_callback=progress_callback,
+        )
+        return session_cache.get_or_evaluate_pedigree(
+            compounds,
+            config,
+            settings,
+            progress_callback=progress_callback,
         )
     finally:
         store.close()

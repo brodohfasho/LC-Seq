@@ -15,7 +15,7 @@ DEFAULT_GAUSSIAN_FIT_WIDTH_MINUTES = 1.5
 DEFAULT_GAUSSIAN_STDDEV_THRESHOLD_MINUTES = 2.0
 DEFAULT_GAUSSIAN_MINIMUM_RT_MINUTES = 10.0
 
-# Modern picker + shared post-filter defaults used in the peak analysis UI.
+# Modern picker defaults (α + post-detection quality filters).
 DEFAULT_MODERN_ALPHA = 0.001
 DEFAULT_MIN_PROMINENCE = 5.0
 DEFAULT_MIN_PCT_AREA = 3.0
@@ -88,6 +88,17 @@ class AnalysisSettings:
     @property
     def uses_old_school_peak_picker(self) -> bool:
         return self.peak_picking_algorithm == "old_school"
+
+    def effective_quality_params(self) -> tuple[float, float]:
+        """
+        Min prominence / min % area for engines.
+
+        These post-filters apply only with the modern picker. Old-school uses its
+        own height / Gaussian / minimum-RT gates instead.
+        """
+        if self.uses_old_school_peak_picker:
+            return (0.0, 0.0)
+        return (float(self.min_prominence), float(self.min_pct_area))
 
     def gaussian_picker_params(self) -> tuple[float, float, float, float]:
         """Return ``(min_height_factor, fit_width, stddev_threshold, minimum_rt)`` in ``time_unit``."""

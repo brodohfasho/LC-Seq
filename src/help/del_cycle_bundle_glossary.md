@@ -1,7 +1,6 @@
 # Export analysis bundle glossary
 
 Files from **Export analysis bundle…** on the RT assignment tab.  
-CSVs are **UTF-8 with BOM** (Excel-friendly for characters like β).
 
 ## Bundle contents
 

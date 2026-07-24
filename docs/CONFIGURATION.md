@@ -83,7 +83,7 @@ A config is **complete** for database builds when all required chromatogram fiel
 
 - Map BB columns in Configure Spreadsheet tab **5 — DEL / Pedigree**; optional UTF-8 or Excel BB index CSV for display indices on split-tree labels and exports.
 - Named presets under `config/configs/` can store the full schema including `bb_index_map` (local only; gitignored).
-- See in-app help **Null truncates & BB columns** and [APPLICATION_WORKFLOW.md](APPLICATION_WORKFLOW.md).
+- See in-app help **Spreadsheet Configuration and Database Build** and [APPLICATION_WORKFLOW.md](APPLICATION_WORKFLOW.md).
 
 ---
 

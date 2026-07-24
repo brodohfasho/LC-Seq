@@ -116,7 +116,7 @@ def _pick_peaks_for_signal_quality(
     channel: str,
     options: SignalQualityComputeOptions,
 ) -> List[PickedPeak]:
-    """Detect peaks, then apply shared prominence / % area quality filters."""
+    """Detect peaks, then apply modern-only prominence / % area quality filters."""
     settings = options.to_analysis_settings(channel)
     if options.peak_picking_algorithm == "old_school":
         raw = find_peaks_gaussian(

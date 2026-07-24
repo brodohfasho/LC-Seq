@@ -52,9 +52,12 @@ def test_new_getting_started_topics_render() -> None:
 
 
 def test_table_renders_as_embedded_widgets() -> None:
+    from src.core.help_markdown import _EMBED_REGISTRY
+
     root = ctk.CTk()
-    root.withdraw()
+    root.geometry("800x600")
     textbox = ctk.CTkTextbox(root, width=600, height=500)
+    textbox.pack(fill="both", expand=True)
     sample = (
         "## Table\n\n"
         "| Col A | Col B |\n"
@@ -63,8 +66,19 @@ def test_table_renders_as_embedded_widgets() -> None:
         "| three | four |\n"
     )
     render_markdown_to_textbox(textbox, sample)
+    root.update_idletasks()
+    root.update()
+    for widget in _EMBED_REGISTRY.get(id(textbox), []):
+        apply_fn = getattr(widget, "_help_resize", None)
+        if apply_fn is not None:
+            apply_fn()
+    root.update_idletasks()
     embedded = textbox._textbox.window_names()
     assert embedded, "expected an embedded table widget"
+    heights = [
+        textbox._textbox.nametowidget(name).winfo_height() for name in embedded
+    ]
+    assert any(h > 20 for h in heights), f"table height collapsed: {heights}"
     root.destroy()
 
 

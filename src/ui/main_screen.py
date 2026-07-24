@@ -149,7 +149,7 @@ class MainScreen(ctk.CTk):
 
         # Subtitle
         subtitle_label = ctk.CTkLabel(
-            self, text="Chromatographic Data Analysis", font=ctk.CTkFont(size=18)
+            self, text="Chromatographic DNA-Encoded Library Data Analysis", font=ctk.CTkFont(size=18)
         )
         subtitle_label.grid(row=2, column=0, pady=(0, 24), sticky="n")
 

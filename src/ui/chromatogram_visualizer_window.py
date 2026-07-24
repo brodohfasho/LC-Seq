@@ -479,6 +479,9 @@ class ChromatogramVisualizerWindow(BaseWindow):
             return
 
         self._lineage_session_cache.invalidate()
+        if self._peak_panel is not None:
+            self._peak_panel.reset_lineage_prepared()
+            self._peak_panel.clear_cached_peaks()
 
         try:
             self._data_store = DataStore(db_path=Path(path), use_memory=False)
@@ -672,7 +675,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
         btn_clear_plot.pack(side="left", padx=(0, 6))
         attach_tooltip(
             btn_clear_plot,
-            "Clear plotted traces only. Table rows stay loaded; select rows again to replot.",
+            "Clear plotted traces and deselect rows. Table data stays loaded; "
+            "select rows again to replot.",
         )
 
         btn_export = ctk.CTkButton(
@@ -899,11 +903,15 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._tree.delete(iid)
         self._table_compounds_by_iid.clear()
         self._clear_plot_display()
+        if self._peak_panel is not None:
+            self._peak_panel.clear_cached_peaks()
         self._autosize_tree_columns()
         self._table_status.configure(text="Table cleared.")
 
     def _on_clear_plot_only(self) -> None:
-        """Clear only the plotted traces; keep loaded table rows untouched."""
+        """Clear plotted traces and deselect rows; table data stays loaded."""
+        self._cancel_deferred_selection_plot()
+        self._clear_tree_selection_without_plot()
         self._clear_plot_display()
 
     def _cancel_deferred_selection_plot(self) -> None:
@@ -951,6 +959,11 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._legend_text_meta.clear()
         self._clear_plot_pick_focus_state()
         self._current_compounds = []
+        if self._peak_panel is not None:
+            self._peak_panel.sync_with_selected_compounds(notify=False)
+            self._peak_analysis_batch = self._peak_panel.batch
+        else:
+            self._peak_analysis_batch = None
         self._style_axes_empty()
         self._canvas.draw()
 
@@ -976,6 +989,9 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._clear_plot_display()
             return
         self._current_compounds = compounds
+        if self._peak_panel is not None:
+            self._peak_panel.sync_with_selected_compounds(notify=False)
+            self._peak_analysis_batch = self._peak_panel.batch
         self._redraw_plot()
 
     def _plot_has_exportable_content(self) -> bool:
@@ -1280,8 +1296,10 @@ class ChromatogramVisualizerWindow(BaseWindow):
             get_figure=lambda: self._figure,
             get_target_compounds=self._get_plotted_compounds,
             get_plot_color=self._get_plot_color_for_compound,
+            on_prepare_lineage=self._on_prepare_lineage,
             on_analyze_lineage=self._on_analyze_lineage,
             on_view_lineage=self._on_view_lineage,
+            on_cancel_lineage=self._on_cancel_lineage,
             pedigree_configured=self._config.pedigree_configured(),
         )
         self._peak_panel.pack(fill=tk.BOTH, expand=True)
@@ -1296,8 +1314,129 @@ class ChromatogramVisualizerWindow(BaseWindow):
             self._busy_overlay.set_cancel_enabled(False)
             self._busy_overlay.hide()
         if self._peak_panel is not None:
-            self._peak_panel.set_lineage_failed("Lineage analysis cancelled.")
-        logger.info("Lineage analysis cancelled by user")
+            keep = bool(self._peak_panel._lineage_prepared)
+            self._peak_panel.set_lineage_failed(
+                "Lineage operation cancelled.",
+                keep_prepared=keep,
+            )
+        logger.info("Lineage operation cancelled by user")
+
+    def _on_prepare_lineage(self) -> None:
+        """Warm library + pedigree cache; progress shows in the peak panel footer."""
+        from src.core.lcseq_backend import AnalysisEngineError
+        from src.core.lineage_service import prepare_lineage_session_for_path
+        from src.core.pedigree_backend import pedigree_backend_available
+
+        if self._data_store is None or self._config is None:
+            return
+        if not self._config.pedigree_configured():
+            show_info(
+                self,
+                "Prepare lineage",
+                "Map BB1..BBn columns in Configure Spreadsheet before preparing lineage.",
+            )
+            return
+        if not pedigree_backend_available():
+            show_error(
+                self,
+                "Prepare lineage",
+                "The Rust lcseq extension is required for lineage analysis.",
+                what_to_do="See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
+            )
+            return
+        if self._peak_panel is None:
+            return
+        if self._lineage_worker is not None and self._lineage_worker.is_alive():
+            return
+        try:
+            settings = self._peak_panel._build_settings()
+        except ValueError as exc:
+            show_error(self, "Prepare lineage", str(exc))
+            return
+
+        cache = self._lineage_session_cache
+        db_path = Path(self._data_store.db_path)
+        config = self._config
+        self._lineage_cancel.clear()
+        self._lineage_op_id += 1
+        op_id = self._lineage_op_id
+        self._peak_panel.set_lineage_busy("Preparing lineage analysis…")
+
+        def worker() -> None:
+            try:
+
+                def progress(done: int, total: int, status: str) -> None:
+                    if self._lineage_cancel.is_set() or op_id != self._lineage_op_id:
+                        raise RuntimeError("cancelled")
+                    lower = status.lower()
+                    if total > 0 and "loading" in lower:
+                        fraction = min(0.55, 0.05 + 0.5 * (done / max(total, 1)))
+                    elif "chromatogram" in lower or "building" in lower:
+                        fraction = 0.6
+                    elif "pedigree" in lower or "evaluation" in lower:
+                        fraction = 0.85
+                    elif "cached" in lower:
+                        fraction = 0.95
+                    else:
+                        fraction = 0.3
+                    msg = status
+                    self.after(
+                        0,
+                        lambda m=msg, f=fraction, oid=op_id: (
+                            self._peak_panel.set_lineage_progress(m, f)
+                            if self._peak_panel is not None and oid == self._lineage_op_id
+                            else None
+                        ),
+                    )
+
+                prepared = prepare_lineage_session_for_path(
+                    db_path,
+                    config,
+                    settings,
+                    session_cache=cache,
+                    progress_callback=progress,
+                )
+                if self._lineage_cancel.is_set() or op_id != self._lineage_op_id:
+                    return
+                n = prepared.filtered_count
+                self.after(
+                    0,
+                    lambda oid=op_id, count=n: self._on_prepare_lineage_finished(count, oid),
+                )
+            except RuntimeError as exc:
+                if str(exc) == "cancelled" or self._lineage_cancel.is_set():
+                    return
+                msg = str(exc)
+                self.after(0, lambda m=msg, oid=op_id: self._on_prepare_lineage_failed(m, oid))
+            except AnalysisEngineError as exc:
+                msg = str(exc)
+                self.after(0, lambda m=msg, oid=op_id: self._on_prepare_lineage_failed(m, oid))
+            except Exception as exc:
+                logger.error("Prepare lineage failed: %s", exc, exc_info=True)
+                msg = str(exc)
+                self.after(0, lambda m=msg, oid=op_id: self._on_prepare_lineage_failed(m, oid))
+
+        self._lineage_worker = threading.Thread(target=worker, daemon=True)
+        self._lineage_worker.start()
+
+    def _on_prepare_lineage_finished(self, filtered_count: int, op_id: Optional[int]) -> None:
+        if op_id is not None and op_id != self._lineage_op_id:
+            return
+        self._lineage_worker = None
+        if self._peak_panel is None:
+            return
+        self._peak_panel.set_lineage_prepared(
+            f"Lineage prepared ({filtered_count:,} compounds). "
+            "Select compounds in the table, then Analyze lineage."
+        )
+
+    def _on_prepare_lineage_failed(self, message: str, op_id: Optional[int]) -> None:
+        if op_id is not None and op_id != self._lineage_op_id:
+            return
+        self._lineage_worker = None
+        if self._peak_panel is not None:
+            self._peak_panel.set_lineage_failed(message, keep_prepared=False)
+        show_error(self, "Prepare lineage", message)
 
     def _on_analyze_lineage(self) -> None:
         """Run lineage analysis in the background for all plotted compounds."""
@@ -1322,6 +1461,15 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 what_to_do="See docs/DEVELOPER_SETUP.md to build LC-Seq-New-master.",
             )
             return
+        if self._peak_panel is None:
+            return
+        if not self._peak_panel._lineage_prepared:
+            show_info(
+                self,
+                "Lineage analysis",
+                "Click Prepare lineage analysis first to load the library pedigree.",
+            )
+            return
         compounds = self._get_plotted_compounds()
         if not compounds:
             show_info(
@@ -1337,8 +1485,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
                 "Lineage analysis",
                 f"Only the first {_MAX_LINEAGE_BATCH} plotted compounds will be analyzed.",
             )
-        if self._peak_panel is None:
-            return
         if self._lineage_worker is not None and self._lineage_worker.is_alive():
             return
         try:
@@ -1357,18 +1503,12 @@ class ChromatogramVisualizerWindow(BaseWindow):
         self._peak_panel.set_lineage_busy(
             f"Starting lineage analysis for {n_comp} compound(s)…"
         )
-        if self._busy_overlay is not None:
-            self._busy_overlay.show(
-                "Running lineage analysis",
-                f"Analyzing {n_comp} compound(s)…",
-            )
 
         def worker() -> None:
             try:
                 def progress(done: int, total: int, status: str) -> None:
                     if self._lineage_cancel.is_set() or op_id != self._lineage_op_id:
                         raise RuntimeError("cancelled")
-                    # Batch API reports compound index in ``done``; phase text is in status.
                     base = (done / total) if total > 0 else 0.0
                     lower = (status or "").lower()
                     if "evaluat" in lower:
@@ -1379,7 +1519,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
                         phase = 0.35
                     else:
                         phase = 0.75
-                    # Within the current compound band, leave headroom for Rust eval.
                     fraction = min(0.92, base + phase / max(total, 1))
                     prefix = f"Lineage {done + 1}/{total}" if total > 1 else "Lineage"
                     msg = f"{prefix}: {status}" if status else prefix
@@ -1388,9 +1527,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
                         if op_id != self._lineage_op_id:
                             return
                         if self._peak_panel is not None:
-                            self._peak_panel.set_lineage_progress(m)
-                        if self._busy_overlay is not None:
-                            self._busy_overlay.set_progress(f, m)
+                            self._peak_panel.set_lineage_progress(m, f)
 
                     self.after(0, update)
 
@@ -1436,7 +1573,8 @@ class ChromatogramVisualizerWindow(BaseWindow):
             return
         if not batch.results:
             self._peak_panel.set_lineage_failed(
-                "Lineage analysis failed for all selected compounds."
+                "Lineage analysis failed for all selected compounds.",
+                keep_prepared=True,
             )
             if batch.failed:
                 detail = "\n".join(f"{cid}: {err}" for cid, err in batch.failed[:8])
@@ -1473,7 +1611,7 @@ class ChromatogramVisualizerWindow(BaseWindow):
         if self._busy_overlay is not None:
             self._busy_overlay.hide()
         if self._peak_panel is not None:
-            self._peak_panel.set_lineage_failed(message)
+            self._peak_panel.set_lineage_failed(message, keep_prepared=True)
         show_error(self, "Lineage analysis", message)
 
     def _on_view_lineage(self) -> None:
@@ -1481,6 +1619,13 @@ class ChromatogramVisualizerWindow(BaseWindow):
         from src.ui.lineage_analysis_window import open_lineage_viewer_window
 
         if self._peak_panel is None or self._config is None:
+            return
+        if not self._peak_panel._lineage_prepared:
+            show_info(
+                self,
+                "Lineage viewer",
+                "Click Prepare lineage analysis first.",
+            )
             return
         results = self._peak_panel.lineage_results
         if not results:
@@ -1506,9 +1651,6 @@ class ChromatogramVisualizerWindow(BaseWindow):
             batch.results,
             stored_time_unit=stored_unit,
         )
-        self._peak_panel._batch = updated
-        self._peak_panel._ensure_suspected_peak_column()
-        self._peak_panel._populate_table(updated)
         labeled = sum(
             1
             for entry in updated.results
@@ -1522,19 +1664,19 @@ class ChromatogramVisualizerWindow(BaseWindow):
             if peak.suspected_peak_id == "unknown"
         )
         n_comp = len(batch.results)
-        self._peak_panel._status.configure(
-            text=(
+        self._peak_panel.set_labeled_batch(
+            updated,
+            status=(
                 f"Lineage labels applied for {n_comp} compound(s) — "
                 f"{labeled} peak(s) matched, {unknown} unknown."
             ),
-            text_color=("gray10", "gray90"),
         )
-        self._peak_panel._on_result_changed(updated)
         self._peak_analysis_batch = updated
         self._redraw_plot()
 
     def _get_plotted_compounds(self) -> List[Compound]:
-        return [c for c in self._current_compounds if c is not None]
+        """Compounds selected in the compound table (source of truth for peak analysis)."""
+        return self._compounds_for_tree_selection()
 
     def _get_plot_color_for_compound(self, compound_id: str) -> str:
         key = str(compound_id).strip()

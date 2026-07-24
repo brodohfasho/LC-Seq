@@ -6,12 +6,10 @@ Evaluates the **entire library** on the null-truncation tree: each class must sh
 
 **Library Analysis → RT assignment → Analysis mode: Pedigree → Run RT assignment.**
 
-Requires BB columns configured (**DEL library setup**). Needs the Rust `lcseq` engine.
+Requires BB columns configured (**Spreadsheet Configuration and Database Build**). Needs the Rust `lcseq` engine.
 
 RT assignment does not generate or open the figure automatically. After it finishes, open
 **Pedigree visualization**, choose the display options, and click **Generate plot**.
-
-**Paper note:** accompanying paper used **Direct pick** + **Old-school** picking. Pedigree mode is a later improvement.
 
 ## Outputs
 
@@ -29,12 +27,8 @@ Grey = root · Light/dark green = passed class/compound · Red = synthesis failu
 
 Without Graphviz, LC-Seq uses a matplotlib tier-ring preview. Display controls: **Pedigree visualization figure**.
 
-## Product prominence
-
-After Pedigree RT assignment, prominence at the chosen product RT for **passed** full compounds goes into **`product_prominence.csv`** (analysis bundle only — no separate button). Bulk QC “tallest peak” metrics may not be the product.
-
 ## Sidebar settings
 
-Count channel · time unit · Modern/Old-school picker · Null RT threshold · min prominence / min % area · optional isoform filter.
+Count channel · time unit · Modern/Old-school picker · Null RT threshold · (modern) min prominence / min % area · optional isoform filter.
 
 Large index DBs may take minutes on first parse.

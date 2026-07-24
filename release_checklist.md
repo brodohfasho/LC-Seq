@@ -52,7 +52,7 @@ Use a real DEL library spreadsheet representative of the paper workflow:
 - [x] `docs/INSTALL.md` covers first-run, SmartScreen, Graphviz optional note, and Library Analysis path
 - [x] `docs/CONFIGURATION.md` covers BB columns, null token, cycle count, and BB index CSV
 - [x] `docs/RELEASE.md` smoke list includes pedigree, split-tree, and export bundle (not only basic visualizer)
-- [x] In-app Help topics open and render for peak picking, pedigree, lineage, split-tree / export bundle, signal quality, and glossary
+- [x] In-app Help topics open and render for peak picking, pedigree, lineage, split-tree / export bundle, and glossary
 
 ---
 

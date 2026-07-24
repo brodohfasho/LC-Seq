@@ -261,7 +261,7 @@ def _insert_table(textbox: ctk.CTkTextbox, rows: Sequence[str]) -> None:
                 font=font,
                 justify="left",
                 anchor="w",
-                wraplength=1,
+                wraplength=120,
                 padx=10,
                 pady=6,
             )
@@ -274,8 +274,6 @@ def _insert_table(textbox: ctk.CTkTextbox, rows: Sequence[str]) -> None:
                 pady=(0, 1) if r_idx < len(parsed) - 1 else 0,
             )
             cell._help_is_header = is_header  # type: ignore[attr-defined]
-
-    table.grid_propagate(False)
 
     def _apply() -> None:
         try:
@@ -294,8 +292,13 @@ def _insert_table(textbox: ctk.CTkTextbox, rows: Sequence[str]) -> None:
             except tk.TclError:
                 pass
         try:
+            # Measure natural height with propagate on. With propagate off,
+            # winfo_reqheight() ignores children and collapses to ~1px.
+            table.grid_propagate(True)
             table.update_idletasks()
-            table.configure(width=target, height=max(table.winfo_reqheight(), 1))
+            req_h = max(table.winfo_reqheight(), 1)
+            table.grid_propagate(False)
+            table.configure(width=target, height=req_h)
         except tk.TclError:
             pass
 

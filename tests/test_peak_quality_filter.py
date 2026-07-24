@@ -85,6 +85,46 @@ def test_filter_detected_peaks_computes_pct_area():
     assert out[0].area == 70.0
 
 
+def test_filter_detected_peaks_skipped_for_old_school():
+    settings = AnalysisSettings(
+        count_channel="Count",
+        peak_picking_algorithm="old_school",
+        min_prominence=100.0,
+        min_pct_area=90.0,
+        gaussian_minimum_rt=0.0,
+    )
+    peaks = [
+        PickedPeak(
+            peak_index=1,
+            rt=1.0,
+            intensity=20.0,
+            area=10.0,
+            prominence=2.0,
+            p_value=1e-6,
+        ),
+    ]
+    out = filter_detected_peaks(peaks, settings)
+    assert len(out) == 1
+
+
+def test_effective_quality_params_zero_for_old_school():
+    modern = AnalysisSettings(
+        count_channel="Count",
+        peak_picking_algorithm="modern",
+        min_prominence=5.0,
+        min_pct_area=3.0,
+    )
+    old = AnalysisSettings(
+        count_channel="Count",
+        peak_picking_algorithm="old_school",
+        min_prominence=5.0,
+        min_pct_area=3.0,
+        gaussian_minimum_rt=0.0,
+    )
+    assert modern.effective_quality_params() == (5.0, 3.0)
+    assert old.effective_quality_params() == (0.0, 0.0)
+
+
 def test_null_truncation_label_helper():
     assert is_null_truncation_label("null truncation (DNvl-DPhe)")
     assert not is_null_truncation_label("intended product (DNvl-DPhe-LA03)")

@@ -35,12 +35,10 @@ from src.models.peak_result import PeakAnalysisBatchResult, PeakAnalysisResult
 from src.models.pedigree_result import LineageAnalysisResult, LineageBatchResult
 from src.models.spreadsheet_config import SpreadsheetConfig
 from src.ui.quality_filter_ui import (
-    QUALITY_BOTH_PICKERS_NOTE,
-    QUALITY_FILTERS_BOTH_PICKERS_TITLE,
     QUALITY_MIN_PCT_AREA_LABEL,
     QUALITY_MIN_PROMINENCE_LABEL,
-    QUALITY_PCT_AREA_TOOLTIP_BOTH,
-    QUALITY_PROMINENCE_TOOLTIP_BOTH,
+    QUALITY_PCT_AREA_TOOLTIP,
+    QUALITY_PROMINENCE_TOOLTIP,
 )
 from src.ui.widget_tooltip import attach_tooltip
 
@@ -98,6 +96,8 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         get_plot_color: Callable[[str], str],
         on_analyze_lineage: Optional[Callable[[], None]] = None,
         on_view_lineage: Optional[Callable[[], None]] = None,
+        on_prepare_lineage: Optional[Callable[[], None]] = None,
+        on_cancel_lineage: Optional[Callable[[], None]] = None,
         pedigree_configured: bool = False,
     ) -> None:
         super().__init__(master, fg_color=("gray90", "gray20"))
@@ -109,8 +109,13 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._get_plot_color = get_plot_color
         self._on_analyze_lineage = on_analyze_lineage
         self._on_view_lineage = on_view_lineage
+        self._on_prepare_lineage = on_prepare_lineage
+        self._on_cancel_lineage = on_cancel_lineage
         self._pedigree_configured = pedigree_configured
+        self._lineage_prepared = False
+        self._lineage_job_active = False
         self._batch: Optional[PeakAnalysisBatchResult] = None
+        self._peak_results_by_id: Dict[str, PeakAnalysisResult] = {}
         self._lineage_result: Optional[LineageAnalysisResult] = None
         self._lineage_batch: Optional[LineageBatchResult] = None
         self._show_suspected_peak_column = False
@@ -146,15 +151,6 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         if not backend.is_native:
             attach_tooltip(self._engine_label, backend.detail)
 
-        ctk.CTkButton(
-            top_row,
-            text="? Help",
-            width=64,
-            height=24,
-            fg_color="gray40",
-            command=self._on_peak_help,
-        ).grid(row=0, column=1, sticky="e")
-
         settings = ctk.CTkFrame(self, fg_color="transparent")
         settings.grid(row=1, column=0, sticky="ew", padx=8, pady=4)
         settings.grid_columnconfigure(1, weight=1)
@@ -166,36 +162,21 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             variable=self._channel_var,
             values=list(config.count_names) or ["(none)"],
             width=160,
+            command=lambda _v: self._on_picker_inputs_changed(),
         )
         self._channel_menu.grid(row=0, column=1, sticky="ew", padx=(6, 0), pady=2)
-
-        ctk.CTkLabel(settings, text="Time unit:").grid(row=1, column=0, sticky="w", pady=2)
-        unit_frame = ctk.CTkFrame(settings, fg_color="transparent")
-        unit_frame.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=2)
         self._time_unit_var = tk.StringVar(value=config.analysis_time_unit)
-        ctk.CTkRadioButton(
-            unit_frame, text="Seconds", variable=self._time_unit_var, value="seconds"
-        ).pack(side="left", padx=(0, 8))
-        ctk.CTkRadioButton(
-            unit_frame, text="Minutes", variable=self._time_unit_var, value="minutes"
-        ).pack(side="left")
-        attach_tooltip(
-            unit_frame,
-            "Display times relative to the unit set in Configure Spreadsheet "
-            f"(stored as {self._stored_time_unit}). Switching multiplies or divides by 60.",
-        )
-        self._time_unit_var.trace_add("write", self._on_time_unit_changed)
 
-        ctk.CTkLabel(settings, text="Peak picking:").grid(row=2, column=0, sticky="w", pady=2)
+        ctk.CTkLabel(settings, text="Peak picking:").grid(row=1, column=0, sticky="w", pady=2)
         self._picker_algorithm_var = tk.StringVar(value="modern")
         picker_menu = ctk.CTkOptionMenu(
             settings,
             variable=self._picker_algorithm_var,
             values=["modern", "old_school"],
             width=160,
-            command=lambda _v: self._sync_picker_option_states(),
+            command=lambda _v: self._on_picker_algorithm_changed(),
         )
-        picker_menu.grid(row=2, column=1, sticky="ew", padx=(6, 0), pady=2)
+        picker_menu.grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=2)
         attach_tooltip(
             picker_menu,
             "Modern: NB/Poisson significance on local maxima (post-paper). "
@@ -206,7 +187,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._old_school_picker_widgets: List[ctk.CTkBaseClass] = []
 
         picker_cols = ctk.CTkFrame(settings, fg_color="transparent")
-        picker_cols.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(4, 2))
+        picker_cols.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(4, 2))
         picker_cols.grid_columnconfigure(0, weight=1, uniform="picker")
         picker_cols.grid_columnconfigure(1, weight=1, uniform="picker")
 
@@ -223,13 +204,37 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         self._alpha_label.pack(anchor="w", padx=6)
         self._alpha_entry = ctk.CTkEntry(self._modern_col, width=120)
         self._alpha_entry.insert(0, str(DEFAULT_MODERN_ALPHA))
-        self._alpha_entry.pack(anchor="w", padx=6, pady=(2, 8))
+        self._alpha_entry.pack(anchor="w", padx=6, pady=(2, 4))
         attach_tooltip(
             self._alpha_entry,
             "Both height and area p-values must be below α/2. Smaller α = stricter.",
         )
+        self._prominence_label = ctk.CTkLabel(
+            self._modern_col, text=f"{QUALITY_MIN_PROMINENCE_LABEL}:"
+        )
+        self._prominence_label.pack(anchor="w", padx=6)
+        self._min_prominence_entry = ctk.CTkEntry(self._modern_col, width=120)
+        self._min_prominence_entry.insert(0, str(DEFAULT_MIN_PROMINENCE))
+        self._min_prominence_entry.pack(anchor="w", padx=6, pady=(2, 4))
+        attach_tooltip(self._min_prominence_entry, QUALITY_PROMINENCE_TOOLTIP)
+        self._pct_area_label = ctk.CTkLabel(
+            self._modern_col, text=f"{QUALITY_MIN_PCT_AREA_LABEL}:"
+        )
+        self._pct_area_label.pack(anchor="w", padx=6)
+        self._min_pct_area_entry = ctk.CTkEntry(self._modern_col, width=120)
+        self._min_pct_area_entry.insert(0, str(DEFAULT_MIN_PCT_AREA))
+        self._min_pct_area_entry.pack(anchor="w", padx=6, pady=(2, 8))
+        attach_tooltip(self._min_pct_area_entry, QUALITY_PCT_AREA_TOOLTIP)
         self._modern_picker_widgets.extend(
-            [self._modern_header, self._alpha_label, self._alpha_entry]
+            [
+                self._modern_header,
+                self._alpha_label,
+                self._alpha_entry,
+                self._prominence_label,
+                self._min_prominence_entry,
+                self._pct_area_label,
+                self._min_pct_area_entry,
+            ]
         )
 
         self._old_header = ctk.CTkLabel(
@@ -285,46 +290,21 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         )
         self._old_school_picker_widgets.extend([self._old_header])
 
-        restore_row = ctk.CTkFrame(settings, fg_color="transparent")
-        restore_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0, 4))
-        ctk.CTkButton(
-            restore_row,
-            text="Restore defaults",
-            width=120,
-            height=24,
-            fg_color="gray40",
-            command=self._restore_picker_defaults,
+        ctk.CTkLabel(settings, text="Time unit:").grid(row=3, column=0, sticky="w", pady=2)
+        unit_frame = ctk.CTkFrame(settings, fg_color="transparent")
+        unit_frame.grid(row=3, column=1, sticky="w", padx=(6, 0), pady=2)
+        ctk.CTkRadioButton(
+            unit_frame, text="Seconds", variable=self._time_unit_var, value="seconds"
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkRadioButton(
+            unit_frame, text="Minutes", variable=self._time_unit_var, value="minutes"
         ).pack(side="left")
-
-        ctk.CTkLabel(
-            settings,
-            text=QUALITY_FILTERS_BOTH_PICKERS_TITLE,
-            font=ctk.CTkFont(size=11, weight="bold"),
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 2))
-        ctk.CTkLabel(
-            settings,
-            text=QUALITY_BOTH_PICKERS_NOTE,
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
-            wraplength=280,
-            justify="left",
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 2))
-
-        ctk.CTkLabel(settings, text=f"{QUALITY_MIN_PROMINENCE_LABEL}:").grid(
-            row=7, column=0, sticky="w", pady=2
+        attach_tooltip(
+            unit_frame,
+            "Display times relative to the unit set in Configure Spreadsheet "
+            f"(stored as {self._stored_time_unit}). Switching multiplies or divides by 60.",
         )
-        self._min_prominence_entry = ctk.CTkEntry(settings, width=100)
-        self._min_prominence_entry.insert(0, str(DEFAULT_MIN_PROMINENCE))
-        self._min_prominence_entry.grid(row=7, column=1, sticky="w", padx=(6, 0), pady=2)
-        attach_tooltip(self._min_prominence_entry, QUALITY_PROMINENCE_TOOLTIP_BOTH)
-
-        ctk.CTkLabel(settings, text=f"{QUALITY_MIN_PCT_AREA_LABEL}:").grid(
-            row=8, column=0, sticky="w", pady=2
-        )
-        self._min_pct_area_entry = ctk.CTkEntry(settings, width=100)
-        self._min_pct_area_entry.insert(0, str(DEFAULT_MIN_PCT_AREA))
-        self._min_pct_area_entry.grid(row=8, column=1, sticky="w", padx=(6, 0), pady=2)
-        attach_tooltip(self._min_pct_area_entry, QUALITY_PCT_AREA_TOOLTIP_BOTH)
+        self._time_unit_var.trace_add("write", self._on_time_unit_changed)
 
         self._sync_picker_option_states()
 
@@ -335,11 +315,29 @@ class PeakAnalysisPanel(ctk.CTkFrame):
 
         btn_pad = {"padx": (0, 4), "pady": (0, 4), "sticky": "ew"}
 
+        # Color roles: primary run → workflow → view toggles → export → meta.
+        _primary = {"fg_color": "#238636", "hover_color": "#2EA043"}
+        _workflow = {"fg_color": "#1F6FEB", "hover_color": "#388BFD"}
+        _workflow_secondary = {"fg_color": "#1158C7", "hover_color": "#1F6FEB"}
+        _toggle = {
+            "fg_color": ("#5C6570", "#3D444D"),
+            "hover_color": ("#6B7480", "#4A515C"),
+        }
+        _export = {
+            "fg_color": ("#57606A", "#424A53"),
+            "hover_color": ("#6E7681", "#525A63"),
+        }
+        _meta = {
+            "fg_color": ("#6E7681", "#484F58"),
+            "hover_color": ("#8B949E", "#6E7681"),
+        }
+
+        # Row 0 — pick + display toggles
         self._pick_btn = ctk.CTkButton(
             actions,
             text="Pick peaks",
-            fg_color="#238636",
             command=self._on_pick_peaks,
+            **_primary,
         )
         self._pick_btn.grid(row=0, column=0, **btn_pad)
         attach_tooltip(
@@ -352,6 +350,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             actions,
             text="Show baseline",
             command=self._on_show_baseline,
+            **_toggle,
         )
         self._baseline_btn.grid(row=0, column=1, **btn_pad)
         attach_tooltip(
@@ -363,6 +362,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             actions,
             text="Show integration",
             command=self._on_show_integration,
+            **_toggle,
         )
         self._integration_btn.grid(row=0, column=2, **btn_pad)
         attach_tooltip(
@@ -374,6 +374,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             actions,
             text="Show legend",
             command=self._on_show_legend,
+            **_toggle,
         )
         self._legend_btn.grid(row=0, column=3, **btn_pad)
         attach_tooltip(
@@ -382,70 +383,117 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             "(off by default during peak analysis).",
         )
 
+        # Row 1 — prepare / lineage workflow
+        middle = ctk.CTkFrame(actions, fg_color="transparent")
+        middle.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 4))
+        for col in range(3):
+            middle.grid_columnconfigure(col, weight=1, uniform="peak_middle")
+        mid_pad = {"padx": (0, 4), "sticky": "ew"}
+        _prepare = {
+            "fg_color": ("#8250DF", "#6639BA"),
+            "hover_color": ("#A371F7", "#8250DF"),
+        }
+
+        self._prepare_lineage_btn = ctk.CTkButton(
+            middle,
+            text="Prepare lineage",
+            command=self._on_prepare_lineage_clicked,
+            **_prepare,
+        )
+        self._prepare_lineage_btn.grid(row=0, column=0, **mid_pad)
+        attach_tooltip(
+            self._prepare_lineage_btn,
+            "Load the library and run pedigree evaluation once (Prepare lineage analysis). "
+            "Required before Analyze lineage / View lineage.",
+        )
+
+        self._lineage_btn = ctk.CTkButton(
+            middle,
+            text="Analyze lineage",
+            command=self._on_lineage_clicked,
+            **_workflow,
+        )
+        self._lineage_btn.grid(row=0, column=1, **mid_pad)
+
+        self._view_lineage_btn = ctk.CTkButton(
+            middle,
+            text="View lineage",
+            state="disabled",
+            command=self._on_view_lineage_clicked,
+            **_workflow_secondary,
+        )
+        self._view_lineage_btn.grid(row=0, column=2, sticky="ew")
+
+        # Row 2 — export + settings/help
         self._export_csv_btn = ctk.CTkButton(
             actions,
             text="Export CSV…",
             command=self._on_export_csv,
+            **_export,
         )
-        self._export_csv_btn.grid(row=1, column=0, **btn_pad)
+        self._export_csv_btn.grid(row=2, column=0, **btn_pad)
 
         self._export_plot_btn = ctk.CTkButton(
             actions,
             text="Export plot…",
             command=self._on_export_plot,
+            **_export,
         )
-        self._export_plot_btn.grid(row=1, column=1, **btn_pad)
+        self._export_plot_btn.grid(row=2, column=1, **btn_pad)
 
-        self._lineage_btn = ctk.CTkButton(
+        self._restore_defaults_btn = ctk.CTkButton(
             actions,
-            text="Analyze lineage",
-            fg_color="#1F6FEB",
-            command=self._on_lineage_clicked,
+            text="Restore defaults",
+            command=self._restore_picker_defaults,
+            **_meta,
         )
-        self._lineage_btn.grid(row=1, column=2, **btn_pad)
+        self._restore_defaults_btn.grid(row=2, column=2, **btn_pad)
 
-        self._view_lineage_btn = ctk.CTkButton(
+        self._help_btn = ctk.CTkButton(
             actions,
-            text="View lineage",
-            fg_color="#238636",
-            state="disabled",
-            command=self._on_view_lineage_clicked,
+            text="Help Topics",
+            command=self._on_peak_help,
+            **_meta,
         )
-        self._view_lineage_btn.grid(row=1, column=3, **btn_pad)
-
-        self._clear_btn = ctk.CTkButton(
-            actions,
-            text="Clear",
-            fg_color="gray40",
-            command=self._on_clear,
-        )
-        self._clear_btn.grid(row=2, column=0, sticky="ew", padx=(0, 4), pady=(2, 0))
+        self._help_btn.grid(row=2, column=3, **btn_pad)
 
         if not pedigree_configured:
+            self._prepare_lineage_btn.configure(state="disabled")
             self._lineage_btn.configure(state="disabled")
             self._view_lineage_btn.configure(state="disabled")
+            attach_tooltip(
+                self._prepare_lineage_btn,
+                "Map BB1..BBn columns in Configure Spreadsheet to enable lineage analysis.",
+            )
             attach_tooltip(
                 self._lineage_btn,
                 "Map BB1..BBn columns in Configure Spreadsheet to enable lineage analysis.",
             )
-        elif on_analyze_lineage is None:
+        elif on_prepare_lineage is None:
+            self._prepare_lineage_btn.configure(state="disabled")
             self._lineage_btn.configure(state="disabled")
             self._view_lineage_btn.configure(state="disabled")
         else:
             attach_tooltip(
                 self._lineage_btn,
-                "Run lineage for all plotted compounds (up to 50). "
-                "Updates suspected peak IDs when peaks are picked.",
+                "After Prepare lineage analysis: run lineage for plotted compounds "
+                "(up to 50). Updates suspected peak IDs when peaks are picked.",
             )
             attach_tooltip(
                 self._view_lineage_btn,
-                "Open lineage figure(s). Select compounds from the list when multiple are analyzed.",
+                "Open lineage figure(s). Available after Prepare, once Analyze lineage "
+                "has produced results.",
             )
+            self._sync_lineage_action_states()
         if on_view_lineage is None:
             self._view_lineage_btn.configure(state="disabled")
 
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.grid(row=4, column=0, sticky="ew", padx=8, pady=(4, 8))
+        footer.grid_columnconfigure(0, weight=1)
+
         self._status = ctk.CTkLabel(
-            self,
+            footer,
             text="Select table rows to plot, choose a count channel, then Pick peaks.",
             font=ctk.CTkFont(size=11),
             text_color="gray",
@@ -453,7 +501,26 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             wraplength=280,
             justify="left",
         )
-        self._status.grid(row=4, column=0, sticky="ew", padx=8, pady=(4, 8))
+        self._status.grid(row=0, column=0, sticky="ew")
+
+        progress_row = ctk.CTkFrame(footer, fg_color="transparent")
+        progress_row.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        progress_row.grid_columnconfigure(0, weight=1)
+        self._lineage_progress_row = progress_row
+        self._lineage_progress = ctk.CTkProgressBar(progress_row, height=12)
+        self._lineage_progress.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self._lineage_progress.set(0.0)
+        self._lineage_cancel_btn = ctk.CTkButton(
+            progress_row,
+            text="Cancel",
+            width=72,
+            height=24,
+            fg_color=("gray55", "gray40"),
+            hover_color=("gray45", "gray50"),
+            command=self._on_cancel_lineage_clicked,
+        )
+        self._lineage_cancel_btn.grid(row=0, column=1, sticky="e")
+        self._hide_lineage_progress()
 
         table_wrap = ctk.CTkFrame(self)
         table_wrap.grid(row=3, column=0, sticky="nsew", padx=8, pady=4)
@@ -632,6 +699,116 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             except Exception:
                 pass
 
+    def _on_picker_algorithm_changed(self) -> None:
+        self._sync_picker_option_states()
+        self._invalidate_peak_cache(
+            "Peak cache cleared — channel/algorithm changed. Pick peaks again."
+        )
+
+    def _on_picker_inputs_changed(self) -> None:
+        self._invalidate_peak_cache(
+            "Peak cache cleared — count channel changed. Pick peaks again."
+        )
+
+    def _invalidate_peak_cache(self, status: str) -> None:
+        """Drop cached peak results when picker settings no longer match them."""
+        if not self._peak_results_by_id and self._batch is None:
+            return
+        self._peak_results_by_id.clear()
+        self.sync_with_selected_compounds(status_override=status)
+
+    def clear_cached_peaks(self) -> None:
+        """Drop all cached peak results (e.g. table cleared or DB changed)."""
+        self._peak_results_by_id.clear()
+        self.sync_with_selected_compounds(
+            status_override=(
+                "Select table rows to plot, choose a count channel, then Pick peaks."
+            ),
+        )
+
+    def _store_results_in_cache(self, results: List[PeakAnalysisResult]) -> None:
+        for entry in results:
+            self._peak_results_by_id[str(entry.compound_id).strip()] = entry
+
+    def sync_with_selected_compounds(
+        self,
+        *,
+        status_override: Optional[str] = None,
+        notify: bool = True,
+    ) -> None:
+        """Rebuild the peak table and overlays from cache ∩ current selection."""
+        compounds = (
+            self._get_target_compounds() if self._get_target_compounds is not None else []
+        )
+        selected_ids = [
+            str(c.compound_id).strip() for c in compounds if c is not None
+        ]
+        results: List[PeakAnalysisResult] = []
+        for cid in selected_ids:
+            cached = self._peak_results_by_id.get(cid)
+            if cached is not None:
+                results.append(cached)
+
+        if not results:
+            self._batch = None
+            self._peak_row_meta.clear()
+            for iid in self._tree.get_children():
+                self._tree.delete(iid)
+            if status_override is not None:
+                self._status.configure(text=status_override, text_color="gray")
+            elif selected_ids:
+                self._status.configure(
+                    text=(
+                        f"{len(selected_ids)} compound(s) selected — "
+                        "Pick peaks to analyze."
+                    ),
+                    text_color="gray",
+                )
+            else:
+                self._status.configure(
+                    text=(
+                        "Select table rows to plot, choose a count channel, "
+                        "then Pick peaks."
+                    ),
+                    text_color="gray",
+                )
+            if notify:
+                self._on_result_changed(None)
+            return
+
+        first = results[0]
+        self._batch = PeakAnalysisBatchResult(
+            settings=first.settings,
+            channel=first.channel,
+            results=results,
+            backend_name=first.backend_name,
+        )
+        self._apply_plot_colors(self._batch)
+        self._populate_table(self._batch)
+        n_peaks = self._batch.total_peak_count
+        n_cached = len(results)
+        n_sel = len(selected_ids)
+        if status_override is not None:
+            self._status.configure(text=status_override, text_color="gray")
+        elif n_cached < n_sel:
+            self._status.configure(
+                text=(
+                    f"{n_peaks} peak(s) for {n_cached}/{n_sel} selected "
+                    f"compound(s) ({first.channel}). Pick peaks for the rest."
+                ),
+                text_color=("gray10", "gray90"),
+            )
+        else:
+            self._status.configure(
+                text=(
+                    f"{n_peaks} peak(s) across {n_cached} compound(s) "
+                    f"({first.channel})."
+                ),
+                text_color=("gray10", "gray90"),
+            )
+        if notify:
+            self._on_result_changed(self._batch)
+
     def _on_time_unit_changed(self, *_args) -> None:
         unit = self.display_time_unit
         g = AnalysisSettings.default_gaussian_params(unit)
@@ -722,14 +899,72 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             return [self._lineage_result]
         return []
 
+    def _sync_lineage_action_states(self) -> None:
+        """Enable Prepare / Analyze / View based on pedigree config and prepare status."""
+        if not self._pedigree_configured or self._lineage_job_active:
+            return
+        prepare_ok = (
+            self._on_prepare_lineage is not None and not self._lineage_prepared
+        )
+        analyze_ok = self._on_analyze_lineage is not None and self._lineage_prepared
+        view_ok = self._on_view_lineage is not None and self._lineage_prepared
+        try:
+            self._prepare_lineage_btn.configure(
+                state="normal" if prepare_ok else "disabled"
+            )
+            self._lineage_btn.configure(state="normal" if analyze_ok else "disabled")
+            self._view_lineage_btn.configure(state="normal" if view_ok else "disabled")
+        except tk.TclError:
+            pass
+
+    def _show_lineage_progress(self) -> None:
+        try:
+            self._lineage_progress_row.grid()
+            self._lineage_progress.set(0.0)
+            self._lineage_cancel_btn.configure(state="normal")
+        except tk.TclError:
+            pass
+
+    def _hide_lineage_progress(self) -> None:
+        try:
+            self._lineage_progress_row.grid_remove()
+            self._lineage_progress.set(0.0)
+        except tk.TclError:
+            pass
+
     def set_lineage_busy(self, message: str) -> None:
         """Disable lineage actions while a background analysis runs."""
+        self._lineage_job_active = True
+        self._prepare_lineage_btn.configure(state="disabled")
         self._lineage_btn.configure(state="disabled")
         self._view_lineage_btn.configure(state="disabled")
+        self._show_lineage_progress()
         self._status.configure(text=message, text_color=("gray10", "gray90"))
 
-    def set_lineage_progress(self, message: str) -> None:
+    def set_lineage_progress(self, message: str, fraction: Optional[float] = None) -> None:
         self._status.configure(text=message, text_color=("gray10", "gray90"))
+        if fraction is not None:
+            try:
+                self._lineage_progress.set(max(0.0, min(1.0, float(fraction))))
+            except tk.TclError:
+                pass
+
+    def set_lineage_prepared(self, message: str) -> None:
+        """Mark session prepare complete and unlock Analyze lineage."""
+        self._lineage_job_active = False
+        self._lineage_prepared = True
+        self._hide_lineage_progress()
+        self._status.configure(text=message, text_color=("gray10", "gray90"))
+        self._sync_lineage_action_states()
+
+    def reset_lineage_prepared(self) -> None:
+        """Clear prepare state (e.g. after database or cache invalidation)."""
+        self._lineage_job_active = False
+        self._lineage_prepared = False
+        self._lineage_result = None
+        self._lineage_batch = None
+        self._hide_lineage_progress()
+        self._sync_lineage_action_states()
 
     def set_lineage_result(self, result: LineageAnalysisResult) -> None:
         """Store a single completed lineage analysis and enable the viewer."""
@@ -737,12 +972,12 @@ class PeakAnalysisPanel(ctk.CTkFrame):
 
     def set_lineage_batch_results(self, batch: LineageBatchResult) -> None:
         """Store one or more lineage results and enable the viewer."""
+        self._lineage_job_active = False
         self._lineage_batch = batch
         self._lineage_result = batch.results[0] if batch.results else None
         n_ok = batch.success_count
         n_fail = batch.failure_count
-        self._lineage_btn.configure(state="normal")
-        self._view_lineage_btn.configure(state="normal" if n_ok else "disabled")
+        self._hide_lineage_progress()
         if n_ok == 1 and self._lineage_result is not None:
             n_panels = len(self._lineage_result.panels)
             status = (
@@ -759,13 +994,17 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         if n_fail:
             status += f" {n_fail} compound(s) failed."
         self._status.configure(text=status, text_color=("gray10", "gray90"))
+        self._sync_lineage_action_states()
 
-    def set_lineage_failed(self, message: str) -> None:
+    def set_lineage_failed(self, message: str, *, keep_prepared: bool = True) -> None:
+        self._lineage_job_active = False
         self._lineage_result = None
         self._lineage_batch = None
-        self._lineage_btn.configure(state="normal")
-        self._view_lineage_btn.configure(state="disabled")
+        if not keep_prepared:
+            self._lineage_prepared = False
+        self._hide_lineage_progress()
         self._status.configure(text=message, text_color="#D29922")
+        self._sync_lineage_action_states()
 
     def apply_lineage_labels(self, result: LineageAnalysisResult, compound_id: str) -> None:
         """Fill suspected peak IDs on the peak table from a lineage analysis result."""
@@ -777,6 +1016,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
             compound_id,
             stored_time_unit=self._stored_time_unit,
         )
+        self._store_results_in_cache(list(self._batch.results))
         self._ensure_suspected_peak_column()
         self._populate_table(self._batch)
         labeled = sum(
@@ -801,10 +1041,26 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         )
         self._on_result_changed(self._batch)
 
+    def set_labeled_batch(
+        self,
+        batch: PeakAnalysisBatchResult,
+        *,
+        status: str,
+    ) -> None:
+        """Replace displayed peaks after multi-compound lineage labeling."""
+        self._store_results_in_cache(list(batch.results))
+        self._batch = batch
+        self._ensure_suspected_peak_column()
+        self._populate_table(batch)
+        self._status.configure(text=status, text_color=("gray10", "gray90"))
+        self._on_result_changed(batch)
+
     def _on_pick_peaks(self) -> None:
         try:
             compounds, settings = self._resolve_targets()
-            self._batch = analyze_peaks_batch(compounds, settings)
+            batch = analyze_peaks_batch(compounds, settings)
+            self._store_results_in_cache(list(batch.results))
+            self._batch = batch
             self._apply_plot_colors(self._batch)
             self._populate_table(self._batch)
             n_comp = len(self._batch.results)
@@ -943,6 +1199,7 @@ class PeakAnalysisPanel(ctk.CTkFrame):
                     results=updated,
                     backend_name=self._batch.backend_name,
                 )
+            self._store_results_in_cache(list(self._batch.results))
             self._apply_plot_colors(self._batch)
         except Exception as exc:
             self._show_baseline_flag = False
@@ -956,6 +1213,10 @@ class PeakAnalysisPanel(ctk.CTkFrame):
 
         open_help_window(self.winfo_toplevel(), "peak_picking")
 
+    def _on_prepare_lineage_clicked(self) -> None:
+        if self._on_prepare_lineage is not None:
+            self._on_prepare_lineage()
+
     def _on_lineage_clicked(self) -> None:
         if self._on_analyze_lineage is not None:
             self._on_analyze_lineage()
@@ -964,30 +1225,9 @@ class PeakAnalysisPanel(ctk.CTkFrame):
         if self._on_view_lineage is not None:
             self._on_view_lineage()
 
-    def _on_clear(self) -> None:
-        self._batch = None
-        self._lineage_result = None
-        self._lineage_batch = None
-        self._show_suspected_peak_column = False
-        self._table_columns = self._build_table_columns()
-        self._apply_tree_columns()
-        self._show_baseline_flag = False
-        self._show_integration_flag = False
-        self._show_legend_flag = False
-        self._baseline_btn.configure(text="Show baseline")
-        self._integration_btn.configure(text="Show integration")
-        self._legend_btn.configure(text="Show legend")
-        self._peak_row_meta.clear()
-        for iid in self._tree.get_children():
-            self._tree.delete(iid)
-        self._status.configure(
-            text="Select table rows to plot, choose a count channel, then Pick peaks.",
-            text_color="gray",
-        )
-        self._on_result_changed(None)
-        self._on_view_changed()
-        if self._pedigree_configured and self._on_analyze_lineage is not None:
-            self._view_lineage_btn.configure(state="disabled")
+    def _on_cancel_lineage_clicked(self) -> None:
+        if self._on_cancel_lineage is not None:
+            self._on_cancel_lineage()
 
     def _row_values(self, entry: PeakAnalysisResult, peak) -> tuple:
         id_val = str(entry.primary_compound_id or entry.compound_id).strip()

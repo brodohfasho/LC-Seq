@@ -202,16 +202,6 @@ class LineageViewerWindow(BaseWindow):
                 "Figures plus combined and per-compound CSV files in one folder.",
             )
 
-        help_btn = ctk.CTkButton(
-            actions,
-            text="? Help",
-            width=72,
-            fg_color="gray40",
-            command=self._on_lineage_help,
-        )
-        help_btn.pack(side="left", padx=(12, 0) if len(self._results) > 1 else (0, 0))
-        attach_tooltip(help_btn, "Plain-English guide to lineage analysis.")
-
     def _build_scroll_area(self, parent: ctk.CTkFrame) -> None:
         scroll_host = ctk.CTkFrame(parent)
         scroll_host.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -295,11 +285,6 @@ class LineageViewerWindow(BaseWindow):
         assert self._scroll_inner is not None
         fig = self._get_or_render_figure(index)
         self._show_figure(fig, self._scroll_inner)
-
-    def _on_lineage_help(self) -> None:
-        from src.ui.help_window import open_help_window
-
-        open_help_window(self, "lineage_analysis")
 
     def _bind_mousewheel(self) -> None:
         if self._scroll_canvas is None or self._wheel_bound:

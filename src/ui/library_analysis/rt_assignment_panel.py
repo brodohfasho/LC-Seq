@@ -37,13 +37,10 @@ from src.ui.library_analysis.contexts import (
 from src.ui.library_analysis.models import LibraryOperationCancelled
 from src.ui.library_analysis.qc_panel import QcPanel
 from src.ui.quality_filter_ui import (
-    QUALITY_FILTERS_PEDIGREE_ONLY_TITLE,
     QUALITY_MIN_PCT_AREA_LABEL,
     QUALITY_MIN_PROMINENCE_LABEL,
-    QUALITY_PCT_AREA_TOOLTIP_PEDIGREE,
-    QUALITY_PEDIGREE_ACTIVE_NOTE,
-    QUALITY_PEDIGREE_INACTIVE_NOTE,
-    QUALITY_PROMINENCE_TOOLTIP_PEDIGREE,
+    QUALITY_PCT_AREA_TOOLTIP,
+    QUALITY_PROMINENCE_TOOLTIP,
 )
 from src.ui.widget_tooltip import attach_tooltip
 
@@ -83,7 +80,6 @@ class RtAssignmentPanel:
         """RT assignment settings and run controls."""
         self._context._pedigree_modern_widgets.clear()
         self._context._pedigree_old_school_widgets.clear()
-        self._context._pedigree_quality_widgets.clear()
         row = 0
         actions = ctk.CTkFrame(panel, fg_color="transparent")
         actions.grid(row=row, column=0, sticky="ew", padx=8, pady=(4, 12))
@@ -209,14 +205,37 @@ class RtAssignmentPanel:
         ped_alpha_lbl = ctk.CTkLabel(modern_col, text="Peak significance α")
         ped_alpha_lbl.pack(anchor="w", padx=6)
         ped_alpha_entry = ctk.CTkEntry(modern_col, textvariable=self._context._pedigree_alpha_var)
-        ped_alpha_entry.pack(fill="x", padx=6, pady=(2, 8))
+        ped_alpha_entry.pack(fill="x", padx=6, pady=(2, 4))
         attach_tooltip(
             ped_alpha_entry,
             "Modern detection only: both height and area p-values must be below α/2.",
         )
         self._context._busy_sensitive_widgets.append(ped_alpha_entry)
+        ped_prom_lbl = ctk.CTkLabel(modern_col, text=QUALITY_MIN_PROMINENCE_LABEL)
+        ped_prom_lbl.pack(anchor="w", padx=6)
+        ped_prom_entry = ctk.CTkEntry(
+            modern_col, textvariable=self._context._pedigree_min_prominence_var
+        )
+        ped_prom_entry.pack(fill="x", padx=6, pady=(2, 4))
+        attach_tooltip(ped_prom_entry, QUALITY_PROMINENCE_TOOLTIP)
+        ped_pct_lbl = ctk.CTkLabel(modern_col, text=QUALITY_MIN_PCT_AREA_LABEL)
+        ped_pct_lbl.pack(anchor="w", padx=6)
+        ped_pct_entry = ctk.CTkEntry(
+            modern_col, textvariable=self._context._pedigree_min_pct_area_var
+        )
+        ped_pct_entry.pack(fill="x", padx=6, pady=(2, 8))
+        attach_tooltip(ped_pct_entry, QUALITY_PCT_AREA_TOOLTIP)
+        self._context._busy_sensitive_widgets.extend([ped_prom_entry, ped_pct_entry])
         self._context._pedigree_modern_widgets.extend(
-            [ped_modern_hdr, ped_alpha_lbl, ped_alpha_entry]
+            [
+                ped_modern_hdr,
+                ped_alpha_lbl,
+                ped_alpha_entry,
+                ped_prom_lbl,
+                ped_prom_entry,
+                ped_pct_lbl,
+                ped_pct_entry,
+            ]
         )
         ped_old_hdr = ctk.CTkLabel(
             old_col, text="Old-school", font=ctk.CTkFont(size=10, weight="bold")
@@ -238,45 +257,6 @@ class RtAssignmentPanel:
         )
         _ped_old_field(old_col, "Max Gaussian σ", self._context._pedigree_gaussian_stddev_var)
         _ped_old_field(old_col, "Minimum RT", self._context._pedigree_gaussian_min_rt_var)
-
-        quality_frame = ctk.CTkFrame(pedigree_box, fg_color=("gray85", "gray25"), corner_radius=6)
-        quality_frame.pack(fill="x", pady=(4, 4))
-        self._context._pedigree_quality_frame = quality_frame
-        quality_hdr = ctk.CTkLabel(
-            quality_frame,
-            text=QUALITY_FILTERS_PEDIGREE_ONLY_TITLE,
-            font=ctk.CTkFont(size=10, weight="bold"),
-        )
-        quality_hdr.pack(anchor="w", padx=6, pady=(6, 2))
-        quality_note = ctk.CTkLabel(
-            quality_frame,
-            text="",
-            font=ctk.CTkFont(size=10),
-            text_color="gray",
-            wraplength=260,
-            justify="left",
-        )
-        quality_note.pack(anchor="w", padx=6, pady=(0, 4))
-        self._context._pedigree_quality_note = quality_note
-        ped_prom_lbl = ctk.CTkLabel(quality_frame, text=QUALITY_MIN_PROMINENCE_LABEL)
-        ped_prom_lbl.pack(anchor="w", padx=6)
-        ped_prom_entry = ctk.CTkEntry(
-            quality_frame, textvariable=self._context._pedigree_min_prominence_var
-        )
-        ped_prom_entry.pack(fill="x", padx=6, pady=(2, 4))
-        attach_tooltip(ped_prom_entry, QUALITY_PROMINENCE_TOOLTIP_PEDIGREE)
-        ped_pct_lbl = ctk.CTkLabel(quality_frame, text=QUALITY_MIN_PCT_AREA_LABEL)
-        ped_pct_lbl.pack(anchor="w", padx=6)
-        ped_pct_entry = ctk.CTkEntry(
-            quality_frame, textvariable=self._context._pedigree_min_pct_area_var
-        )
-        ped_pct_entry.pack(fill="x", padx=6, pady=(2, 8))
-        attach_tooltip(ped_pct_entry, QUALITY_PCT_AREA_TOOLTIP_PEDIGREE)
-        # Managed by ``_sync_rt_parameter_widgets`` (not busy list) so Direct pick
-        # stays disabled after ``_set_controls_enabled(True)``.
-        self._context._pedigree_quality_widgets.extend(
-            [quality_hdr, ped_prom_lbl, ped_prom_entry, ped_pct_lbl, ped_pct_entry]
-        )
 
         ctk.CTkLabel(
             pedigree_box, text="Null RT Threshold", font=ctk.CTkFont(size=11, weight="bold")
@@ -366,11 +346,8 @@ class RtAssignmentPanel:
         self._sync_rt_parameter_widgets()
 
     def _sync_rt_parameter_widgets(self) -> None:
-        """Enable picker/quality controls for the selected analysis mode × picker."""
+        """Enable picker controls for the selected analysis mode × picker."""
         old_school = self._context._pedigree_picker_algorithm_var.get() == "old_school"
-        pedigree_mode = (
-            self._context._rt_analysis_mode_var.get() == _RT_ANALYSIS_PEDIGREE
-        )
         busy = False
         try:
             busy = bool(self._context._is_busy())
@@ -378,20 +355,12 @@ class RtAssignmentPanel:
             busy = False
         modern_state = "disabled" if (busy or old_school) else "normal"
         old_state = "disabled" if (busy or not old_school) else "normal"
-        quality_enabled = pedigree_mode and not busy
-        quality_state = "normal" if quality_enabled else "disabled"
         modern_fg = ("gray85", "gray25") if not old_school else ("gray78", "gray20")
         old_fg = ("gray85", "gray25") if old_school else ("gray78", "gray20")
-        quality_fg = ("gray85", "gray25") if quality_enabled else ("gray78", "gray20")
-        active_label = ("gray10", "gray90")
-        muted_label = ("gray55", "gray50")
-        quality_label_color = active_label if quality_enabled else muted_label
         if self._context._pedigree_modern_col is not None:
             self._context._pedigree_modern_col.configure(fg_color=modern_fg)
         if self._context._pedigree_old_col is not None:
             self._context._pedigree_old_col.configure(fg_color=old_fg)
-        if self._context._pedigree_quality_frame is not None:
-            self._context._pedigree_quality_frame.configure(fg_color=quality_fg)
         for widget in self._context._pedigree_modern_widgets:
             try:
                 widget.configure(state=modern_state)
@@ -402,25 +371,6 @@ class RtAssignmentPanel:
                 widget.configure(state=old_state)
             except Exception:
                 pass
-        for widget in self._context._pedigree_quality_widgets:
-            try:
-                if isinstance(widget, ctk.CTkEntry):
-                    widget.configure(state=quality_state)
-                elif isinstance(widget, ctk.CTkLabel):
-                    widget.configure(text_color=quality_label_color)
-                else:
-                    widget.configure(state=quality_state)
-            except Exception:
-                pass
-        note = self._context._pedigree_quality_note
-        if note is not None:
-            note.configure(
-                text=(
-                    QUALITY_PEDIGREE_ACTIVE_NOTE
-                    if pedigree_mode
-                    else QUALITY_PEDIGREE_INACTIVE_NOTE
-                )
-            )
 
     def _collect_variant_choices(self) -> List[str]:
         """Distinct isoform labels from the active database."""
@@ -476,13 +426,7 @@ class RtAssignmentPanel:
         time_unit = self._context._pedigree_time_unit_var.get()
         if time_unit not in ("seconds", "minutes"):
             return None
-        pedigree_mode = (
-            self._context._rt_analysis_mode_var.get() == _RT_ANALYSIS_PEDIGREE
-        )
-        if pedigree_mode:
-            min_prominence, min_pct_area = self._peek_pedigree_quality_params()
-        else:
-            min_prominence, min_pct_area = 0.0, 0.0
+        min_prominence, min_pct_area = self._peek_pedigree_quality_params()
         algorithm = self._context._pedigree_picker_algorithm_var.get()
         if algorithm not in ("modern", "old_school"):
             return None
@@ -637,17 +581,10 @@ class RtAssignmentPanel:
         if time_unit not in ("seconds", "minutes"):
             messagebox.showerror("Pedigree", "Invalid time unit.", parent=self._context)
             return None
-        pedigree_mode = (
-            self._context._rt_analysis_mode_var.get() == _RT_ANALYSIS_PEDIGREE
-        )
-        if pedigree_mode:
-            quality = self._parse_pedigree_quality_params()
-            if quality is None:
-                return None
-            min_prominence, min_pct_area = quality
-        else:
-            # Direct pick ignores quality filters; keep UI values but do not apply.
-            min_prominence, min_pct_area = 0.0, 0.0
+        quality = self._parse_pedigree_quality_params()
+        if quality is None:
+            return None
+        min_prominence, min_pct_area = quality
         algorithm = self._context._pedigree_picker_algorithm_var.get()
         if algorithm not in ("modern", "old_school"):
             messagebox.showerror(
@@ -841,7 +778,9 @@ class RtAssignmentPanel:
         ]
         if settings.uses_modern_peak_picker:
             rows.append(("Modern α", f"{settings.alpha:g}"))
-        if settings.min_prominence > 0 or settings.min_pct_area > 0:
+        if settings.uses_modern_peak_picker and (
+            settings.min_prominence > 0 or settings.min_pct_area > 0
+        ):
             rows.append(
                 (
                     "Quality filters",
