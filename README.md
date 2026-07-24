@@ -35,7 +35,7 @@ On Linux/macOS, use `source venv/bin/activate` instead of `venv\Scripts\activate
 
 ---
 
-## LC-Seq Chromatographic Data Analyusis for DNA-Encoded Libraries
+## LC-Seq Chromatographic Data Analysis for DNA-Encoded Libraries
 This program will process and analyze chromatographic data collected from LC-Seq experiments. Users must provide a spreadsheet where each row refers to a compound and chromatographic data is delimited (e.g. time;count, etc.) and contained in a single cell.
 
 After spreadsheet configuration and database construction, the application contains two primary modules:
